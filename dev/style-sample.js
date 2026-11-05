@@ -6,7 +6,10 @@
 //
 // The Before is the same demo's data with the approved app's pages, scripts, styles and themes: its requests for those
 // go to the Before demo (plan.before), everything else to the After one, so both sides draw the same data. Both sides
-// see the same moment (plan.time), so "3 min ago" reads alike.
+// see the same moment (plan.time), so "3 min ago" reads alike, and the same data: the first answer to each of the app's
+// data requests is kept and given to every page after it (dev/still.js frozen), and asked for once the page's fonts
+// are in (fontsFirst: nothing measured in a fallback font). Every picture is taken still (still.js
+// SHOT: no animation, transition or caret), so a look photographed twice comes out the same.
 //
 // Needs Playwright, as dev/screenshots.js does (npm ci --prefix dev && npx --prefix dev playwright install chromium; style.py passes
 // NODE_PATH). It says how it's going on stdout, a line of JSON each, for style.py's progress bar (dev/progress.py):
@@ -17,6 +20,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { chromium } = require("playwright");
+const { SHOT, isData, frozen, fontsFirst, settle } = require("./still.js");
 
 const [OUT] = process.argv.slice(2);
 const plan = JSON.parse(fs.readFileSync(path.join(OUT, "plan.json"), "utf-8"));
@@ -28,27 +32,34 @@ const AFTER = new URL(plan.after).origin;
 
 // side "before": the approved app's files over today's data (judge.only: just those paths of it; judge.except: all
 // but those: "document" the page itself, a path ending in / all under it).
+const ANSWERS = new Map();   // the app's data, as first answered: every page of the sample is given the same (still.js)
 async function open(browser, look, page, width, side, judge) {
   const ctx = await browser.newContext({ viewport: { width, height: 900 }, deviceScaleFactor: 2, colorScheme: look.mode });
   await ctx.clock.setFixedTime(plan.time);
   await ctx.addInitScript((o) => { try { localStorage.setItem("pc-theme", JSON.stringify(o)); } catch { /* none */ } }, look);
-  if (side === "before") {
-    await ctx.route("**/*", async (route) => {
-      const req = route.request(), u = new URL(req.url());
+  await fontsFirst(ctx);
+  const data = frozen(ANSWERS);
+  await ctx.route("**/*", async (route) => {
+    const req = route.request(), u = new URL(req.url());
+    if (u.origin !== AFTER) return route.continue();
+    if (side === "before") {
       const app = u.pathname.startsWith("/static/") || u.pathname === "/theme.css" || u.pathname === "/theme.js";
       const j = judge || {};
       const doc = req.resourceType() === "document";
       const kept = (j.except || []).some((e) => (e === "document" ? doc : e.endsWith("/") ? u.pathname.startsWith(e) : u.pathname === e));
       const mine = j.only ? j.only.includes(u.pathname) : (app || doc) && !kept;
-      if (u.origin !== AFTER || !mine) return route.continue();
-      try {
-        return route.fulfill({ response: await route.fetch({ url: plan.before + u.pathname + u.search }) });
-      } catch { return route.abort(); }
-    });
-  }
+      if (mine) {
+        try {
+          return await route.fulfill({ response: await route.fetch({ url: plan.before + u.pathname + u.search }) });
+        } catch { return route.abort(); }
+      }
+    }
+    return isData(req) ? data(route) : route.continue();
+  });
   const p = await ctx.newPage();
   await p.goto(plan.after + "/" + page);
   await p.waitForTimeout(WAIT);
+  await settle(p);
   return { ctx, p };
 }
 
@@ -98,7 +109,7 @@ async function shoot(sides, file) {
     const y = Math.max(0, top);
     const clip = { x, y, width, height: Math.max(1, Math.min(size.h - y, bottom - y, MAX_H)) };
     out.clip = out.clip || clip;   // (where on the page it is: dev/style.py puts crops of one spot on one card)
-    try { await s.p.screenshot({ path: path.join(OUT, file(side)), clip, fullPage: true, timeout: 15000 }); out[side] = file(side); }
+    try { await s.p.screenshot({ ...SHOT, path: path.join(OUT, file(side)), clip, fullPage: true, timeout: 15000 }); out[side] = file(side); }
     catch { out[side] = null; }   // (it couldn't draw)
   }
   return out;
@@ -166,7 +177,7 @@ async function drawFile(browser, file, out) {
   const mime = { svg: "image/svg+xml", ico: "image/x-icon", jpg: "image/jpeg" }[ext] || "image/" + ext;
   await p.setContent(`<body style="margin:0;display:grid;place-items:center;height:100vh;background:#fff"><img style="max-width:160px;max-height:160px" src="data:${mime};base64,${fs.readFileSync(file).toString("base64")}"></body>`);
   await p.waitForTimeout(100);
-  await p.screenshot({ path: path.join(OUT, out) });
+  await p.screenshot({ ...SHOT, path: path.join(OUT, out) });
   await p.close();
   return out;
 }
@@ -265,7 +276,7 @@ async function pool(tasks) {
           const after = file("after");
           let ctx, p;
           ({ ctx, p } = await open(browser, look, pg, 1280, "after"));
-          await p.screenshot({ path: path.join(OUT, after) });
+          await p.screenshot({ ...SHOT, path: path.join(OUT, after) });
           await ctx.close();
           const pair = {};
           let n = 0;
@@ -274,7 +285,7 @@ async function pool(tasks) {
             const v = String(++n);
             let before = file("before", v);
             ({ ctx, p } = await open(browser, look, pg, 1280, "before", judge));
-            try { await p.screenshot({ path: path.join(OUT, before), timeout: 15000 }); } catch { before = null; }   // (it couldn't draw)
+            try { await p.screenshot({ ...SHOT, path: path.join(OUT, before), timeout: 15000 }); } catch { before = null; }   // (it couldn't draw)
             await ctx.close();
             const c = await compare(before, after, file("diff", v));
             pair[key] = { before, same: c.same, diff: c.diff || null, px: c.px || 0, areas: c.areas || 0 };

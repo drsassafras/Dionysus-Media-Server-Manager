@@ -2,7 +2,7 @@
 """Translation catalogs: find every translatable text and check each language has it.
 
     python3 dev/i18n.py check              # translations match their English (catalogs may lag the code)
-    python3 dev/i18n.py --tnsync           # tnsync's Translations block: how far the catalogs are, overall; between
+    python3 dev/i18n.py --devtools           # devtools's Translations block: how far the catalogs are, overall; between
                                            # releases it only tells, on master or a --release run every text must be there
     python3 dev/i18n.py check --release    # ...and catalogs in step with the code: nothing missing or unused
     python3 dev/i18n.py check --complete   # ...and every text translated
@@ -58,13 +58,13 @@ _TAG = re.compile(r"</?([a-zA-Z][a-zA-Z0-9]*)")
 
 
 def strict_now() -> bool:
-    """Where the catalogs gate — complete, every text translated — decided here once, for tnsync's Translations block
-    and the suite's TranslationTests alike: a release run (TNSYNC_RELEASE; PLEXCACHE_I18N_RELEASE, which CI sets for
-    main and version tags), the release-tag syncs (tnsync release / beta), and master — main must ship complete, hot
+    """Where the catalogs gate — complete, every text translated — decided here once, for devtools's Translations block
+    and the suite's TranslationTests alike: a release run (DEVTOOLS_RELEASE; PLEXCACHE_I18N_RELEASE, which CI sets for
+    main and version tags), the release-tag syncs (devtools release / beta), and master — main must ship complete, hot
     releases included. Everywhere else the catalogs may lag the code."""
     return (os.environ.get("PLEXCACHE_I18N_RELEASE", "").lower() in ("1", "true", "yes")
-            or os.environ.get("TNSYNC_RELEASE") == "1"
-            or os.environ.get("TNSYNC_MODE", "").lower() in ("master", "main", "release", "beta"))
+            or os.environ.get("DEVTOOLS_RELEASE") == "1"
+            or os.environ.get("DEVTOOLS_MODE", "").lower() in ("master", "main", "release", "beta"))
 
 
 # ------------------------------------------------------------------ JavaScript
@@ -356,6 +356,36 @@ def check_catalog(code: str, keys: dict, cat: dict, complete: bool = False, rele
     return out
 
 
+def needed(keys: dict, cat: dict) -> dict:
+    """What a language still needs, to fill in: each untranslated text, as ``missing`` prints it and the Translations
+    page exports it — the English (a plural as its two forms), to be replaced by the translation."""
+    todo = set(untranslated(keys, cat))
+    return {k: ({"one": one, "other": k} if one is not None else k) for k, one in keys.items() if k in todo}
+
+
+def page(keys: dict, problems: list[str], strict: bool) -> dict:
+    """The Translations page in the devtools UI (dev/progress.py's detail): how far each language is, what each still
+    needs (its export), what's wrong in its catalog, and the English that doesn't go through the helpers."""
+    from plexcache.i18n import LANGUAGES
+    names = dict(LANGUAGES)
+    texts = [[k, v] for k, v in needed(keys, {}).items()]   # (every text once, as its export: a language's needs are indexes into it)
+    index = {k: i for i, (k, _) in enumerate(texts)}
+    languages = []
+    for code in TRANSLATED:
+        cat = load(code)
+        needs = [index[k] for k in needed(keys, cat)]
+        done = len(keys) - len(needs)
+        languages.append({"code": code, "name": names.get(code, code), "done": done, "total": len(keys),
+                          "pct": round(100.0 * done / len(keys), 1) if keys else 100.0, "needs": needs,
+                          "problems": check_catalog(code, keys, cat)})
+    total = len(keys) * len(TRANSLATED)
+    return {"kind": "i18n", "strict": strict, "texts": texts, "languages": languages,
+            "pct": round(100.0 * sum(lang["done"] for lang in languages) / total, 1) if total else 100.0,
+            "variants": [{"code": code, "name": names.get(code, code), "spellings": len(load(code)),
+                          "problems": check_catalog(code, keys, load(code))} for code in VARIANTS],
+            "problems": list(problems), "leftovers": leftovers()}
+
+
 def save(code: str, cat: dict) -> None:
     with open(os.path.join(CATALOGS, code + ".json"), "w", encoding="utf-8") as fh:
         json.dump(cat, fh, ensure_ascii=False, indent=1, sort_keys=True)
@@ -382,22 +412,21 @@ def leftovers() -> list[str]:
 
 def main(argv: list[str]) -> int:
     cmd = argv[1] if len(argv) > 1 else "check"
+    cmd = "--devtools" if cmd == "--tnsync" else cmd   # (the flag's old name still read)
     problems: list[str] = []
     keys = all_keys(problems)
-    if cmd == "--tnsync":
-        # tnsync's Translations block (TN_I18N): the overall share translated — every language's texts as one number.
+    if cmd == "--devtools":
+        # devtools's Translations block (TN_I18N): the overall share translated — every language's texts as one number.
         # Between releases the catalogs may lag (exit 3: the board only tells, grey); on master, and on a --release run,
         # main must ship complete, so anything untranslated is a finding, red, and the copy waits (the same common
         # checks code and result line as the other check tools).
         from dev import checks
         from dev.checks import Check, Finding, Outcome
-        from dev.progress import counted, result, said
+        from dev.progress import counted, detail, result, said
         strict = strict_now()
-        done = {code: len(keys) - len(untranslated(keys, load(code))) for code in TRANSLATED}
-        total = len(keys) * len(TRANSLATED)
-        pct = 100.0 * sum(done.values()) / total if total else 100.0
-        left = {code: len(keys) - n for code, n in done.items() if n < len(keys)}
-        facts = [f"{pct:.1f}% translated", counted(len(TRANSLATED), "language"), counted(len(keys), "text")]
+        shown = page(keys, problems, strict)   # (its page in the devtools UI: the one account, the numbers below from it)
+        left = {lang["code"]: lang["total"] - lang["done"] for lang in shown["languages"] if lang["done"] < lang["total"]}
+        facts = [f"{shown['pct']:.1f}% translated", counted(len(TRANSLATED), "language"), counted(len(keys), "text")]
         if strict:
             found = [Finding("Translations", os.path.join("plexcache", "web", "i18n", f"{code}.json"), 0, 0, "error",
                              f"{n} of {counted(len(keys), 'text')} untranslated")
@@ -406,7 +435,8 @@ def main(argv: list[str]) -> int:
                 print("  every text must be translated before this lands on main: python3 dev/i18n.py sync, then fill"
                       " what's null (python3 dev/i18n.py missing <code> says what a language still needs)")
             outcome = Outcome("Translations", "", found, facts=facts)
-            return checks.run([Check("Translations", lambda: outcome)], bar="i18n")
+            return checks.run([Check("Translations", lambda: outcome)], bar="i18n", more=shown)
+        detail(shown)
         if left:
             print(f"  {counted(sum(left.values()), 'translation')} still to do in {counted(len(left), 'language')}"
                   " (the catalogs may lag between releases; a release completes them)")
@@ -437,8 +467,7 @@ def main(argv: list[str]) -> int:
     if cmd == "missing":
         code = argv[2]
         cat = load(code)
-        todo = {k: ({"one": one, "other": k} if one is not None else k) for k, one in keys.items() if k in untranslated(keys, cat)}
-        print(json.dumps(todo, ensure_ascii=False, indent=1))
+        print(json.dumps(needed(keys, cat), ensure_ascii=False, indent=1))
         return 0
     if cmd == "merge":
         code, path = argv[2], argv[3]

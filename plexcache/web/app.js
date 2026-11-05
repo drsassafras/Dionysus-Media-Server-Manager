@@ -5841,7 +5841,7 @@ PCI18N.ready.then(function () {
   }
   function load() {
     return api("/api/state" + focusQuery()).then(function (st) {
-      // A new version of the web UI (after an update or tnsync): reload so this tab runs it.
+      // A new version of the web UI (after an update or devtools): reload so this tab runs it.
       // Unsaved changes are sent first; the next refresh reloads.
       if (build && st.build && st.build !== build && !Object.keys(pending).length) { location.reload(); return; }
       build = build || st.build;

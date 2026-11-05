@@ -8,7 +8,7 @@ fetched at its version in dev/tools.toml, what it finds said one way, the board'
 A finding is said as ``  path:line:col - severity: message (Tool CODE)``, `` [*]`` after it when the tool's own --fix
 makes it; on GitHub it's annotated on its line too (an error, a warning or a notice). Then the result line every dev
 tool says (dev/progress.py: "0 errors · 0 warnings · 0 Ruff findings"): each tool's own facts, in the order the checks
-are given. On tnsync's board (PLEXCACHE_PROGRESS=feed) the bar is the files checked (what each check says it reads:
+are given. On devtools's board (PLEXCACHE_PROGRESS=feed) the bar is the files checked (what each check says it reads:
 ``files``, from project_files; a file counted once every check that reads it is done), each check named as it ends.
 
 The exit code: 0 clean, 1 something found, 2 a tool couldn't run (not installed, no network for its download…).
@@ -31,11 +31,11 @@ import tomllib
 import urllib.request
 import zipfile
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-from dev.progress import Progress, counted, feeding, result, said  # noqa: E402 — the dev tools' bar and result line
+from dev.progress import Progress, counted, detail, feeding, result, said  # noqa: E402 — the dev tools' bar and result line
 
 TOOLS = os.path.join(ROOT, "dev", "tools.toml")
 CACHE = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "plex-cache", "tools")
@@ -284,8 +284,9 @@ def project_files(*patterns: str, under: tuple[str, ...] = ("",), skip: tuple[st
                   and any(fnmatch.fnmatch(os.path.basename(p), pat) for pat in patterns))
 
 
-def run(checks: list[Check], bar: str = "main", stream=None) -> int:
-    """Every check at once; what each found, in their order, then the result line. The exit code (above)."""
+def run(checks: list[Check], bar: str = "main", stream=None, more: dict | None = None) -> int:
+    """Every check at once; what each found, in their order, then the result line. The exit code (above). ``more``: what
+    the tool adds to its page's detail beyond the checks (dev/coverage.py's files; its "kind" names the page)."""
     stream = stream or sys.stdout
     # what the bar counts: the files the checks read (each once), when every check says which; else the checks
     read = [c.files() if c.files else None for c in checks] if feeding() else []
@@ -342,6 +343,11 @@ def run(checks: list[Check], bar: str = "main", stream=None) -> int:
     stream.write(line + "\n")
     stream.flush()
     said(line, stream)
+    # (its page in the devtools UI: each tool, what it found, and the files the checks read)
+    detail({"kind": "checks", "result": line, "files": sorted(readers), "tools": [
+        {"name": checks[i].name, "tool": o.tool, "version": o.version, "ran": o.findings is not None, "why": o.why, "facts": [f for f in o.said() if f.strip()],
+         "failed": o.bad(), "findings": [asdict(f) for f in o.findings or []]}
+        for i, o in enumerate(outcomes) if o is not None], **(more or {})})
     if any(o.findings is None for o in done):
         return 2
     return 1 if any(o.bad() for o in done) else 0
@@ -349,15 +355,15 @@ def run(checks: list[Check], bar: str = "main", stream=None) -> int:
 
 def repo_at() -> tuple[str, str] | None:
     """Where git knows the project's lines, for a check that asks git about them (dev/audit.py's blame): this folder when
-    it's a checkout (its working tree, so uncommitted lines count as not committed yet), else the repository tnsync copied
-    it from, at the commit it copied (TNSYNC_REPO, TNSYNC_COMMIT); None: no history here."""
+    it's a checkout (its working tree, so uncommitted lines count as not committed yet), else the repository devtools copied
+    it from, at the commit it copied (DEVTOOLS_REPO, DEVTOOLS_COMMIT); None: no history here."""
     try:
         got = subprocess.run(["git", "-C", ROOT, "rev-parse", "--show-toplevel"], capture_output=True, text=True, timeout=10)
         if got.returncode == 0 and os.path.realpath(got.stdout.strip()) == os.path.realpath(ROOT):
             return ROOT, ""
     except (OSError, subprocess.TimeoutExpired):
         return None
-    repo, commit = os.environ.get("TNSYNC_REPO", ""), os.environ.get("TNSYNC_COMMIT", "")
+    repo, commit = os.environ.get("DEVTOOLS_REPO", ""), os.environ.get("DEVTOOLS_COMMIT", "")
     return (repo, commit) if repo and commit else None
 
 

@@ -7,7 +7,7 @@
 //     NODE_PATH=$(npm root -g) node dev/icons.js          # writes them into plexcache/web/
 //     NODE_PATH=$(npm root -g) node dev/icons.js check    # exit 1 if one isn't what the tab icon draws now (IconTests)
 //
-// Run it after changing either logo, then show the maintainer the style sample (dev/style.py sample): the icons are
+// Run it after changing either logo, then have the maintainer approve them (python3 dev/style.py review): the icons are
 // in the style guide like every image the app ships. Needs Playwright, as dev/screenshots.js does
 // (npm ci --prefix dev && npx --prefix dev playwright install chromium).
 //

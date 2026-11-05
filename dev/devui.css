@@ -1,0 +1,39 @@
+/* The devtools UI's own looks (dev/devui.html), on top of the app's stylesheet (plexcache/web/app.css) and in its themes
+   (plexcache/themes.py). The dev tools' pages are outside the style guide: no approval is asked for these. */
+.side{position:sticky;top:0;max-height:100vh;overflow:auto}
+.nav .icon .pic{margin-right:0;opacity:.85}
+.nav kbd{margin-left:auto;font:600 11px/1 var(--mono);color:var(--side-ink);opacity:.7;border:1px solid currentColor;border-radius:4px;padding:2px 5px}
+.nav .letter,.block h2 .letter,h1 .letter{text-decoration:underline;text-decoration-thickness:2px;text-underline-offset:3px}
+.dot.run{background:#6B8FB5;animation:pulse 1s ease-in-out infinite}
+.dot.wait{background:#A3ABA6}
+.sidepick{margin-top:18px;display:flex;flex-direction:column;gap:8px}
+.sidepick .seg{margin:0}
+.blocks{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px;margin-top:20px}
+.block{display:flex;flex-direction:column;gap:10px;border-top:4px solid var(--line)}
+.block .head{justify-content:space-between}
+.block h2 a{color:inherit;text-decoration:none}
+.block h2 a:hover{text-decoration:underline}
+.block.st-pass{border-top-color:var(--ok)}
+.block.st-warn,.block.st-stopped{border-top-color:var(--warn)}
+.block.st-fail{border-top-color:var(--bad)}
+.block.st-running{border-top-color:var(--run)}
+.block .acts{margin-top:auto;padding-top:4px}
+.block .det{min-height:1.4em}
+.before{font-size:13px}
+.barbox{margin:2px 0}
+.barline{display:flex;justify-content:space-between;gap:12px;font-size:13px;min-width:0}
+.barline>.mono{flex:none;white-space:nowrap}
+.barline>.muted{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.banner.state{font-size:17px;padding:16px 20px}
+.banner.state .word{text-transform:capitalize;font-weight:700}
+.banner.state .says{font-weight:500;opacity:.9}
+.banner.bn-run{background:var(--run-bg);color:var(--run);border-color:transparent}
+.banner.bn-wait{background:var(--panel);color:var(--muted)}
+.light.l-run{background:#6B8FB5;box-shadow:0 0 0 3px var(--track)}
+.light.l-wait{background:#A3ABA6;box-shadow:0 0 0 3px var(--track)}
+.log.out{white-space:pre-wrap;max-height:60vh;overflow:auto;margin:0;padding:14px 16px;border-radius:8px}
+.small{font-size:13px}
+.top .acts{margin-top:0}
+.tbl td.c,.tbl th.c{text-align:center}
+.tbl .dot{display:inline-block}
+@media (max-width:720px){.main{padding:20px 16px 40px}.blocks{grid-template-columns:1fr}}

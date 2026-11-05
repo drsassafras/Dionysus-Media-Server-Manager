@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Build Validation, as GitHub runs it: what builds and ships the app, checked — the shell script (ShellCheck on
-dev/tnsync), the workflows (actionlint on .github/workflows, with ShellCheck on each step's script) and the Dockerfile
+dev/devtools), the workflows (actionlint on .github/workflows, with ShellCheck on each step's script) and the Dockerfile
 (hadolint, .hadolint.yaml), each at its version in dev/tools.toml.
 
     python3 dev/buildcheck.py
 
 All three run through dev/checks.py, the code every check tool shares: each fetched at its version the first time (into
 ~/.cache/plex-cache/tools/), what they find said one way (file:line:column - severity: message (Tool CODE)), then the
-result line every dev tool says ("0 ShellCheck findings · 0 actionlint findings · 0 hadolint findings"). On tnsync's board
+result line every dev tool says ("0 ShellCheck findings · 0 actionlint findings · 0 hadolint findings"). On devtools's board
 (PLEXCACHE_PROGRESS=feed: its Build Validation section) its bar is the files checked. Every finding counts, ShellCheck's
 and hadolint's notes and style too: they're kept at zero, fixed in the code; a rule wrong for a line says so there
 (``# shellcheck disable=SC… — why``), and a rule is only turned off (.hadolint.yaml) with the maintainer's say. Exit 0
@@ -22,7 +22,7 @@ sys.path.insert(0, ROOT)
 from dev import checks  # noqa: E402 — the check tools' shared code
 from dev.checks import Check, Finding, Outcome  # noqa: E402
 
-SCRIPTS = [os.path.join("dev", "tnsync")]   # (the project's shell scripts: CheckToolTests holds this to every one there is)
+SCRIPTS = [os.path.join("dev", "devtools")]   # (the project's shell scripts: CheckToolTests holds this to every one there is)
 WORKFLOWS = os.path.join(".github", "workflows")
 DOCKERFILES = ["Dockerfile"]
 LEVELS = {"error": "error", "warning": "warning", "info": "information", "style": "information"}
@@ -55,7 +55,7 @@ def actionlint() -> Outcome:
     cmd, why = checks.command("actionlint")
     if not cmd:
         return Outcome("actionlint", version, None, why)
-    sc, why = checks.command("shellcheck")   # (each step's script checked as ShellCheck checks dev/tnsync)
+    sc, why = checks.command("shellcheck")   # (each step's script checked as ShellCheck checks dev/devtools)
     if not sc:
         return Outcome("actionlint", version, None, why)
     got, run = checks.json_out([*cmd, "-format", "{{json .}}", "-shellcheck", sc[0], "-pyflakes", ""])

@@ -1,0 +1,24 @@
+# Public security audits (dev/audit.py record).
+id = "2026-11-05-4"
+date = 2026-11-05
+commit = "825419695f858e9bb638d7a8a18181a4ec8775a8"
+kind = "partial"
+scope = ["dev/style.py:_page", "dev/style.py:_CSS", "dev/style.py:_JS"]
+uncommitted = true
+prints = [
+    "04a7855ecc09", "0fcc4b0d0f04", "100d4f62f6bc", "10318795e5f1", "1135bfa4196a", "13e118e743e1",
+    "148c3ab06cbd", "14bb7827d93b", "1dc9aec39080", "1f09ffe919c9", "2328cd103618", "238e43598ae8",
+    "29452253434a", "29b042260f91", "29e7d3abfc70", "2a0a6f3e4347", "2dd7e8c6bbc7", "2f935f32aeda",
+    "30f89ad0e558", "33c897acc324", "44574ad4aab6", "446de7d77a47", "46d450c2672f", "4be912187c38",
+    "4ec01501a008", "5517a9fa7e2c", "55a40a124220", "57cf79c27bfa", "59af754d9c89", "5e7f4bc2d15d",
+    "5ebb3ae89770", "65cae459cb10", "6609309459f6", "68159c8c1e9a", "699155587717", "6a40df9eec5d",
+    "6a8f49671b53", "6ac784de3fe9", "6acde9e5be72", "6ebbdddaf8e0", "6eeb44882121", "7026dd1c247e",
+    "7180f9306055", "7a0c69cee545", "7d9b3bcdbe70", "81ecd9578e48", "883c5a567cd4", "88868ca8f7ad",
+    "8a0d0e8c4f4a", "8f8992e85b45", "90464aeea0fe", "93c23707f52e", "9618bfe244dc", "980a04d7c706",
+    "9ca505315915", "9d7a3d49f48e", "9d8392b85dcd", "a6a952eed489", "aef991bfb2b1", "b546fb1a09d5",
+    "b71875c82e41", "ba0475d1e736", "c34178286e9f", "c51813a2308a", "cb284ea57b9d", "cba0e8e28dca",
+    "cccc906e5129", "d07e4236f1ef", "d1d279ec4aa3", "d3739ff7f47d", "d6bba0f65ed9", "d9e63a3d8b36",
+    "da0df0ef273f", "dd474764574d", "df80c234e6d6", "dfe1408e53d4", "dff91fc844ba", "e16fe4cfc015",
+    "e52a87af953e", "e8219b17aaa5", "e84151becc59", "ebd7faf1b4ff", "ec327658abd3", "ef3c8fb50a9c",
+    "ef47b279ca43", "f17a19476fc1", "f765b25ac617", "fb2fb6130ec9",
+]

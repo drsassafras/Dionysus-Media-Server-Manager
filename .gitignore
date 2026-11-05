@@ -5,9 +5,10 @@ node_modules/
 # Local run settings (contain your Plex token and TrueNAS API key)
 .dev-config/
 .DS_Store
-.tnsync
+.devtools
 .claude
 CLAUDE.md
 
 # The style sample (dev/style.py sample): pictures for the maintainer to look at, not kept
 dev/style-sample/
+.tnsync

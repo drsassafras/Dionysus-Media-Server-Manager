@@ -14,11 +14,20 @@ itself (theme.js, kept in that browser): Classic on the phone, say, and Dionysus
 here before it reaches a page (validate()): colours are #hex only and fonts and decorations come from fixed lists, so a
 theme file can't carry anything but a look.
 
+A theme says only what's its own. A colour it leaves out comes from the theme it's based on (Classic, the root, sets
+them all), but one that follows another (FOLLOWS: the charts' first line, a progress bar's ripe grapes and the rest
+follow the accent) changes with that one where the theme sets it. So a theme that only changes its accent has its bars,
+charts and grapes in that accent too, and no built-in theme repeats a value it would get anyway (ThemeTests).
+
 The page gets every theme's colours as CSS (css(), served at /theme.css) and which one to show as a small script
-(script(), /theme.js), loaded before the page draws so it never flashes the wrong colours.
+(script(), /theme.js), loaded before the page draws so it never flashes the wrong colours. That script also loads what
+the theme shown needs to draw its decorations (ASSETS: decor.js, for its vines, grapes, film and spots), so a page
+loads the theme and nothing else of it: the app's pages, the sign-in page and the dev tools' pages alike. A page served
+somewhere else (devtools: dev/devui.py) serves files() beside it.
 """
 
 import json
+import os
 import re
 
 from .i18n import M
@@ -66,6 +75,16 @@ COLORS = {
     "vine-leaf": "the leaves on a card's vine",
     "menu-vine": "the vine between the menu and the page",
 }
+# A colour that follows another: where a theme leaves it out but sets the one it follows, it's that one (in the same look);
+# where it sets neither, it's the base theme's. Classic, the root, gives only the ones that aren't the colour they follow.
+FOLLOWS = {
+    "c-movie": "accent",    # charts: movies
+    "chart-a": "accent",    # charts: the first line
+    "wine": "accent",       # ripe grapes: a progress bar's filled part, in a theme with grapes (a plain bar's is the accent)
+    "vine-leaf": "leaf",    # the leaves on a card's vine are the leaves'
+    "info": "soft",         # a grey badge's text is the details' under a row's title
+    "lost": "bad",          # what goes, beside what's kept, is red
+}
 # colours a theme once set, for what's no longer drawn: a theme file that has them still uploads (they're left out)
 RETIRED = ("frame", "frame-leaf")   # the vine round the whole app, and its leaves
 FONTS = ("IBM Plex Sans", "Source Sans 3", "Cinzel", "System")  # (Source Sans 3 and Cinzel ship with the app: web/fonts)
@@ -73,57 +92,86 @@ DECOR = {
     "spots": "the spots round the app and on the menu: how strong, 0 (none) to 20 per cent",
     "vines": "true: a vine with a leaf now and then round each card, and down the side of the menu",
     "film": "true: a reel of film under each page's title",
-    "grapes": "true: the arrow between two sides is a bunch of grapes on its stem",
+    "grapes": "true: every progress bar is a vine whose grapes ripen as it fills, every checkbox a grape that ripens when ticked, and the arrow between two sides is a bunch of grapes on its stem",
 }
+# What a theme's decorations need on the page, loaded by theme.js when the theme shown turns any of them on: each script
+# that ships with the app (web/), with the decorations it draws. A theme picks its decorations from DECOR, so none can
+# bring a script of its own: an uploaded theme is a look and nothing more.
+ASSETS = {"decor.js": tuple(DECOR)}
 
-_CLASSIC_LIGHT = {
+# Classic: the app's look before themes. The root: it sets every colour but the ones that are the colour they follow.
+_CLASSIC_LIGHT_OWN = {
     "bg": "#F3F4F1", "panel": "#FFFFFF", "ink": "#1B1F1D", "muted": "#5A625D", "soft": "#4C544F", "line": "#DDE1DD", "line2": "#EDEFEC",
     "accent": "#0F5E57", "accent-ink": "#FFFFFF", "side": "#1B1F1D", "side-ink": "#C9CFCB",
-    "ok-bg": "#DDEFE3", "ok": "#155C37", "warn-bg": "#FBE8CF", "warn": "#7F4205", "bad-bg": "#F8D9D6", "bad": "#8A1C14", "lost": "#8A1C14",
-    "info-bg": "#E7EAE6", "info": "#4C544F", "run-bg": "#D8E9F4", "run": "#14476B",
+    "ok-bg": "#DDEFE3", "ok": "#155C37", "warn-bg": "#FBE8CF", "warn": "#7F4205", "bad-bg": "#F8D9D6", "bad": "#8A1C14",
+    "info-bg": "#E7EAE6", "run-bg": "#D8E9F4", "run": "#14476B",
     "guide-bg": "#F1F5F3", "guide-line": "#D6E2DD", "note-bg": "#FDF4E7", "note-line": "#F1D9B4", "note-ink": "#5E3404",
-    "code-bg": "#F6F7F5", "c-movie": "#0F5E57", "c-tv": "#5FA79B", "c-audio": "#B9772A", "c-res": "#9AA39E", "c-idx": "#6E5BA8",
+    "code-bg": "#F6F7F5", "c-tv": "#5FA79B", "c-audio": "#B9772A", "c-res": "#9AA39E", "c-idx": "#6E5BA8",
     "track": "#E7EAE6", "chart-a": "#008F7E", "chart-b": "#C2651A",
     "gold": "#E5A00D", "wine": "#8B3A62", "leaf": "#2E7D5B", "unripe": "#D3E4DA", "film": "#3A423E", "film-mark": "#F0AE1F",
-    "spots": "#B07A00", "menu-spots": "#F0AE1F", "vine": "#DDE1DD", "vine-leaf": "#2E7D5B",
+    "spots": "#B07A00", "menu-spots": "#F0AE1F", "vine": "#DDE1DD",
     "menu-vine": "#AAACA7",
 }
-_CLASSIC_DARK = {
+_CLASSIC_DARK_OWN = {
     "bg": "#121614", "panel": "#1A1F1C", "ink": "#E6EAE7", "muted": "#9CA59F", "soft": "#B3BBB6", "line": "#2C332F", "line2": "#252B28",
     "accent": "#3FA596", "accent-ink": "#0B1311", "side": "#0C0F0E", "side-ink": "#C9CFCB",
-    "ok-bg": "#16382A", "ok": "#8FD9AE", "warn-bg": "#3D2A12", "warn": "#F2C08A", "bad-bg": "#3E1B18", "bad": "#F2A49C", "lost": "#F2A49C",
-    "info-bg": "#262C29", "info": "#B3BBB6", "run-bg": "#14304A", "run": "#9BC8EE",
+    "ok-bg": "#16382A", "ok": "#8FD9AE", "warn-bg": "#3D2A12", "warn": "#F2C08A", "bad-bg": "#3E1B18", "bad": "#F2A49C",
+    "info-bg": "#262C29", "run-bg": "#14304A", "run": "#9BC8EE",
     "guide-bg": "#18231F", "guide-line": "#2A3A34", "note-bg": "#2E2414", "note-line": "#4A3A20", "note-ink": "#F2D3A6",
-    "code-bg": "#151A18", "c-movie": "#3FA596", "c-tv": "#8CC9BE", "c-audio": "#D9A15A", "c-res": "#6B746F", "c-idx": "#A797D8",
+    "code-bg": "#151A18", "c-tv": "#8CC9BE", "c-audio": "#D9A15A", "c-res": "#6B746F", "c-idx": "#A797D8",
     "track": "#2A302D", "chart-a": "#159C8A", "chart-b": "#CF7A2A",
     "gold": "#F0AE1F", "wine": "#B5558A", "leaf": "#3FA676", "unripe": "#2B4136", "film": "#3A423E", "film-mark": "#F0AE1F",
-    "spots": "#F0AE1F", "menu-spots": "#F0AE1F", "vine": "#2C332F", "vine-leaf": "#3FA676",
+    "spots": "#F0AE1F", "menu-spots": "#F0AE1F", "vine": "#2C332F",
     "menu-vine": "#555957",
 }
-# Dionysus: the film's pale stone behind the cards, wine for the buttons and links, a vine round the cards and the app
-_DIONYSUS_LIGHT = dict(_CLASSIC_LIGHT, **{
+# Dionysus: the film's pale stone behind the cards, wine for the buttons and links (and so for the charts' first line,
+# the movies and the ripe grapes, which follow it), a vine round the cards and the app; the rest is Classic's
+_DIONYSUS_LIGHT_OWN = {
     "bg": "#E7E8E2", "line2": "#E9EAE5", "accent": "#8B3A62", "note-bg": "#FBF1DF", "note-line": "#E5C98F",
     "guide-bg": "#F3F4EF", "guide-line": "#D9DBD2", "code-bg": "#F5F5F1", "info-bg": "#E9EAE5",
-    "c-movie": "#8B3A62", "c-tv": "#C98BAA", "chart-a": "#8B3A62", "chart-b": "#C2651A",
-    "vine": "#97BEAD", "vine-leaf": "#2E7D5B", "menu-vine": "#AAACA7",
+    "c-tv": "#C98BAA", "vine": "#97BEAD",
     "lost": "#6B726E",
-})
-_DIONYSUS_DARK = dict(_CLASSIC_DARK, **{
+}
+_DIONYSUS_DARK_OWN = {
     "bg": "#111513", "muted": "#A3ABA6", "accent": "#B5558A", "accent-ink": "#FFFFFF",
     "note-bg": "#2A2214", "note-line": "#5A4622", "guide-bg": "#1A201D", "guide-line": "#2E3632",
-    "c-movie": "#B5558A", "c-tv": "#D99BBB", "chart-a": "#B5558A", "chart-b": "#CF7A2A",
-    "vine": "#2D6249", "vine-leaf": "#3FA676", "menu-vine": "#555957",
+    "c-tv": "#D99BBB", "vine": "#2D6249",
     "lost": "#9AA19D",
-})
+}
+# each built-in look as written: (the look it's based on, its own colours)
+AUTHORED = {
+    ("classic", "light"): (None, _CLASSIC_LIGHT_OWN), ("classic", "dark"): (None, _CLASSIC_DARK_OWN),
+    ("dionysus", "light"): (("classic", "light"), _DIONYSUS_LIGHT_OWN), ("dionysus", "dark"): (("classic", "dark"), _DIONYSUS_DARK_OWN),
+}
+
+
+def follow(own: dict, base: dict | None) -> dict:
+    """A look's every colour, in COLORS's order: its own; for one it leaves out that follows another (FOLLOWS), that one
+    where the look sets it (or has no base); else the base's."""
+    out = {k: own[k] if k in own else (base or {})[k] for k in COLORS if k in own or k not in FOLLOWS}
+    for k, lead in FOLLOWS.items():
+        if k not in own:
+            out[k] = out[lead] if base is None or lead in own else base[k]
+    return {k: out[k] for k in COLORS}
+
+
+def _built(look: tuple) -> dict:
+    base, own = AUTHORED[look]
+    return follow(own, _built(base) if base else None)
+
 
 _PLAIN = {"spots": 0, "vines": False, "film": False, "grapes": False}
 BUILT_IN = [
     {"id": "classic", "name": "Classic", "fonts": {"text": "IBM Plex Sans", "headings": "IBM Plex Sans"}, "decor": _PLAIN,
-     "light": {"colors": _CLASSIC_LIGHT}, "dark": {"colors": _CLASSIC_DARK}},
+     "light": {"colors": _CLASSIC_LIGHT_OWN}, "dark": {"colors": _CLASSIC_DARK_OWN}},
     {"id": "dionysus", "name": "Dionysus", "fonts": {"text": "Source Sans 3", "headings": "Cinzel"},
      "decor": {"spots": 5, "vines": True, "film": True, "grapes": True},
-     "light": {"colors": _DIONYSUS_LIGHT}, "dark": {"colors": _DIONYSUS_DARK}},
+     "light": {"colors": _DIONYSUS_LIGHT_OWN}, "dark": {"colors": _DIONYSUS_DARK_OWN}},
 ]
+# (written with their own colours, as dev/style.py reads them; here, every colour: follow)
+for _t in BUILT_IN:
+    for _mode in ("light", "dark"):
+        _t[_mode] = {"colors": _built((_t["id"], _mode))}
 BUILT_IN_IDS = tuple(t["id"] for t in BUILT_IN)
 MODES = ("auto", "light", "dark")
 DEFAULT, DEFAULT_MODE = "dionysus", "light"
@@ -160,18 +208,21 @@ def _colors(given, base: dict, mode: str) -> dict:
     unknown = [k for k in given if k not in COLORS and k not in RETIRED]
     if unknown:
         raise ThemeError(M("Not a colour a theme sets: {names}", names=", ".join(map(str, unknown[:5]))))
-    out = {}
+    own = {}
     for key in COLORS:
-        v = given.get(key, base[key])
+        if key not in given:
+            continue
+        v = given[key]
         if not isinstance(v, str) or not _HEX.fullmatch(v.strip()):
             raise ThemeError(M("The {mode} colour {name} must be a #hex colour, like #8B3A62", mode=mode, name=key))
-        out[key] = v.strip().upper()
-    return out
+        own[key] = v.strip().upper()
+    return follow(own, {k: v.upper() for k, v in base.items()})
 
 
 def validate(theme) -> dict:
     """A theme from a file or the settings, checked and filled in: only the keys a theme has, every colour of its light
-    and its dark look #hex (any left out come from the theme it's based on, or Classic), fonts and decorations from their
+    and its dark look #hex (any left out come from the theme it's based on, or Classic, but one that follows another the theme
+    sets: FOLLOWS), fonts and decorations from their
     lists. Its id comes from its name when it has none, and may not be a built-in's."""
     if not isinstance(theme, dict):
         raise ThemeError(M("A theme is a JSON object"))
@@ -266,18 +317,39 @@ def script(themes_settings: dict | None) -> str:
     """The script that picks the look before the page draws. The theme and mode come from the settings, unless this
     browser keeps its own choice (localStorage "pc-theme": {"theme", "mode"}, set on System → Themes); "auto" follows the
     device's own light or dark setting, and changes with it. It sets data-theme, data-mode (light | dark) and the theme's
-    decorations (data-vines, data-film, data-spots, data-grapes) on <html>. app.js calls PCTHEME.use() after a change."""
+    decorations (data-vines, data-film, data-spots, data-grapes) on <html>, and loads what they need (ASSETS, from
+    /static/, ?v=__BUILD__: the server puts the build in, as in its pages; with this script's own nonce, where the page
+    has one): once, the first time a theme shown turns one on. app.js calls PCTHEME.use() after a change.
+    (The signature stays as it was: the style sample's Before runs today's server with the approved themes.py.)"""
+    v = "?v=__BUILD__"
     info = {t["id"]: t["decor"] for t in everything((themes_settings or {}).get("custom"))}
     return ("(function(){let INFO=" + json.dumps(info, separators=(",", ":")) + ",SEL=" + json.dumps(resolve(themes_settings), separators=(",", ":")) + ";\n"
             "const d=document.documentElement,mq=window.matchMedia?window.matchMedia(\"(prefers-color-scheme: dark)\"):null;\n"
+            "const ME=document.currentScript,NONCE=ME&&ME.nonce||\"\",ASSETS=" + json.dumps(ASSETS, separators=(",", ":")) + ",GOT={};\n"
+            "function need(x){Object.keys(ASSETS).forEach(function(f){if(GOT[f]||!ASSETS[f].some(function(k){return x[k];}))return;GOT[f]=true;\n"
+            "const s=document.createElement(\"script\");s.src=\"/static/\"+f+" + json.dumps(v) + ";if(NONCE)s.nonce=NONCE;(document.head||d).appendChild(s);});}\n"
             "function own(){try{const o=JSON.parse(localStorage.getItem(\"pc-theme\")||\"null\");return o&&typeof o===\"object\"?o:null;}catch{return null;}}\n"
             "function apply(){const o=own()||{};let id=INFO[o.theme]?o.theme:SEL.theme,m=o.mode||SEL.mode;if(!INFO[id])id=\"" + DEFAULT + "\";\n"
             "if(m===\"auto\")m=mq&&mq.matches?\"dark\":\"light\";if(m!==\"dark\")m=\"light\";const x=INFO[id];\n"
             "d.setAttribute(\"data-theme\",id);d.setAttribute(\"data-mode\",m);d.setAttribute(\"data-vines\",x.vines?\"on\":\"off\");d.setAttribute(\"data-film\",x.film?\"on\":\"off\");d.setAttribute(\"data-spots\",x.spots?\"on\":\"off\");d.setAttribute(\"data-grapes\",x.grapes?\"on\":\"off\");\n"
-            "if(window.PCDECOR)window.PCDECOR.themed();}\n"
+            "need(x);if(window.PCDECOR)window.PCDECOR.themed();}\n"
             "apply();if(mq){if(mq.addEventListener)mq.addEventListener(\"change\",apply);else if(mq.addListener)mq.addListener(apply);}\n"
             "window.PCTHEME={apply:apply,use:function(sel,info){if(info)INFO=info;SEL=sel;apply();},own:own,\n"
             "setOwn:function(o){try{if(o)localStorage.setItem(\"pc-theme\",JSON.stringify(o));else localStorage.removeItem(\"pc-theme\");}catch{/* storage unavailable */}apply();}};})();\n")
+
+
+def files(web: str) -> dict[str, str]:
+    """What the themes load, for a page served somewhere other than the app (devtools: dev/devui.py), by the path the
+    page asks for: {"static/<name>": its file in ``web`` (plexcache/web)}: the scripts in ASSETS and the fonts
+    (web/fonts, which the stylesheet names)."""
+    out = {f"static/{name}": os.path.join(web, name) for name in ASSETS}
+    fonts = os.path.join(web, "fonts")
+    try:
+        names = sorted(os.listdir(fonts))
+    except OSError:
+        names = []
+    out.update({f"static/fonts/{name}": os.path.join(fonts, name) for name in names if name.endswith(".woff2")})
+    return out
 
 
 def upload(settings, theme) -> str:
@@ -308,8 +380,10 @@ def download(theme: dict) -> str:
     t["about"] = {
         "how": "Change the values below, give the theme a new name, and upload it in Dionysus: System → Themes. "
                "Colours are #hex: light holds the colours of its light look, dark of its dark look. Any colour left out "
-               "comes from the theme named in based_on (or Classic).",
+               "comes from the theme named in based_on (or Classic), but one in follows changes with the colour it follows "
+               "when this theme sets that one.",
         "colors": COLORS,
+        "follows": FOLLOWS,
         "fonts": "text and headings, each one of: " + ", ".join(FONTS),
         "decor": DECOR,
     }

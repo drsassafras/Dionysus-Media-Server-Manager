@@ -1,5 +1,5 @@
 """Known vulnerabilities (CVEs) in what the app runs and is built with: a part of the dependency check (dev/upkeep.py,
-tnsync's Dependencies block), looked up once a day with the versions.
+devtools's Dependencies block), looked up once a day with the versions.
 
 It says only what needs doing. A CVE someone else is already fixing stays quiet; one is shown when there's something for
 us to do — always as a warning (the block orange), never a failure:
@@ -26,8 +26,8 @@ reachable" one stays decided with a fix (a fix in a package pulled in by another
 
 Where the CVEs come from: OSV (osv.dev) for the npm packages of dev/package-lock.json and for oxipng (a Rust crate); NVD
 (nvd.nist.gov, by each one's CPE) for the ffmpeg, libjpeg-turbo and MKVToolNix the image is built with;
-Trivy (dev/tools.toml, through dev/checks.py) for the image of the copy being checked (source(): tnsync's — the folder for
-tnsync local, an export of main for tnsync main… — else this checkout), built here from it (build_local): its Debian
+Trivy (dev/tools.toml, through dev/checks.py) for the image of the copy being checked (source(): devtools's — the folder for
+devtools local, an export of main for devtools main… — else this checkout), built here from it (build_local): its Debian
 packages, and the Python packages the base image carries. Docker not running, or the build failing: the image that copy's
 branch publishes instead (images(): dev on dev, latest on main), said in a note. The pins and the npm lock are the copy's too. NVD answers 5 requests in 30 s without a key; NVD_API_KEY in the environment raises it.
 """
@@ -305,15 +305,15 @@ def images(where: str | None = None) -> list[str]:
 
 
 def source() -> str:
-    """The copy whose CVEs are looked at: the one tnsync is checking (TNSYNC_COPY: the folder for tnsync local, an export of
-    the branch or tag for tnsync main, dev, release, beta), else this checkout."""
-    return os.environ.get("TNSYNC_COPY") or ROOT
+    """The copy whose CVEs are looked at: the one devtools is checking (DEVTOOLS_COPY: the folder for devtools local, an export of
+    the branch or tag for devtools main, dev, release, beta), else this checkout."""
+    return os.environ.get("DEVTOOLS_COPY") or ROOT
 
 
 def source_branch() -> str:
-    """The branch that copy is of: what tnsync was asked for (TNSYNC_MODE: main or release are main, dev or beta are dev),
-    else (tnsync local, or no tnsync) the branch checked out here; "" when it's neither."""
-    mode = os.environ.get("TNSYNC_MODE", "")
+    """The branch that copy is of: what devtools was asked for (DEVTOOLS_MODE: main or release are main, dev or beta are dev),
+    else (devtools local, or no devtools) the branch checked out here; "" when it's neither."""
+    mode = os.environ.get("DEVTOOLS_MODE", "")
     if mode in ("main", "master", "release"):
         return "main"
     if mode in ("dev", "beta"):

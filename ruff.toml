@@ -1,4 +1,4 @@
-# Ruff: the lint beside pyright's type check (dev/typecheck.py runs both, at build.yml's pins): tnsync's Python Validation
+# Ruff: the lint beside pyright's type check (dev/typecheck.py runs both, at build.yml's pins): devtools's Python Validation
 # block and GitHub's build. A finding is something to change in the code, or, where the rule is wrong for
 # this code, a `# noqa: <code>` that says why on that line; a rule is only turned off here with the maintainer's say.
 # Not the formatter: the code keeps its own layout (`ruff format` would rewrite nearly every file).

@@ -11,7 +11,7 @@ On a terminal, one line is redrawn: ``draw`` when a step finishes (the count mov
 is seen to be going). When the stream isn't a terminal (CI, a log file; unless PLEXCACHE_PROGRESS=bar: one later) it prints a line every 10% instead, and ``show``
 says nothing. ``clear`` takes the line away, before what's printed next.
 
-Under tnsync's board (dev/board.py, PLEXCACHE_PROGRESS=feed) nothing is drawn here: each change goes to the stream as one
+Under devtools's board (dev/board.py, PLEXCACHE_PROGRESS=feed) nothing is drawn here: each change goes to the stream as one
 line the board reads (``FEED`` and a JSON record, ``record``), and the board draws the bar, in its section, with this same
 code (``apply``, then ``render``). ``bar`` names it, for a tool with more than one (dev/future.py: the build, the tests).
 """
@@ -38,12 +38,12 @@ FEED = "\x1e"   # (ASCII's record separator: what starts a line meant for the bo
 
 
 def feeding() -> bool:
-    """Whether the bars go to tnsync's board (PLEXCACHE_PROGRESS=feed) rather than being drawn here."""
+    """Whether the bars go to devtools's board (PLEXCACHE_PROGRESS=feed) rather than being drawn here."""
     return os.environ.get("PLEXCACHE_PROGRESS") == "feed"
 
 
 def timed(took: str, *more: str, feed: bool | None = None) -> str:
-    """What follows a result line: " (58 s, 16 workers)" — on tnsync's board nothing: its block shows the time, and
+    """What follows a result line: " (58 s, 16 workers)" — on devtools's board nothing: its block shows the time, and
     the bar's ``workers`` (under the time)."""
     return "" if (feeding() if feed is None else feed) else f" ({', '.join([took, *more])})"
 
@@ -67,11 +67,11 @@ def short_version(v: str) -> str:
 
 
 class Shown(str):
-    """A count the bar already shows, on tnsync's board, and what came of it, which its block's header says: never said."""
+    """A count the bar already shows, on devtools's board, and what came of it, which its block's header says: never said."""
 
 
 def tally(n: int, unit: str, outcome: str, plural: str = "", of: int | None = None, feed: bool | None = None) -> str:
-    """A count and what came of it, the fact of a result line: "550 tests passed", "3/550 tests failed". On tnsync's
+    """A count and what came of it, the fact of a result line: "550 tests passed", "3/550 tests failed". On devtools's
     board the bar says the count already, and the block's header what came of it: the whole of it (n of n) is left
     out — "Python 3.15.2 · …", or nothing when there's nothing else to say — and part of it is said without the total:
     "3 failed"."""
@@ -115,7 +115,7 @@ def capsule(done: int, total: int, bad: int, warned: int, bg: str = CAPSULE, wid
 
 
 def tested(done: int, bad: int, warned: int, total: int | None = None, feed: bool | None = None) -> str:
-    """A run of tests' counts as a fact of its result line (``counts``). On tnsync's board its bar says them, so they
+    """A run of tests' counts as a fact of its result line (``counts``). On devtools's board its bar says them, so they
     aren't said again (nor passed or failed: its header says it)."""
     if feeding() if feed is None else feed:
         return Shown("failed" if bad else "passed")
@@ -123,7 +123,7 @@ def tested(done: int, bad: int, warned: int, total: int | None = None, feed: boo
 
 
 def result(*facts: str) -> str:
-    """A section's result line, as every dev tool says it on tnsync's board (its last line) and after a run: its facts
+    """A section's result line, as every dev tool says it on devtools's board (its last line) and after a run: its facts
     joined with " · ", in sentence case, no full stop — "550 tests passed", "0 errors · 0 warnings". No time (the block's
     timer has it), no workers (its bar's row has them: ``timed`` adds those off the board) and no count the bar shows
     (``tally``)."""
@@ -146,7 +146,7 @@ def record(line: str) -> dict | None:
 
 
 def said(text: str, stream=None):
-    """On tnsync's board, the line under a section's bar: what came of it, short (dev/upkeep.py: what moved, from and to).
+    """On devtools's board, the line under a section's bar: what came of it, short (dev/upkeep.py: what moved, from and to).
     Sent only when feeding; elsewhere the tool says it its own way."""
     if feeding():
         stream = stream or sys.stdout
@@ -158,7 +158,7 @@ LEVELS = ("error", "warning", "notice")   # (what an issue a tool finds is, wors
 
 
 def issue(level: str, text: str, fix: str = "", stream=None):
-    """On tnsync's board, something a section found, for the board's Issues at the end (so nothing scrolls away above
+    """On devtools's board, something a section found, for the board's Issues at the end (so nothing scrolls away above
     it): an error, a warning or a notice, what it is, and the command that fixes it when there's one (pasteable as it
     is). Sent only when feeding."""
     if feeding() and level in LEVELS:
@@ -167,8 +167,26 @@ def issue(level: str, text: str, fix: str = "", stream=None):
         stream.flush()
 
 
+def detail(data: dict) -> str:
+    """On devtools's board, what a section's page in the devtools UI shows of it (dev/devui.py): the tool's own account
+    of what it found — a run of tests' failures and timings, a check's findings, the catalogs' counts — as JSON, written
+    whole to the file the board names (DEVTOOLS_DETAIL, in the run's record) and read from there; nothing when there's
+    no board. The tool decides what's in it; the page only shows it. Returns the path written, or ""."""
+    path = os.environ.get("DEVTOOLS_DETAIL", "")
+    if not path:
+        return ""
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path + ".tmp", "w", encoding="utf-8") as fh:
+            json.dump(data, fh, default=str)
+        os.replace(path + ".tmp", path)
+    except OSError:
+        return ""
+    return path
+
+
 def then(n: int, stream=None):
-    """On tnsync's board, for a section of two steps (dev/upkeep.py: look, then move the pins once the checks are done):
+    """On devtools's board, for a section of two steps (dev/upkeep.py: look, then move the pins once the checks are done):
     how much the second has to do. 0: there's nothing for it, and the section ends with the first."""
     if feeding():
         stream = stream or sys.stdout
@@ -178,7 +196,7 @@ def then(n: int, stream=None):
 
 def drawn(stream) -> bool:
     """Whether the bar is drawn on this stream (else a line every 10%): a terminal — or one later, PLEXCACHE_PROGRESS=bar
-    (tnsync's log of dev/future.py's run, shown on its terminal once the current tests are done)."""
+    (devtools's log of dev/future.py's run, shown on its terminal once the current tests are done)."""
     if os.environ.get("PLEXCACHE_PROGRESS") == "bar":
         return True
     try:
@@ -219,7 +237,7 @@ class Progress:
         try:
             return os.get_terminal_size(self.stream.fileno()).columns or 100  # (0: a terminal that doesn't say)
         except (AttributeError, ValueError, OSError):
-            return int(os.environ.get("COLUMNS") or 0) or 100  # (a log shown on a terminal later: tnsync says how wide)
+            return int(os.environ.get("COLUMNS") or 0) or 100  # (a log shown on a terminal later: devtools says how wide)
 
     def render(self, width: int, track: str = TRACK, fill: str | None = None, alert: str = RED, capsule_bg: str = CAPSULE,
                widths: tuple[int, int] | None = None, indent: int = 4, timer: bool = True) -> str:

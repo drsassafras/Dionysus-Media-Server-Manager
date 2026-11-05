@@ -74,7 +74,7 @@ def _plex_lan(app) -> list:
 
 
 def _build_id() -> str:
-    """A short fingerprint of the web UI's files. It changes whenever they do (after tnsync or an
+    """A short fingerprint of the web UI's files. It changes whenever they do (after devtools or an
     update), so pages ask for the new files by name and open tabs know to reload themselves."""
     h = hashlib.sha1(usedforsecurity=False)
     for root, dirs, files in os.walk(WEB_DIR):
@@ -321,7 +321,7 @@ def make_handler(app):
             if path in ("/theme.css", "/theme.js"):
                 # the themes' colours, and which one shows (themes.py): asked for again on every page load, never kept
                 ts = app.settings.section("themes")
-                body, ctype = (themes.css(ts), "text/css") if path == "/theme.css" else (themes.script(ts), "application/javascript")
+                body, ctype = (themes.css(ts), "text/css") if path == "/theme.css" else (themes.script(ts).replace("?v=__BUILD__", "?v=" + BUILD), "application/javascript")
                 return self._send(200, body.encode("utf-8"), ctype + "; charset=utf-8", {"Cache-Control": "no-store"})
             if path == "/api/themes/download":
                 # a theme as a file (System → Themes): a built-in one as a copy to rename and change

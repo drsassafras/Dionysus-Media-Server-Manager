@@ -1,11 +1,11 @@
 """What the app depends on, kept current: each dependency's version as the project pins or ships it, against the newest
-release upstream — looked up once a day by this script (tnsync runs it at the end of every run). The suite's
+release upstream — looked up once a day by this script (devtools runs it at the end of every run). The suite's
 ``test_dependencies_are_current`` (by hand; GitHub doesn't run it) reads only the last look's answers: never upstream or npm.
 
     python3 dev/upkeep.py            # the report; a pin a minor or patch release behind is moved to it
     python3 dev/upkeep.py --fresh    # asks upstream again rather than using the day's answers
     python3 dev/upkeep.py --report   # looks, changes nothing
-    python3 dev/upkeep.py --tnsync   # the same, as the box tnsync shows at the end of a run (TN_UPKEEP in .tnsync)
+    python3 dev/upkeep.py --devtools   # the same, as the box devtools shows at the end of a run (TN_UPKEEP in .devtools)
     python3 dev/upkeep.py --cves plex-cache:test   # GitHub's: the CVEs to act on in that image, as warnings; never fails
 
 With the versions it looks up the CVEs in what the app runs and is built with (dev/cves.py): only what needs doing is
@@ -14,7 +14,7 @@ said, in the box (yellow), and a CVE is never a failure, nor a prompt.
 Pins are moved only in a checkout of the dev branch (MOVES_ON), or of main (MINORS_ON): dev carries the newest software,
 majors and all; main is kept at the newest minor and patch release of what it has, and never takes a major (those come
 with dev, when it's released): there a major release isn't looked at, nor reported. Anywhere else — another branch, a
-copy that isn't a checkout (tnsync's, the image's) — it reports and moves nothing.
+copy that isn't a checkout (devtools's, the image's) — it reports and moves nothing.
 
 What it does with each: a dependency behind by a patch or minor release is moved to it where the project holds the pin
 (``bump``: the file edited, said in the report); one behind by a major release — or one with no build upstream yet — is a prompt: the test fails naming it until it's moved or, meant to stay, held (HOLD below). The GitHub
@@ -80,7 +80,7 @@ HOLD: dict[str, str] = {}
 # a major is left to dev). Anywhere else upkeep only reports.
 MOVES_ON = "dev"
 MINORS_ON = "main"
-WIDTH = 66  # tnsync's box: the lines --tnsync prints fit it
+WIDTH = 66  # devtools's box: the lines --devtools prints fit it
 
 
 class Offline(Exception):
@@ -598,6 +598,7 @@ class Report:
     news: list[tuple[str, str, str, str, str]] = field(default_factory=list)  # what's left to you: name, have, newest, level, what to do
     moves_on: str = MOVES_ON  # the branch its minor releases move on (where it ran, when that's main)
     cves: Judged | None = None  # dev/cves.py's Judged: the CVEs that need doing (a warning, never a prompt); None when not looked at
+    deps: list[dict] = field(default_factory=list)  # each dependency as a row: name, have, newest, state, level, where — for its page
 
 
 def _load_cache() -> dict:
@@ -632,7 +633,7 @@ def lookup(fresh: bool = False, saved: bool = False, progress=None, extra: int =
            ready: threading.Event | None = None) -> tuple[dict, bool]:
     """Every dependency's (have, newest), from upstream — or, within a day, from the last look. (found, stale).
     ``saved``: the last look's answers only, however old (stale past a day), upstream never asked — Offline when there's
-    none for every dependency yet (the suite's test: tnsync's box, or this script, does the looking). ``extra``: more
+    none for every dependency yet (the suite's test: devtools's box, or this script, does the looking). ``extra``: more
     steps on the bar, by another thread (the CVEs looked up alongside, a worker more), which waits for ``ready``: set once
     the bar is counting."""
     ready = ready or threading.Event()
@@ -705,7 +706,7 @@ def lookup(fresh: bool = False, saved: bool = False, progress=None, extra: int =
 
 
 def branch() -> str | None:
-    """The branch checked out where this file is; None when it isn't a git checkout (tnsync's copy, the image)."""
+    """The branch checked out where this file is; None when it isn't a git checkout (devtools's copy, the image)."""
     try:
         got = subprocess.run(["git", "-C", ROOT, "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.TimeoutExpired):
@@ -781,7 +782,7 @@ def check(apply: bool = True, fresh: bool = False, saved: bool = False, progress
 
         def cve_look():
             try:
-                src = cve_check.source()   # (the copy tnsync is checking: its pins, its npm lock, its image)
+                src = cve_check.source()   # (the copy devtools is checking: its pins, its npm lock, its image)
                 looked["got"] = cve_check.look(cve_pins(src), os.path.join(src, "dev", "package-lock.json"),
                                                os.path.join(src, "dev", "package.json"), images, local, fresh, saved, step,
                                                status)
@@ -842,6 +843,8 @@ def check(apply: bool = True, fresh: bool = False, saved: bool = False, progress
             from dev.progress import counted  # (a count as every dev tool says it; the bar put the project on the path)
             progress.draw(f"{counted(len(npm) - len(failed), 'package', of=len(npm))} moved with npm", bad=progress.bad + bool(failed))
     for d, have, newest, what, level in plan:
+        row = {"name": d.name, "have": have, "newest": newest, "state": what, "level": level, "where": d.where, "package": d.package}
+        out.deps.append(row)
         if what == "current":
             out.lines.append(f"{d.name} {have}: current")
         elif what == "held":
@@ -862,17 +865,19 @@ def check(apply: bool = True, fresh: bool = False, saved: bool = False, progress
                     progress.draw(f"{d.name} {newest}", bad=progress.bad + (d.name in failed))
             if d.name in failed:  # (not moved now: said, and tried again next time)
                 why = failed[d.name]
+                row["state"] = "failed"
                 out.lines.append(f"{d.name} {have} → {newest}: couldn't be moved — {why}")
                 todo = f"Not moved by itself this time ({why}); tried again at the next look. " + (d.cant or f"By hand: {d.where}.")
                 out.prompts.append(f"{d.name} {have} → {newest}: {todo}")
                 out.news.append((d.name, have, newest, "new", todo))
             else:
+                row["state"] = "moved"
                 out.lines.append(f"{d.name} {have} → {newest}: moved")
         elif what == "report":
             out.lines.append(f"{d.name} {have} → {newest}: to be moved")
             on = out.moves_on
-            out.prompts.append(f"{d.name} {have} → {newest}: moved on {on} by itself (tnsync does it, with {on} checked out). To move it now, on {on}: python3 dev/upkeep.py")
-            out.news.append((d.name, have, newest, "minor", f"Moves on {on} by itself: at the next tnsync (or python3 dev/upkeep.py) with {on} checked out."))
+            out.prompts.append(f"{d.name} {have} → {newest}: moved on {on} by itself (devtools does it, with {on} checked out). To move it now, on {on}: python3 dev/upkeep.py")
+            out.news.append((d.name, have, newest, "minor", f"Moves on {on} by itself: at the next devtools (or python3 dev/upkeep.py) with {on} checked out."))
         else:
             why = f"a {level} release behind ({d.where})" if d.bump else f"behind ({d.where})"
             out.lines.append(f"{d.name} {have}: {newest} is out — {why}")
@@ -929,13 +934,13 @@ def _wrap(text: str, indent: str = "") -> list[str]:
 
 
 def box(r: Report | None, where: str | None, error: str = "") -> list[str]:
-    """What tnsync shows: a first line it reads — current (a green box), behind (yellow: new versions upstream), cves
+    """What devtools shows: a first line it reads — current (a green box), behind (yellow: new versions upstream), cves
     (yellow: every one current, but CVEs to act on), unknown (grey) — then the box's
     lines, each fitting it. Behind: what moved here (to test and commit), then what's left to you, each with what to do;
     then the CVEs to act on (dev/cves.py: a warning, nothing fails), and what was left alone."""
     if r is None:
         return ["unknown", "DEPENDENCIES NOT CHECKED  -  UPSTREAM NOT REACHED", "", *_wrap(error or "no answer"),
-                "Nothing is known from this run; tnsync looks again next time."]
+                "Nothing is known from this run; devtools looks again next time."]
     old = ["", "(Upstream not reached now: these are the last look's answers.)"] if r.stale else []
     j = r.cves
     acts = list(j.act) if j is not None else []
@@ -973,6 +978,23 @@ def box(r: Report | None, where: str | None, error: str = "") -> list[str]:
         out += ["", f"{name} {have} → {newest}" + {"major": "  (a major release)", "minor": "", "new": ""}[level] + _fixes(r, name)]
         out += _wrap(todo if level == "minor" else f"To do: {todo}", "  ")
     return out + cve_lines + old
+
+
+def page(r: Report | None, where: str | None, error: str = "", step: str = "") -> dict:
+    """The Dependencies page in the devtools UI (dev/progress.py's detail): the box's first word and its lines, each
+    dependency as a row, what moved and what's left to you, the CVEs as judged, and the Issues as the board has them.
+    ``step``: the board's look or move (DEVTOOLS_UPKEEP), "" for a plain --devtools run."""
+    from dataclasses import asdict
+    lines = box(r, where, error)
+    j = r.cves if r is not None else None
+    return {"kind": "upkeep", "state": lines[0], "head": lines[1], "lines": lines[2:], "where": where or "", "step": step,
+            "stale": bool(r and r.stale), "moves_on": r.moves_on if r is not None else MOVES_ON, "error": error if r is None else "",
+            "deps": [dict(d) for d in r.deps] if r is not None else [], "bumped": list(r.bumped) if r is not None else [],
+            "moved": list(r.moved) if r is not None else [], "prompts": list(r.prompts) if r is not None else [],
+            "news": [{"name": n, "have": have, "newest": newest, "level": level, "todo": todo} for n, have, newest, level, todo in r.news] if r is not None else [],
+            "cves": {**asdict(j), "act": [list(x) for x in j.act], "waiting": [list(x) for x in j.waiting]} if j is not None else None,
+            "future": future_track(),
+            "issues": [{"level": lv, "text": text, "fix": fix} for lv, text, fix in found(r, error)]}
 
 
 def counted_cves(n: int) -> str:
@@ -1019,9 +1041,9 @@ def summary(r: Report | None, error: str = "") -> str:
     return result(*counts, *said, *acts)
 
 
-def _progress(tnsync: bool):
-    """Where the bar goes while it looks (dev/progress.py): on tnsync's board, its Dependencies section (PLEXCACHE_PROGRESS=
-    feed: to stdout, where the board takes it from the box's lines); else the terminal — under tnsync without its board,
+def _progress(devtools: bool):
+    """Where the bar goes while it looks (dev/progress.py): on devtools's board, its Dependencies section (PLEXCACHE_PROGRESS=
+    feed: to stdout, where the board takes it from the box's lines); else the terminal — under devtools without its board,
     which keeps this script's output for its box, straight to it (/dev/tty); else stderr, when that's one. None: nowhere to
     show it (CI, a log)."""
     if ROOT not in sys.path:  # (run as a script: dev/ is on the path, not the project)
@@ -1029,7 +1051,7 @@ def _progress(tnsync: bool):
     from dev.progress import Progress, feeding
     if feeding():
         return Progress(len(DEPS), stream=sys.stdout, unit="looked up", bar="upkeep")
-    if tnsync:
+    if devtools:
         try:
             stream = open("/dev/tty", "w", encoding="utf-8")  # noqa: SIM115 — (kept open for the run)
         except OSError:
@@ -1045,7 +1067,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     ap.add_argument("--fresh", action="store_true", help="ask upstream again rather than using the day's answers")
     ap.add_argument("--report", action="store_true", help="look, but move no pin")
-    ap.add_argument("--tnsync", action="store_true", help="the result as tnsync's box: a first line it reads, then the box (moves pins on dev, as without it)")
+    ap.add_argument("--devtools", action="store_true", help="the result as devtools's box: a first line it reads, then the box (moves pins on dev, as without it)")
+    ap.add_argument("--tnsync", dest="devtools", action="store_true", help=argparse.SUPPRESS)   # (the flag's old name: a .tnsync that still says it)
     ap.add_argument("--cves", metavar="IMAGE", help="GitHub's look: the CVEs to act on in this image docker has (and in what it's built with), "
                                                     "as warnings; moves nothing, and never fails")
     ap.add_argument("--hashes", action="store_true", help="work every pinned download hash and base-image digest out again "
@@ -1058,13 +1081,15 @@ def main() -> int:
         print("\n".join(changed) if changed else "every pinned hash and digest already matches")
         return 0
     where = branch()
-    # (tnsync's board looks while the tests run, TNSYNC_UPKEEP=look, and moves pins only once they're done: =move)
-    move = not args.report and where in (MOVES_ON, MINORS_ON) and os.environ.get("TNSYNC_UPKEEP") != "look"
-    bar = _progress(args.tnsync)
+    # (devtools's board looks while the tests run, DEVTOOLS_UPKEEP=look, and moves pins only once they're done: =move)
+    move = not args.report and where in (MOVES_ON, MINORS_ON) and os.environ.get("DEVTOOLS_UPKEEP") != "look"
+    bar = _progress(args.devtools)
     from dev.progress import (  # (on the board: the box in a line, under its bar, and what it found; _progress put the project on the path)
+        detail,
         issue,
         said,
     )
+    step = os.environ.get("DEVTOOLS_UPKEEP", "") if args.devtools else ""
     try:
         r = check(apply=move, fresh=args.fresh, progress=bar, where=where, cves=True)
         if move:  # the base images' digests follow their tags (how Python's patch releases reach the pinned image)
@@ -1077,9 +1102,10 @@ def main() -> int:
     except Offline as e:
         if bar is not None:
             bar.clear()
-        if args.tnsync:
+        if args.devtools:
             print("\n".join(box(None, where, str(e))))
-            if os.environ.get("TNSYNC_UPKEEP") == "look":   # (nothing to move: the board's second step isn't run)
+            detail(page(None, where, str(e), step))
+            if os.environ.get("DEVTOOLS_UPKEEP") == "look":   # (nothing to move: the board's second step isn't run)
                 from dev.progress import then
                 then(0)
             said(summary(None, str(e)))
@@ -1088,9 +1114,10 @@ def main() -> int:
             return 0
         print(f"Upstream not reached: {e}")
         return 2
-    if args.tnsync:
+    if args.devtools:
         print("\n".join(box(r, where)))
-        if os.environ.get("TNSYNC_UPKEEP") == "look":   # (the board's first step: what its second, once the checks pass, has to move)
+        detail(page(r, where, "", step))
+        if os.environ.get("DEVTOOLS_UPKEEP") == "look":   # (the board's first step: what its second, once the checks pass, has to move)
             from dev.progress import result, tally, then
             moves = len([n for n in r.news if n[3] == "minor"]) if where in (MOVES_ON, MINORS_ON) and not args.report else 0
             then(moves)

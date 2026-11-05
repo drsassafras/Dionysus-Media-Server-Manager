@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The audits page: security audits without the commands (python3 dev/audit.py gui, or a on tnsync's board).
+"""The audits page: security audits without the commands (python3 dev/audit.py gui, or a on devtools's board).
 
     Overview     what the Security Audit block says, what waits to be audited before a push, the files waiting for you
                  to commit
@@ -21,16 +21,13 @@ audit records, a finding's status, rules.toml) and never commits: what's new is 
 """
 
 import datetime
-import http.server
 import json
 import os
-import secrets
 import subprocess
 import sys
 import threading
 import time
 import tomllib
-import urllib.parse
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -512,20 +509,12 @@ def check_rules(text: str) -> list[str]:
 
 # ---------------------------------------------------------------- the server
 def serve(data: Data, open_browser: bool = True, port: int = 0, ready=None, keep: bool = False) -> int:
-    """The page, for as long as it's open and IDLE after. With ``keep`` (dev/audit.py gui), its address and keys are kept
-    (_kept_path) so that, started again, it comes back on the same ones: a tab still open reconnects by itself, and no
-    new one opens unless none does."""
+    """The audits page, served by dev/devpage.py's server (its session, token and beats are the dev pages' shared ones),
+    for as long as it's open and IDLE after. With ``keep`` (dev/audit.py gui), its address and keys are kept (_kept_path)
+    so that, started again, it comes back on the same ones: a tab still open reconnects by itself, and no new one opens
+    unless none does. A tab's beat hears when the page's code has changed since the server started (_code)."""
     old = _kept() if keep else None
-    if old and port and old["port"] != port:
-        old = None
-    token = old["token"] if old else secrets.token_urlsafe(24)
-    session = devpage.Session("audits")
-    if old:
-        session.host, session.secret, session.at = old["host"], old["secret"], str(old.get("at", ""))
-    beats: dict[str, float] = {}
-    code = _code()   # (what it started with: a tab's beat hears when that's changed)
-    lock = threading.Lock()
-    ended = threading.Event()
+    code = _code()   # (what it started with)
     with open(PAGE, encoding="utf-8") as fh:
         page = fh.read().replace("/*THEME*/", devpage.THEME + devpage.BASE, 1)
     routes_get = {"/api/overview": lambda q: data.overview(), "/api/options": lambda q: data.options(),
@@ -538,112 +527,12 @@ def serve(data: Data, open_browser: bool = True, port: int = 0, ready=None, keep
                    "/api/finding": data.finding, "/api/cvss": data.cvss, "/api/confirm": data.confirm,
                    "/api/refresh": data.refresh, "/api/confirm-fixes": data.confirm_fixes, "/api/rules": data.save_rules}
 
-    class Handler(http.server.BaseHTTPRequestHandler):
-        def log_message(self, format, *args):   # noqa: A002  (quiet)
-            pass
-
-        def _host_ok(self) -> bool:   # (the page's browser: this computer's name, its cookie; dev/devpage.py)
-            return session.ok(self, server.server_port)
-
-        def _token_ok(self) -> bool:
-            return secrets.compare_digest(self.headers.get("X-Audit-Token", ""), token)
-
-        def _send(self, code: int, body: bytes, ctype: str, nonce: str = "") -> None:
-            devpage.send(self, code, body, ctype, nonce)
-
-        def _json(self, fn, q) -> None:
-            try:
-                got = fn(q)
-            except (ValueError, OSError, tomllib.TOMLDecodeError) as e:
-                return self._send(400, json.dumps({"error": str(e)}).encode(), "application/json")
-            self._send(200, json.dumps(got, default=str).encode(), "application/json")
-
-        def do_GET(self):
-            where, _, query = self.path.partition("?")
-            if devpage.entry(self, session, server.server_port, where, query):
-                if keep and session.at:
-                    _keep_page({"port": server.server_port, "host": session.host, "secret": session.secret, "token": token, "at": session.at})
-                return None
-            if not self._host_ok():
-                return self._send(403, devpage.REFUSED, "text/plain; charset=utf-8")
-            if where == "/":
-                nonce = secrets.token_urlsafe(18)   # (this response's: its own script and style run, nothing else)
-                return self._send(200, devpage.nonced(page.replace("__TOKEN__", token, 1), nonce).encode(), "text/html; charset=utf-8", nonce)
-            if where not in routes_get or not self._token_ok():
-                return self._send(404 if where not in routes_get else 403, b"", "text/plain")
-            self._json(routes_get[where], {k: v[0] for k, v in urllib.parse.parse_qs(query).items()})
-
-        def do_POST(self):
-            where, _, query = self.path.partition("?")
-            if where in ("/alive", "/bye"):   # (a tab's beat or goodbye: sendBeacon has no headers, so the token's in the address)
-                q = urllib.parse.parse_qs(query)
-                tab, t = (q.get("tab") or [""])[0], (q.get("t") or [""])[0]
-                if not self._host_ok() or not tab or not secrets.compare_digest(t, token):
-                    return self._send(403, b"", "text/plain")
-                with lock:
-                    if where == "/alive":
-                        beats[tab] = time.monotonic()
-                    else:
-                        beats.pop(tab, None)
-                if where == "/alive" and _code() != code:   # (its code changed since it started: the page says to start it again)
-                    return self._send(200, b"stale", "text/plain")
-                return self._send(204, b"", "text/plain")
-            if not self._host_ok() or not self._token_ok() or where not in routes_post:
-                return self._send(403, b"", "text/plain")
-            try:
-                q = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length", "0")), 2_000_000)) or b"{}")
-            except ValueError:
-                return self._send(400, b"", "text/plain")
-            self._json(routes_post[where], q if isinstance(q, dict) else {})
-
-    try:
-        server = http.server.ThreadingHTTPServer(("127.0.0.1", old["port"] if old else port), Handler)
-    except OSError:   # (its old port's taken now: a new address, and a new tab)
-        if not old:
-            raise
-        old, token = None, secrets.token_urlsafe(24)
-        session = devpage.Session("audits")
-        server = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    if keep:
-        _keep_page({"port": server.server_port, "host": session.host, "secret": session.secret, "token": token, "at": session.at})
-    url = session.url(server.server_port)
-    opened = devpage.show(session, server.server_port, open_browser and not old)   # (its code: in that file only, yours to read)
-    print(f"The audits page: {session.address(server.server_port)}  (Ctrl-C to stop; it stops by itself {int(IDLE // 60)} minutes after "
-          f"its page is closed, once no audit is running). " + ("A tab still open reconnects by itself. " if old else "")
-          + f"If no browser opened it: open {opened}")
-
-    def reopen():   # (back on its old address: a tab still open reconnects within seconds; if none does, one is opened)
-        if not ended.wait(10.0):
-            with lock:
-                none = not beats
-            if none:
-                devpage.reopen(opened)
-    if old and open_browser:
-        threading.Thread(target=reopen, daemon=True).start()
-
-    def watch():
-        seen, last = False, time.monotonic()
-        while not ended.wait(2.0):
-            with lock:
-                open_ = [t for t, beat in beats.items() if time.monotonic() - beat < GONE]
-                seen = seen or bool(beats)
-            if open_ or data.runner.live:
-                last = time.monotonic()
-            elif seen and time.monotonic() - last > IDLE:
-                print(f"The audits page was closed {int(IDLE // 60)} minutes ago.")
-                break
-        server.shutdown()
-    threading.Thread(target=watch, daemon=True).start()
-    if ready:
-        ready(server, url, token)
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        ended.set()
-        server.server_close()
-        session.close()
+    def html(token: str) -> str:
+        return page.replace("__TOKEN__", token, 1).replace("/*BEAT*/", devpage.beat(token, 5), 1)
+    devpage.serve("audits", html, routes_get, routes_post, gone=(3.0, GONE), busy=lambda: bool(data.runner.live), port=port,
+                  open_browser=open_browser, ready=ready, linger=IDLE, stale=lambda: _code() != code, kept=old,
+                  keep=_keep_page if keep else None,
+                  note=f"Ctrl-C to stop; it stops by itself {int(IDLE // 60)} minutes after its page is closed, once no audit is running")
     live = list(data.runner.live)
     for rid in live:
         data.runner.cancel(rid)

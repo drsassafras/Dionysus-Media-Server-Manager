@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""The release checks: what has to be true of dev before it's released (merged into main and tagged). tnsync runs them
-in a block of their own with --release (TN_RELEASE in .tnsync), on the code it copies; never on a normal run, so a dev
+"""The release checks: what has to be true of dev before it's released (merged into main and tagged). devtools runs them
+in a block of their own with --release (TN_RELEASE in .devtools), on the code it copies; never on a normal run, so a dev
 run can't fail on what only a release needs.
 
     python3 dev/release.py           # each check, a line each; what to do for one that fails; exit 1 if any fail
-    python3 dev/release.py --tnsync  # tnsync's Release block, every run: the same checks as an overall readiness —
+    python3 dev/release.py --devtools  # devtools's Release block, every run: the same checks as an overall readiness —
                                      # "4 of 7 ready", what's still to go — grey between releases (exit 3), and with
-                                     # --release (TNSYNC_RELEASE=1) the blocking check it always was
+                                     # --release (DEVTOOLS_RELEASE=1) the blocking check it always was
 
 The checks:
 * the version: plexcache/__init__.py's __version__ a new X.Y.0, above what's released (main's version and the newest
@@ -19,7 +19,7 @@ The checks:
 * the security audits: dev/audit.py's release rules, as a --release run holds them;
 * the looks: every look the app wears approved into the style guide (dev/style.py), none waiting.
 
-The released version is read from git: the repository tnsync runs in (TNSYNC_REPO, which tnsync sets, since the code it
+The released version is read from git: the repository devtools runs in (DEVTOOLS_REPO, which devtools sets, since the code it
 tests may be a copy from git rather than a checkout), else this folder.
 """
 
@@ -50,7 +50,7 @@ class Result:
 
 
 def _git(*args: str) -> str | None:
-    repo = os.environ.get("TNSYNC_REPO") or ROOT
+    repo = os.environ.get("DEVTOOLS_REPO") or ROOT
     try:
         got = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True, timeout=20)
     except (OSError, subprocess.TimeoutExpired):
@@ -117,7 +117,7 @@ def check_version(text: str | None = None) -> Result:
 
 def check_translations() -> Result:
     """Every text translated in every language. (Only that: the catalogs in step with the code, and each translation
-    matching its English, are the suite's TranslationTests, which tnsync --release runs as for a release.)"""
+    matching its English, are the suite's TranslationTests, which devtools --release runs as for a release.)"""
     from dev import i18n
     name = "Translations"
     keys = i18n.all_keys([])
@@ -233,11 +233,12 @@ def check_audits() -> Result:
     from dev.progress import FEED
     name = "Security audits"
     try:
+        env = {k: v for k, v in os.environ.items() if k != "PLEXCACHE_PROGRESS"}   # (its words for a reader, not the board's feed)
         got = subprocess.run([sys.executable, os.path.join(ROOT, "dev", "audit.py"), "--release"],
-                             capture_output=True, text=True, timeout=300, cwd=ROOT)
+                             capture_output=True, text=True, timeout=300, cwd=ROOT, env=env)
     except (OSError, subprocess.TimeoutExpired) as e:
         return Result(name, False, f"couldn't be checked: {e}")
-    lines = [ln.strip() for ln in got.stdout.splitlines() if ln.strip() and not ln.startswith(FEED)]
+    lines = [ln.strip() for ln in got.stdout.splitlines() if not ln.startswith(FEED) and ln.strip()]
     line = lines[-1] if lines else f"exit {got.returncode}"
     if got.returncode == 0:
         return Result(name, True, line)
@@ -261,7 +262,7 @@ CHECKS: list[Callable[[], Result]] = [check_version, check_translations, check_m
 
 
 def summary(results: list[Result]) -> str:
-    """The block's line on tnsync's board: the ones that failed, else that all passed."""
+    """The block's line on devtools's board: the ones that failed, else that all passed."""
     failed = [r for r in results if not r.ok]
     if not failed:
         return f"all {len(results)} passed: " + "; ".join(f"{r.name.lower()} {r.line}" for r in results)
@@ -269,10 +270,10 @@ def summary(results: list[Result]) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    from dev.progress import said
-    args = sys.argv[1:] if argv is None else argv
-    board = "--tnsync" in args   # (tnsync's Release block, every run: readiness between releases, the check on one)
-    strict = "--release" in args or os.environ.get("TNSYNC_RELEASE") == "1"
+    from dev.progress import detail, said
+    args = ["--devtools" if a == "--tnsync" else a for a in (sys.argv[1:] if argv is None else argv)]   # (the flag's old name still read)
+    board = "--devtools" in args   # (devtools's Release block, every run: readiness between releases, the check on one)
+    strict = "--release" in args or os.environ.get("DEVTOOLS_RELEASE") == "1"
     results: list[Result] = []
     for check in CHECKS:
         try:
@@ -283,6 +284,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{'✔' if r.ok else '✘'} {r.name}: {r.line}")
         for t in r.todo:
             print(f"    {t}")
+    detail({"kind": "release", "strict": strict or not board, "ready": sum(1 for r in results if r.ok), "total": len(results),   # (its page in the devtools UI)
+            "checks": [{"name": r.name, "ok": r.ok, "line": r.line, "todo": list(r.todo)} for r in results]})
     if board and not strict:   # (how ready dev is, in a line: nothing to block between releases)
         togo = ", ".join(r.name.lower() for r in results if not r.ok)
         ready = sum(1 for r in results if r.ok)

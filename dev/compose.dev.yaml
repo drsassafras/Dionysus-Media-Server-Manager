@@ -1,6 +1,6 @@
 # Dionysus — TEST copy for trying changes on the NAS before pushing.
 #
-# Runs the published image, but with the code replaced by whatever `tnsync`
+# Runs the published image, but with the code replaced by whatever `devtools`
 # last copied to /mnt/ssd/AppConfigs/plex-cache-dev/src/plexcache.
 # It has its own port (8643) and its own settings, so it never touches the
 # real plex-cache app.
@@ -9,7 +9,7 @@
 #   sudo mkdir -p /mnt/ssd/AppConfigs/plex-cache-dev/src /mnt/ssd/AppConfigs/plex-cache-dev/config
 #   sudo chown truenas_admin /mnt/ssd/AppConfigs/plex-cache-dev/src
 #   sudo chown 568:568 /mnt/ssd/AppConfigs/plex-cache-dev/config
-# Then run `tnsync local -N` on your Mac BEFORE installing this app, so the code
+# Then run `devtools local -N` on your Mac BEFORE installing this app, so the code
 # folder exists (otherwise Docker creates an empty one and the app won't start).
 # Install: Apps → Discover Apps → ⋮ → Install via YAML, name it plex-cache-dev.
 #

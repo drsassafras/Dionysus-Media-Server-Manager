@@ -520,7 +520,7 @@ NOT_OVER_MQTT = {
 
 # The keys the discovery messages use, by where they go: what dev/upkeep.py checks against Home Assistant's newest release
 # (still taken, none deprecated or removed), and the suite holds to what's published (test_discovery_keys_are_listed).
-HA_CHECKED = "2026.10.4"   # the Home Assistant release these keys were last checked against (moved by dev/upkeep.py)
+HA_CHECKED = "2026.11.0"   # the Home Assistant release these keys were last checked against (moved by dev/upkeep.py)
 DISCOVERY_KEYS = {
     "entity": {"availability", "availability_mode", "availability_topic", "command_topic", "default_entity_id", "device",
                "device_class", "entity_category", "icon", "json_attributes_template", "json_attributes_topic", "max", "min",

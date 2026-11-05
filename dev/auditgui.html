@@ -153,7 +153,7 @@ function seg(choices, now, set) {
 const preferred = p => (p.default || {}).auditor || p.auditors[0];
 const effortOf = p => String((p.default || {}).thoroughness || Object.keys(p.efforts)[0] || "");
 function put(el, ...kids) { el.replaceChildren(...kids.flat(Infinity).filter(k => k != null && k !== false)); }
-const GONE_SAID = "Lost the page's server. Reconnecting… If it doesn't come back within a minute, start it again with python3 dev/audit.py gui (or a on tnsync's board): this tab picks it up by itself.";
+const GONE_SAID = "Lost the page's server. Reconnecting… If it doesn't come back within a minute, start it again with python3 dev/audit.py gui (or a on devtools's board): this tab picks it up by itself.";
 let stale = null;   // (the server runs older code than is on disk: a banner says to start it again)
 function old() {
   if (stale) return;
@@ -168,7 +168,7 @@ function lost() {
   document.querySelector("main, body").prepend(offline);
   const again = async () => {
     try {
-      const r = await fetch("/api/stamp", {headers: {"X-Audit-Token": TOKEN}});
+      const r = await fetch("/api/stamp", {headers: {"X-Page-Token": TOKEN}});
       if (r.ok) { offline.remove(); offline = null; flash = "Reconnected."; show(tab); return; }
     } catch (e) { /* (still gone) */ }
     setTimeout(again, 3000);
@@ -176,8 +176,8 @@ function lost() {
   setTimeout(again, 3000);
 }
 async function api(path, body) {
-  const r = await fetch(path, body === undefined ? {headers: {"X-Audit-Token": TOKEN}} :
-    {method: "POST", headers: {"X-Audit-Token": TOKEN, "Content-Type": "application/json"}, body: JSON.stringify(body)}).catch(() => { lost(); throw new Error("not connected to the page's server (see the top of the page)."); });
+  const r = await fetch(path, body === undefined ? {headers: {"X-Page-Token": TOKEN}} :
+    {method: "POST", headers: {"X-Page-Token": TOKEN, "Content-Type": "application/json"}, body: JSON.stringify(body)}).catch(() => { lost(); throw new Error("not connected to the page's server (see the top of the page)."); });
   const got = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(got.error || r.statusText);
   return got;
@@ -793,14 +793,9 @@ async function rules(view) {
       " days, or until it's " + (got.dev.grace_share ?? 10) + "% of the app code."));
 }
 
-// ---------------------------------------------------------------- open while the page is
-(function () {
-  const id = Math.random().toString(36).slice(2), q = "?tab=" + id + "&t=" + encodeURIComponent(TOKEN);
-  const beat = () => fetch("/alive" + q, {method: "POST"}).then(r => { if (r.status === 200) old(); }, lost);   // (no answer: the server is gone; "stale": it runs old code)
-  beat(); setInterval(beat, 5000);
-  addEventListener("visibilitychange", () => { if (!document.hidden) beat(); });   // (back in front: say so at once)
-  addEventListener("pagehide", () => navigator.sendBeacon("/bye" + q));
-})();
+// ---------------------------------------------------------------- open while the page is (dev/devpage.py's beat: "stale" says the server runs old code, no answer that it's gone)
+window.pageStale = old; window.pageLost = lost;
+/*BEAT*/
 show("overview").then(preload);
 </script>
 </body>

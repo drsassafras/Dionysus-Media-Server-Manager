@@ -1,0 +1,408 @@
+<!doctype html>
+<html lang="en" data-theme="classic" data-mode="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>devtools</title>
+<link rel="stylesheet" href="/static/app.css">
+<style>
+/*THEMES*/
+/*EXTRA*/
+</style>
+</head>
+<body>
+<div class="shell" id="shell">
+  <aside class="side">
+    <div class="brand">devtools<small id="brandsub">the board, in the browser</small></div>
+    <nav id="nav" aria-label="Pages"></nav>
+    <div class="sidepick">
+      <div class="seg small" role="tablist" aria-label="Theme" id="themepick"></div>
+      <div class="seg small" role="tablist" aria-label="Light or dark" id="modepick"></div>
+    </div>
+  </aside>
+  <main class="main" id="main" tabindex="-1"></main>
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script>
+/*THEME_JS*/
+const TOKEN = "__TOKEN__";
+const STATES = {pass: "b-pass", warn: "b-warn", fail: "b-fail", running: "b-running", waiting: "b-waiting", stopped: "b-stopped",
+                skipped: "b-info", notrun: "b-info", info: "b-info"};
+const DOTS = {pass: "ok", warn: "warn", fail: "fail", stopped: "warn", running: "run", waiting: "wait"};
+let VIEW = null, WHERE = "hub", LOGS = {}, DETAILS = {}, TIMER = null;
+
+// ---------------------------------------------------------------- talking to the server
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {headers: {"X-Page-Token": TOKEN}} :
+    {method: "POST", headers: {"X-Page-Token": TOKEN, "Content-Type": "application/json"}, body: JSON.stringify(body)});
+  const got = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(got.error || ("HTTP " + r.status));
+  return got;
+}
+function toast(text, err) {
+  const t = document.getElementById("toast");
+  t.textContent = text; t.className = "toast show" + (err ? " err" : "");
+  clearTimeout(t._t); t._t = setTimeout(() => { t.className = "toast"; }, err ? 6000 : 2500);
+}
+
+// ---------------------------------------------------------------- bits
+function h(tag, attrs, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "class") el.className = v; else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else if (v !== null && v !== undefined && v !== false) el.setAttribute(k, v === true ? "" : v);
+  }
+  for (const kid of kids.flat()) if (kid !== null && kid !== undefined && kid !== false) el.append(kid.nodeType ? kid : String(kid));
+  return el;
+}
+function lettered(title, letter) {   // the block's title with its letter underlined, as the board draws it
+  const low = title.toLowerCase(), l = (letter || "").toLowerCase();
+  let at = -1;
+  if (l) { for (let i = 0; i < low.length; i++) if (low[i] === l && (i === 0 || low[i - 1] === " ")) { at = i; break; } if (at < 0) at = low.indexOf(l); }
+  if (at < 0) return h("span", {}, title);
+  return h("span", {}, title.slice(0, at), h("u", {class: "letter"}, title[at]), title.slice(at + 1));
+}
+function badge(b) {
+  const text = (b.status || b.state || "").toLowerCase();
+  return h("span", {class: "badge " + (STATES[b.shown || b.state] || "b-info")}, text);
+}
+function took(a, b) {
+  if (!a) return "";
+  const s = Math.max(0, Math.floor((b || Date.now() / 1000) - a));
+  return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+}
+function ago(t) {
+  if (!t) return "";
+  const s = Math.floor(Date.now() / 1000 - t);
+  if (s < 60) return "just now";
+  const units = [[31557600, "year"], [2629800, "month"], [604800, "week"], [86400, "day"], [3600, "hour"], [60, "minute"]];
+  for (const [n, u] of units) if (s >= n) { const k = Math.floor(s / n); return k + " " + u + (k === 1 ? "" : "s") + " ago"; }
+  return "";
+}
+function when(t) { return t ? new Date(t * 1000).toLocaleString() : ""; }
+function meter(b) {   // the block's bar, as the board has it: a run of tests' counts, else done of total
+  const bar = b.bar;
+  if (!bar || (!bar.total && !bar.label)) return null;
+  const pct = bar.total ? Math.min(100, Math.round(100 * bar.done / bar.total)) : 0;
+  // the app's own progress bar (app.css .meter, its state ok, warn or bad; the theme draws it: decor.js). Its width set by
+  // script: a style="…" in markup is what the page's Content-Security-Policy forbids
+  const fill = h("div", {});
+  fill.style.width = pct + "%";
+  const state = b.shown === "fail" || bar.bad ? " bad" : b.shown === "warn" ? " warn" : b.state === "pass" ? " ok" : "";
+  const counts = bar.tests ? [bar.bad ? bar.bad + " failed" : null, bar.warned ? bar.warned + " warnings" : null, bar.done + " / " + bar.total].filter(Boolean).join(" · ")
+                           : (bar.total ? bar.done + " / " + bar.total + (bar.unit ? " " + bar.unit : "") : "");
+  return h("div", {class: "barbox"}, h("div", {class: "meter" + state, role: "progressbar", "aria-valuenow": pct, "aria-valuemin": 0, "aria-valuemax": 100}, fill),
+    h("div", {class: "barline"}, h("span", {class: "mono"}, counts), h("span", {class: "muted"}, bar.label || "")));
+}
+function busy() { return VIEW && VIEW.job && VIEW.job.running; }
+function runBtn(label, fn, pri) {
+  return h("button", {class: "btn" + (pri ? " pri" : ""), disabled: busy() ? true : null, onclick: async (e) => {
+    e.target.disabled = true;
+    try { const got = await fn(); toast("Started: " + got.what); poll(); } catch (err) { toast(err.message, true); e.target.disabled = false; }
+  }}, label);
+}
+
+// ---------------------------------------------------------------- the pages
+function render() {
+  if (!VIEW) return;
+  renderNav();
+  const main = document.getElementById("main");
+  // the page's parts straight in <main>, as the app's are, so the theme finds them (decor.js: the film under .main > .top)
+  const page = WHERE === "hub" ? hub() : WHERE === "runs" ? runs() : block(WHERE);
+  main.className = ["main", page.className].filter(Boolean).join(" ");
+  main.replaceChildren(...Array.from(page.childNodes));
+  document.title = (WHERE === "hub" ? "devtools" : WHERE === "runs" ? "runs" : (VIEW.blocks.find(b => b.id === WHERE) || {title: WHERE}).title) + " · devtools";
+}
+// each place's icon in the sidebar (drawn as the app's menu draws its own: a 24-square stroke, the block's dot on its corner)
+const ICONS = {
+  hub: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
+  current: '<path d="M9 3h6M10 3v6.5L4.5 19a1.5 1.5 0 0 0 1.3 2.2h12.4a1.5 1.5 0 0 0 1.3-2.2L14 9.5V3"/><path d="M7.5 15h9"/>',
+  future: '<path d="M4.5 16.5c-1.5 1.3-2 5-2 5s3.7-.5 5-2c.7-.8.7-2 0-2.8a2 2 0 0 0-3-.2z"/><path d="M12 15l-3-3a22 22 0 0 1 2-3.9A12.5 12.5 0 0 1 22 2a12.5 12.5 0 0 1-6.1 11 22 22 0 0 1-3.9 2z"/><path d="M9 12H4s.6-3.3 2-4.5c1.6-1.3 5 0 5 0M12 15v5s3.3-.6 4.5-2c1.3-1.6 0-5 0-5"/>',
+  validate: '<path d="m16 18 6-6-6-6M8 6l-6 6 6 6M14.5 4l-5 16"/>',
+  types: '<path d="M4 7V4h16v3M9 20h6M12 4v16"/>',
+  build: '<path d="M21 16V8a2 2 0 0 0-1-1.7l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.7l7 4a2 2 0 0 0 2 0l7-4a2 2 0 0 0 1-1.7z"/><path d="m3.3 7 8.7 5 8.7-5M12 22V12"/>',
+  coverage: '<path d="M22 12a10.1 10.1 0 0 0-20 0z"/><path d="M12 12v6.5a2.5 2.5 0 0 0 5 0M12 2v1"/>',
+  audit: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/>',
+  i18n: '<circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>',
+  release: '<path d="M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0L2 12V2h10l8.6 8.6a2 2 0 0 1 0 2.8z"/><circle cx="7" cy="7" r="1.2"/>',
+  upkeep: '<path d="M16.5 9.4 7.5 4.2"/><path d="M21 16V8a2 2 0 0 0-1-1.7l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.7l7 4a2 2 0 0 0 2 0l7-4a2 2 0 0 0 1-1.7z"/><path d="m3.3 7 8.7 5 8.7-5M12 22V12"/>',
+  style: '<path d="M12 22a10 10 0 1 1 10-10c0 2.8-2.2 4-4.5 4H15a2 2 0 0 0-1.5 3.3c.4.5.5 1 .5 1.5 0 .7-.6 1.2-2 1.2z"/><circle cx="7.5" cy="11" r="1.2"/><circle cx="10.5" cy="7" r="1.2"/><circle cx="15.5" cy="7.5" r="1.2"/>',
+  sync: '<path d="M4 14.9A7 7 0 1 1 15.7 8h1.8a4.5 4.5 0 0 1 2.5 8.2"/><path d="M12 12v9M8 16l4-4 4 4"/>',
+  runs: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
+  block: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M8 12h8M8 8h8M8 16h5"/>'
+};
+function ico(id) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", "ico pic"); svg.setAttribute("viewBox", "0 0 24 24"); svg.setAttribute("aria-hidden", "true");
+  svg.innerHTML = ICONS[id] || ICONS.block;
+  return svg;
+}
+function renderNav() {
+  const nav = document.getElementById("nav");
+  const item = (id, label, dot, letter) => h("a", {class: "nav" + (WHERE === id ? " on" : ""), href: "#" + id, onclick: (e) => { e.preventDefault(); go(id); }},
+    h("span", {class: "icon"}, ico(id), dot ? h("span", {class: "dot " + dot}) : null), label);
+  nav.replaceChildren(item("hub", lettered("Hub", "u"), VIEW.live ? "run" : "ok", "u"),
+    ...VIEW.blocks.map(b => item(b.id, lettered(b.title, b.page), DOTS[b.shown || b.state] || "wait", b.page || "")),
+    item("runs", "Runs", "", ""));
+  document.getElementById("brandsub").textContent = VIEW.header && VIEW.header[0] ? VIEW.header[0] : "the board, in the browser";
+}
+function actions(extra) {
+  const sync = h("label", {class: "chk"}, h("input", {type: "checkbox", id: "restart"}), "restart the app after the copy");
+  return h("div", {class: "acts"},
+    runBtn("Run the checks again", () => api("/api/scan", {}), true),
+    runBtn("Sync to TrueNAS", () => api("/api/sync", {restart: document.getElementById("restart").checked})), sync, ...(extra || []));
+}
+function liveLine() {
+  if (busy()) return h("div", {class: "banner bn-testing"}, h("span", {class: "light l-testing"}), "Running " + VIEW.job.what + "…");
+  if (VIEW.live) return h("div", {class: "banner bn-testing"}, h("span", {class: "light l-testing"}), "A run is under way: " + ((VIEW.live.header || [])[0] || VIEW.live.kind));
+  if (VIEW.job && VIEW.job.rc !== null && VIEW.job.rc !== undefined && VIEW.job.rc !== 0)
+    return h("div", {class: "banner bn-warn"}, h("span", {class: "light l-warn"}), "The last run from here ended with exit " + VIEW.job.rc + " (its blocks say why)");
+  return null;
+}
+function hub() {
+  const sub = [VIEW.commit, VIEW.mode ? "devtools " + VIEW.mode + (VIEW.release ? " --release" : "") : "", VIEW.started ? "started " + ago(VIEW.started) : "",
+               VIEW.started ? "took " + took(VIEW.started, VIEW.ended) : ""].filter(Boolean).join(" · ");
+  return h("div", {},
+    h("div", {class: "top"}, h("div", {}, h("h1", {}, (VIEW.header || [])[0] || "No run yet"), h("div", {class: "sub"}, sub)), actions()),
+    liveLine(),
+    h("div", {class: "blocks"}, ...VIEW.blocks.map(card)),
+    VIEW.blocks.length ? null : h("div", {class: "card"}, h("p", {class: "hint"}, "No record yet: run devtools, or press Run the checks again.")));
+}
+function card(b) {
+  return h("section", {class: "card block st-" + (b.shown || b.state), "aria-label": b.title},
+    h("div", {class: "head"}, h("h2", {}, h("a", {href: "#" + b.id, onclick: (e) => { e.preventDefault(); go(b.id); }}, lettered(b.title, b.page || b.key))), badge(b)),
+    meter(b),
+    h("div", {class: "det"}, b.last || ""),
+    b.before ? h("div", {class: "before muted"}, "last time: " + (b.before.status || "").toLowerCase() + (b.before.last ? " · " + b.before.last : "") + (b.before.ended ? " · " + ago(b.before.ended) : "")) : null,
+    h("div", {class: "acts"}, h("button", {class: "btn", onclick: () => go(b.id)}, "Open"), runBtn("Run again", () => api("/api/rerun", {id: b.id})),
+      h("span", {class: "muted small"}, b.started ? took(b.started, b.ended) : "")));
+}
+function block(id) {
+  const b = VIEW.blocks.find(x => x.id === id);
+  if (!b) return h("div", {class: "card"}, h("p", {}, "No block called " + id + "."), h("button", {class: "btn", onclick: () => go("hub")}, "Back to the hub"));
+  const page = h("div", {class: "stack"});
+  page.append(h("div", {class: "top"}, h("div", {}, h("h1", {}, lettered(b.title, b.page || b.key)),
+    h("div", {class: "sub"}, [b.started ? "took " + took(b.started, b.ended) : "", b.run ? "run " + b.run : ""].filter(Boolean).join(" · "))),
+    h("div", {class: "acts"}, runBtn("Run again", () => api("/api/rerun", {id: b.id}), true))));
+  const tone = {pass: "ok", fail: "fail", warn: "warn", stopped: "warn", running: "run", waiting: "wait"}[b.shown || b.state] || "wait";
+  page.append(h("div", {class: "banner state bn-" + tone}, h("span", {class: "light l-" + tone}), h("span", {class: "word"}, (b.status || b.state || "").toLowerCase()),
+    b.last ? h("span", {class: "says"}, b.last) : null));
+  const bar = meter(b);
+  if (bar) page.append(h("div", {class: "card"}, bar));
+  if (b.before) page.append(h("div", {class: "card"}, h("h2", {}, "Last time"), h("div", {class: "det"}, (b.before.status || "").toLowerCase() + (b.before.last ? " · " + b.before.last : "") + (b.before.ended ? " · " + when(b.before.ended) : ""))));
+  const detail = DETAILS[id];
+  if (b.detail && detail === undefined) { DETAILS[id] = null; api("/api/detail?id=" + encodeURIComponent(id)).then(d => { DETAILS[id] = d; if (WHERE === id) render(); }).catch(err => { DETAILS[id] = {error: err.message}; if (WHERE === id) render(); }); }
+  if (detail && detail.detail) page.append(...(PAGES[id] || KINDS[detail.detail.kind] || generic)(detail.detail, b));
+  else if (detail && detail.error) page.append(h("div", {class: "card"}, h("h2", {}, "Detail"), h("p", {class: "hint"}, "Couldn't be read: " + detail.error)));
+  else if (!b.detail && b.cmd && /--(devtools|tnsync)\b/.test(b.cmd) === false && !/^printf/.test(b.cmd) && b.state !== "waiting")
+    page.append(h("div", {class: "card"}, h("h2", {}, "Detail"), h("p", {class: "hint"}, "This block's tool wrote no page: it's run as “" + b.cmd + "”. The tools write their page with --devtools (in .devtools: " + (b.id === "i18n" ? "TN_I18N=python3 dev/i18n.py --devtools" : b.id === "upkeep" ? "TN_UPKEEP=python3 dev/upkeep.py --devtools" : b.id === "coverage" ? "TN_COVERAGE=python3 dev/coverage.py --devtools" : b.id === "release" ? "TN_RELEASE=python3 dev/release.py --devtools" : "the command with --devtools") + ").")));
+  if (b.issues && b.issues.length) page.append(h("div", {class: "card"}, h("h2", {}, "Issues"),
+    ...b.issues.map(i => h("div", {class: "row"}, h("span", {class: "badge " + (i.level === "error" ? "b-fail" : i.level === "warning" ? "b-warn" : "b-info")}, i.level),
+      h("div", {class: "grow"}, h("div", {class: "what"}, i.text), i.fix ? h("div", {class: "fix mono"}, i.fix) : null)))));
+  const out = h("div", {class: "card"}, h("div", {class: "head"}, h("h2", {}, "Output"), h("button", {class: "link", onclick: () => { delete LOGS[id]; render(); }}, "refresh")));
+  if (LOGS[id] === undefined) { LOGS[id] = null; api("/api/log?id=" + encodeURIComponent(id)).then(l => { LOGS[id] = l; if (WHERE === id) render(); }).catch(err => { LOGS[id] = {error: err.message}; if (WHERE === id) render(); }); }
+  const log = LOGS[id];
+  out.append(log && log.text ? h("pre", {class: "log out"}, (log.cut ? "… (cut: the first part only)\n" : "") + log.text)
+    : h("p", {class: "hint"}, log === null ? "Loading…" : log.error ? "Couldn't be read: " + log.error : b.state === "waiting" ? "Not started yet." : b.state === "running" ? "Nothing printed yet." : "Nothing printed."));
+  page.append(out);
+  return page;
+}
+function generic(detail) {   // a block's detail with no page of its own yet: its facts, one a row
+  const rows = Object.entries(detail).filter(([k, v]) => typeof v !== "object" || v === null);
+  return [h("div", {class: "card"}, h("h2", {}, "Detail"), ...rows.map(([k, v]) => h("div", {class: "row"}, h("div", {class: "grow"}, h("div", {class: "what"}, k), h("div", {class: "det"}, String(v))))))];
+}
+const PAGES = {};   // a page of its own per block id (a renderer of its detail), over the kind's
+// ---------------------------------------------------------------- the pages, by what the tool wrote (dev/progress.py's detail)
+function tile(n, label, state) {
+  return h("div", {class: "card tile rtile " + (state || "")}, h("div", {class: "big"}, n, h("small", {}, " " + label)));
+}
+function pre(text) { return h("pre", {class: "log out"}, text); }
+function secs(s) { s = Math.max(0, Math.round(s || 0)); return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); }
+function download(name, text) {   // a file of the page's own making, saved by the browser
+  const a = h("a", {href: URL.createObjectURL(new Blob([text], {type: "application/json"})), download: name});
+  document.body.append(a); a.click(); a.remove();
+}
+const KINDS = {
+  upkeep(d) {   // dev/upkeep.py: each dependency as it stands, what moved and what's left to you, the CVEs as judged
+    const tone = {current: "ok", behind: "warn", cves: "warn", unknown: "fail"}[d.state] || "warn";
+    const deps = d.deps || [], news = d.news || [], j = d.cves;
+    const STATE = {current: ["b-pass", "current"], held: ["b-info", "held by choice"], "for dev": ["b-info", "a major, for dev"], move: ["b-running", "moving"], moved: ["b-pass", "moved here"],
+      failed: ["b-fail", "couldn't be moved"], report: ["b-warn", "to be moved"], behind: ["b-warn", "behind"]};
+    const out = [h("div", {class: "banner bn-" + tone}, h("span", {class: "light l-" + tone}), (d.head || "").replace(/  -  /g, " · ") + (d.where ? " · on " + d.where : "") + (d.step === "look" ? " · looked, not moved yet (the checks first)" : "") + (d.stale ? " · upstream not reached now: the last look's answers" : ""))];
+    if (!d.error) out.push(h("div", {class: "tiles rtiles"}, tile(deps.length, "dependencies"), tile(deps.filter(x => x.state === "current").length, "current", "r-ok"),
+      tile((d.moved || []).length, "moved here", (d.moved || []).length ? "r-ok" : ""), tile(news.filter(x => x.level !== "minor").length, "for you", news.some(x => x.level !== "minor") ? "r-warn" : ""),
+      tile(news.filter(x => x.level === "minor").length, "to move on " + (d.moves_on || "main")), tile(j ? j.shown : "—", j ? (j.shown === 1 ? "CVE to act on" : "CVEs to act on") : "CVEs not looked at", j && j.shown ? "r-warn" : j ? "r-ok" : "")));
+    if (d.error) out.push(h("div", {class: "card"}, h("h2", {}, "Upstream not reached"), h("div", {class: "det"}, d.error)));
+    if (deps.length) out.push(h("div", {class: "card"}, h("h2", {}, "Each dependency"),
+      h("div", {class: "tbl-wrap"}, h("table", {class: "tbl"}, h("thead", {}, h("tr", {}, h("th", {}, "Dependency"), h("th", {}, "Pinned"), h("th", {}, "Newest"), h("th", {}, ""), h("th", {}, "Where"))),
+        h("tbody", {}, ...deps.map(x => { const st = STATE[x.state] || ["b-info", x.state]; return h("tr", {}, h("td", {}, x.name), h("td", {class: "mono nw"}, x.have), h("td", {class: "mono nw"}, x.newest),
+          h("td", {class: "nw"}, h("span", {class: "badge " + st[0]}, st[1] + (x.level === "major" && x.state !== "for dev" ? " (major)" : ""))), h("td", {class: "muted small"}, x.where)); }))))));
+    if (d.bumped && d.bumped.length) out.push(h("div", {class: "card"}, h("h2", {}, "Moved here"), h("p", {class: "hint"}, "Run the tests, then commit them."), h("div", {class: "log"}, ...d.bumped.map(x => h("div", {}, x)))));
+    if (news.length) out.push(h("div", {class: "card"}, h("h2", {}, "What's new upstream"), ...news.map(x => h("div", {class: "row"}, h("span", {class: "badge " + (x.level === "minor" ? "b-info" : "b-warn")}, x.level === "minor" ? "moves by itself" : x.level === "major" ? "major" : "for you"),
+      h("div", {class: "grow"}, h("div", {class: "what"}, x.name + " " + x.have + " → " + x.newest), h("div", {class: "det"}, x.todo))))));
+    if (j) {
+      const tally = [j.quiet ? j.quiet + " being fixed upstream" : "", j.debian ? j.debian + " Debian with no fix" : "", j.decided ? j.decided + " decided (DECISIONS in dev/cves.py)" : ""].filter(Boolean).join(", ");
+      out.push(h("div", {class: "card"}, h("h2", {}, "CVEs"), h("p", {class: "hint"}, "dev/cves.py's look (OSV, NVD, Trivy), judged against what's moving: a warning, never a prompt." + (tally ? " Left alone: " + tally + "." : "")),
+        ...(j.act || []).map(([what, todo]) => h("div", {class: "row"}, h("span", {class: "badge b-warn"}, "to act on"), h("div", {class: "grow"}, h("div", {class: "what"}, what), h("div", {class: "det"}, todo)))),
+        ...(j.waiting || []).map(([what, why]) => h("div", {class: "row"}, h("span", {class: "badge b-info"}, "waiting"), h("div", {class: "grow"}, h("div", {class: "what"}, what), h("div", {class: "det"}, why)))),
+        ...(j.notes || []).map(n => h("p", {class: "hint"}, n)),
+        !(j.act || []).length && !(j.waiting || []).length ? h("div", {class: "det"}, "Nothing to act on.") : null));
+    }
+    if (d.future) out.push(h("p", {class: "hint"}, "The future run (dev/future.py) last chose: " + d.future));
+    if (d.lines && d.lines.length) out.push(h("div", {class: "card"}, h("details", {}, h("summary", {}, "The box, as the board shows it"), pre(d.lines.join("\n")))));
+    return out;
+  },
+  sync(d) {   // the copy (devtools's sync step): what went where, each file as rsync listed it
+    const ok = !/^failed|couldn't/.test(d.result || ""), out = [];
+    out.push(h("div", {class: "banner " + (ok ? "bn-ok" : "bn-fail")}, h("span", {class: "light " + (ok ? "l-ok" : "l-fail")}),
+      (d.result || "").replace(/^./, c => c.toUpperCase()) + " · " + d.changed + (d.changed === 1 ? " file" : " files") + (d.dry_run ? " would change" : " changed") + " · devtools " + d.mode + (d.restart ? " -y" : "")));
+    out.push(h("div", {class: "tiles rtiles"}, tile(d.changed, d.dry_run ? "would be copied" : "copied", d.changed ? "r-ok" : ""), tile((d.paths || []).length, (d.paths || []).length === 1 ? "path" : "paths"),
+      tile(d.restarted ? "yes" : "no", "restarted " + d.app, d.restarted ? "r-ok" : d.restart && !d.dry_run ? "r-fail" : "")));
+    out.push(h("div", {class: "card"}, h("h2", {}, "Where"), h("div", {class: "row"}, h("div", {class: "grow"}, h("div", {class: "what"}, "From"), h("div", {class: "det mono"}, d.source))),
+      h("div", {class: "row"}, h("div", {class: "grow"}, h("div", {class: "what"}, "To"), h("div", {class: "det mono"}, d.user + "@" + d.host + ":" + d.dest))),
+      h("div", {class: "row"}, h("div", {class: "grow"}, h("div", {class: "what"}, "Paths"), h("div", {class: "det mono"}, (d.paths || []).join("  "))))));
+    if (d.files && d.files.length) out.push(h("div", {class: "card"}, h("details", {open: d.files.length <= 40 ? true : null}, h("summary", {}, d.files.length + (d.files.length === 1 ? " file" : " files") + (d.dry_run ? " that would be copied" : " copied")), h("div", {class: "log mono"}, ...d.files.map(f => h("div", {}, f))))));
+    return out;
+  },
+  i18n(d) {   // dev/i18n.py: how far each language is, what each still needs (its export), what's wrong in a catalog
+    const langs = d.languages || [], texts = d.texts || [], complete = langs.filter(l => l.done === l.total).length;
+    const out = [h("div", {class: "banner " + (d.strict ? (complete === langs.length ? "bn-ok" : "bn-fail") : "bn-warn")}, h("span", {class: "light " + (d.strict ? (complete === langs.length ? "l-ok" : "l-fail") : "l-warn")}),
+      d.strict ? "Every text must be translated here (main ships complete)" + (complete === langs.length ? ": it is." : ": " + (langs.length - complete) + " of " + langs.length + " languages aren't.") : "Between releases the catalogs may lag: this only tells how far they are. A release completes them.")];
+    out.push(h("div", {class: "tiles rtiles"}, tile(d.pct + "%", "translated", d.pct >= 100 ? "r-ok" : d.strict ? "r-fail" : ""), tile(langs.length, "languages"), tile(texts.length, "texts"),
+      tile(complete, "complete", complete === langs.length ? "r-ok" : ""), tile((d.leftovers || []).length, "texts not through T()", (d.leftovers || []).length ? "r-warn" : "r-ok")));
+    const exporter = (l) => download(l.code + "-needs.json", JSON.stringify(Object.fromEntries(l.needs.map(i => texts[i])), null, 1) + "\n");
+    out.push(h("div", {class: "card"}, h("div", {class: "head"}, h("h2", {}, "Each language"), h("span", {class: "hint"}, "Export: what the language still needs, as python3 dev/i18n.py missing gives it — translate the values, then python3 dev/i18n.py merge <code> <file>.")),
+      h("div", {class: "tbl-wrap"}, h("table", {class: "tbl"}, h("thead", {}, h("tr", {}, h("th", {}, "Language"), h("th", {}, "Code"), h("th", {}, "Translated"), h("th", {}, ""), h("th", {}, "To do"), h("th", {}, "Catalog"), h("th", {}, ""))),
+        h("tbody", {}, ...langs.map(l => h("tr", {}, h("td", {}, l.name), h("td", {class: "mono"}, l.code), h("td", {class: "nw"}, l.done + " / " + l.total),
+          h("td", {class: "nw"}, h("span", {class: "badge " + (l.pct >= 100 ? "b-pass" : l.pct >= 50 ? "b-info" : "b-warn")}, l.pct + "%")), h("td", {class: "nw"}, String(l.needs.length)),
+          h("td", {}, l.problems.length ? h("span", {class: "badge b-fail"}, l.problems.length + (l.problems.length === 1 ? " problem" : " problems")) : h("span", {class: "badge b-pass"}, "ok")),
+          h("td", {class: "nw"}, l.needs.length ? h("button", {class: "btn sm", onclick: () => exporter(l)}, "Export") : null)))))),
+      ...(d.variants || []).map(v => h("p", {class: "hint"}, v.name + " (" + v.code + "): " + v.spellings + (v.spellings === 1 ? " spelling differs" : " spellings differ") + (v.problems.length ? " · " + v.problems.length + " problems" : "")))));
+    const bad = [...langs, ...(d.variants || [])].filter(l => l.problems.length);
+    if (bad.length) out.push(h("div", {class: "card"}, h("h2", {}, "What's wrong in the catalogs"), h("p", {class: "hint"}, "Placeholders, tags or plural forms that differ from the English: python3 dev/i18n.py check says the same."),
+      ...bad.map(l => h("details", {open: true}, h("summary", {}, l.name + " (" + l.code + "): " + l.problems.length), h("div", {class: "log"}, ...l.problems.map(x => h("div", {}, x)))))));
+    if (d.problems && d.problems.length) out.push(h("div", {class: "card"}, h("details", {}, h("summary", {}, d.problems.length + " notes from reading the code"), h("div", {class: "log"}, ...d.problems.map(x => h("div", {}, x))))));
+    if (d.leftovers && d.leftovers.length) out.push(h("div", {class: "card"}, h("details", {}, h("summary", {}, d.leftovers.length + " English texts in app.js that don't go through T()/H()"), h("p", {class: "hint"}, "python3 dev/i18n.py leftovers — each may be fine (a selector, a name) or a text the app can't translate."),
+      h("div", {class: "log"}, ...d.leftovers.map(x => h("div", {}, x))))));
+    if (d.tools) out.push(...KINDS.checks(d));
+    return out;
+  },
+  release(d) {   // dev/release.py: each thing that has to be true before dev is released, and what to do for one that isn't
+    const checks = d.checks || [], ready = d.ready === d.total;
+    const out = [h("div", {class: "banner " + (ready ? "bn-ok" : d.strict ? "bn-fail" : "bn-warn")}, h("span", {class: "light " + (ready ? "l-ok" : d.strict ? "l-fail" : "l-warn")}),
+      d.ready + " of " + d.total + (ready ? " ready: dev can be released." : " ready" + (d.strict ? " — this is a release run, so the rest block it." : " — between releases this only says what's still to go.")))];
+    out.push(h("div", {class: "card"}, h("div", {class: "lights"}, ...checks.map(c => h("div", {class: "lightrow"}, h("span", {class: "light " + (c.ok ? "l-ok" : d.strict ? "l-fail" : "l-warn")}),
+      h("div", {class: "grow"}, h("div", {class: "what"}, c.name), h("div", {class: "det"}, c.line), c.todo.length ? h("div", {class: "fix mono"}, ...c.todo.map(t => h("div", {}, t))) : null))))));
+    return out;
+  },
+  future(d) {   // dev/future.py: the channels' choices, the build, and the suite's own account from each container
+    const out = [];
+    const build = d.build || {};
+    out.push(h("div", {class: "banner " + (build.ok === false ? "bn-fail" : build.ok ? "bn-ok" : "bn-warn")}, h("span", {class: "light " + (build.ok === false ? "l-fail" : build.ok ? "l-ok" : "l-warn")}),
+      "python:" + d.python + " — " + (build.ok === false ? "the image doesn't build" : build.ok ? "the image built" + (build.steps ? " in " + build.steps + " steps" : "") : "the image wasn't built") + (d.note ? " · " + d.note : "")));
+    if (d.picks && d.picks.length) out.push(h("div", {class: "card"}, h("h2", {}, "The future stack"), h("p", {class: "hint"}, "Each dependency's newest pre-release when it's ahead of its stable release, else that release."),
+      h("div", {class: "tbl-wrap"}, h("table", {class: "tbl"}, h("thead", {}, h("tr", {}, h("th", {}, "Dependency"), h("th", {}, "Version"), h("th", {}, "Channel"), h("th", {}, "Why"))),
+        h("tbody", {}, ...d.picks.map(p => h("tr", {}, h("td", {}, p.name), h("td", {class: "mono"}, p.version), h("td", {}, h("span", {class: "badge " + (p.channel === "pin" || p.channel === "stable" ? "b-info" : "b-running")}, p.channel)), h("td", {class: "muted"}, p.why || ""))))))));
+    for (const [name, part] of Object.entries(d.parts || {})) {
+      const r = (d.results || {})[name] || {};
+      out.push(h("div", {class: "head"}, h("h2", {}, name === "plain" ? "The tests that need no tools, on the plain Python image" : name === "image" ? "The tests in the image" : name),
+        h("span", {class: "badge " + (r.rc === 0 ? "b-pass" : r.rc === undefined ? "b-info" : "b-fail")}, r.rc === 0 ? "passed" : r.rc === undefined ? "not run" : "failed")));
+      if (part) out.push(...KINDS.tests(part)); else if (r.last) out.push(h("div", {class: "card"}, h("div", {class: "det"}, r.last)));
+    }
+    return out;
+  },
+  coverage(d) {   // dev/coverage.py: the totals, each file, the fresh functions, then the rules' findings (a checks page)
+    const t = d.totals || {}, rules = d.rules || {};
+    const out = [h("div", {class: "tiles rtiles"},
+      tile(t.settled_pct + "%", "of settled lines run", t.settled_pct >= rules.settled ? "r-ok" : "r-warn"),
+      tile(t.pct + "%", "of every line run", d.release ? (t.pct >= rules.release ? "r-ok" : "r-fail") : ""),
+      tile(t.fresh_reached + " / " + t.fresh_units, "fresh functions reached", t.fresh_reached === t.fresh_units ? "r-ok" : "r-warn"),
+      tile(t.fresh, "fresh lines"), tile(t.lines, "lines of code"))];
+    out.push(h("div", {class: "card"}, h("h2", {}, "The rules"), h("p", {class: "hint"}, "git says how long each line has stood: fresh is changed within " + rules.fresh_days + " days (or not committed) — each fresh function needs a test to reach it; settled is older — " + rules.settled + "% of those lines run. At release: " + rules.release + "% of every line, and " + rules.release_file + "% of each file's." + (d.note ? " (" + d.note + ")" : "") + (d.tests ? " Measured by: " + d.tests : ""))));
+    const fresh = (d.files || []).flatMap(f => f.units.map(u => Object.assign({path: f.path}, u)));
+    if (fresh.length) out.push(h("div", {class: "card"}, h("h2", {}, "Fresh functions"),
+      h("div", {class: "tbl-wrap"}, h("table", {class: "tbl"}, h("thead", {}, h("tr", {}, h("th", {}, "Where"), h("th", {}, "What"), h("th", {}, ""))),
+        h("tbody", {}, ...fresh.map(u => h("tr", {}, h("td", {class: "mono nw"}, u.path + ":" + u.line), h("td", {}, u.kind + " " + u.name), h("td", {}, h("span", {class: "badge " + (u.ran ? "b-pass" : "b-warn")}, u.ran ? "reached" : "no test reaches it")))))))));
+    out.push(h("div", {class: "card"}, h("h2", {}, "Each file"),
+      h("div", {class: "tbl-wrap"}, h("table", {class: "tbl"}, h("thead", {}, h("tr", {}, h("th", {}, "File"), h("th", {}, "Lines"), h("th", {}, "Ran"), h("th", {}, "Cover"), h("th", {}, "Fresh"), h("th", {}, "Not run"))),
+        h("tbody", {}, ...(d.files || []).map(f => h("tr", {}, h("td", {class: "mono"}, f.path), h("td", {class: "nw"}, String(f.lines)), h("td", {class: "nw"}, String(f.ran)),
+          h("td", {class: "nw"}, h("span", {class: "badge " + (f.pct >= rules.release_file ? "b-pass" : f.pct >= 75 ? "b-warn" : "b-fail")}, f.pct + "%")), h("td", {class: "nw"}, String(f.fresh)), h("td", {class: "mono small"}, f.missing))))))));
+    out.push(...KINDS.checks(d));
+    return out;
+  },
+  checks(d) {   // dev/checks.py's run: each tool, what it found
+    const sev = {error: "b-fail", warning: "b-warn", information: "b-info"};
+    const out = [h("div", {class: "tiles rtiles"}, ...d.tools.map(t => h("div", {class: "card tile rtile " + (!t.ran ? "r-warn" : t.failed ? "r-fail" : "r-ok")},
+      h("div", {class: "big"}, t.ran ? String(t.findings.length) : "—", h("small", {}, " " + (t.ran ? (t.findings.length === 1 ? "finding" : "findings") : "didn't run"))),
+      h("div", {class: "what"}, (t.tool + " " + t.version).trim()), h("div", {class: "det"}, t.ran ? t.facts.join(" · ") : t.why))))];
+    for (const t of d.tools) {
+      if (!t.ran || !t.findings.length) continue;
+      const fixable = t.findings.filter(f => f.fixable).length;
+      out.push(h("div", {class: "card"}, h("div", {class: "head"}, h("h2", {}, t.tool + ": " + t.findings.length + (t.findings.length === 1 ? " finding" : " findings")),
+        fixable ? h("span", {class: "badge b-info"}, fixable + " fixable with --fix") : null),
+        h("div", {class: "tbl-wrap"}, h("table", {class: "tbl"}, h("thead", {}, h("tr", {}, h("th", {}, "Where"), h("th", {}, ""), h("th", {}, "What"), h("th", {}, "Rule"))),
+          h("tbody", {}, ...t.findings.map(f => h("tr", {}, h("td", {class: "mono nw"}, f.path + ":" + f.line + ":" + f.col), h("td", {}, h("span", {class: "badge " + (sev[f.severity] || "b-info")}, f.severity)),
+            h("td", {}, f.message, f.fixable ? h("span", {class: "muted"}, " [*]") : null), h("td", {class: "mono nw"}, f.code || ""))))))));
+    }
+    if (d.files && d.files.length) out.push(h("div", {class: "card"}, h("details", {}, h("summary", {}, d.files.length + (d.files.length === 1 ? " file checked" : " files checked")),
+      h("div", {class: "log"}, ...d.files.map(f => h("div", {}, f))))));
+    return out;
+  },
+  tests(d) {   // tests/run.py's run: the counts, the failures as unittest printed them, what it ran on, the slowest classes
+    const out = [h("div", {class: "tiles rtiles"}, tile(d.passed, "passed", "r-ok"), tile(d.failed, "failed", d.failed ? "r-fail" : ""),
+      tile(d.warnings, "warnings", d.warnings ? "r-warn" : ""), d.not_run ? tile(d.not_run, "not run", "r-warn") : null,
+      tile(secs(d.took), "taken"), tile(d.workers, d.workers === 1 ? "worker" : "workers"))];
+    if (d.ran_on && d.ran_on.length) out.push(h("div", {class: "card"}, h("h2", {}, "Ran on"), h("div", {class: "chk"}, ...d.ran_on.map(x => h("span", {class: "badge b-info"}, x)))));
+    if (d.failures && d.failures.length) out.push(h("div", {class: "card"}, h("h2", {}, (d.failures.length === 1 ? "The failure" : d.failures.length + " failures")),
+      ...d.failures.map(f => h("details", {open: d.failures.length <= 3 ? true : null}, h("summary", {}, (f.kind || "FAIL") + ": " + f.test),
+        f.test.startsWith("tests.") ? h("div", {class: "fix mono"}, "python3 -m unittest " + f.test) : null, pre(f.text)))));
+    if (d.times && d.times.length) out.push(h("div", {class: "card"}, h("h2", {}, "Slowest"), h("p", {class: "hint"}, "The classes (and the tests run on their own) the workers took longest over, from this run's sharing-out."),
+      h("div", {class: "tbl-wrap"}, h("table", {class: "tbl"}, h("thead", {}, h("tr", {}, h("th", {}, "Class or test"), h("th", {}, "Seconds"))),
+        h("tbody", {}, ...d.times.map(([k, v]) => h("tr", {}, h("td", {class: "mono"}, k), h("td", {class: "nw"}, String(v)))))))));
+    return out;
+  }
+};
+function runs() {
+  const ids = VIEW.blocks.map(b => b.id);
+  return h("div", {}, h("div", {class: "top"}, h("div", {}, h("h1", {}, "Runs"), h("div", {class: "sub"}, "The records devtools kept: the newest first"))),
+    h("div", {class: "card tbl-wrap"}, h("table", {class: "tbl"},
+      h("thead", {}, h("tr", {}, h("th", {}, "When"), h("th", {}, "What"), h("th", {}, "Commit"), ...ids.map(i => { const b = VIEW.blocks.find(b => b.id === i); return h("th", {class: "c", title: b.title}, (b.page || b.key || i[0]).toUpperCase()); }), h("th", {}, "Took"))),
+      h("tbody", {}, ...VIEW.history.map(r => h("tr", {},
+        h("td", {class: "nw"}, r.live ? "now" : ago(r.started)), h("td", {}, "devtools " + r.mode + (r.kind === "checks" ? " --checks-only" : r.kind === "only" ? " --only " + r.only : r.kind === "sync" ? " --sync-only" : "")),
+        h("td", {class: "mono"}, r.commit), ...ids.map(i => h("td", {class: "c"}, r.blocks[i] ? h("span", {class: "dot " + (DOTS[r.blocks[i]] || "wait"), title: r.blocks[i]}) : "")),
+        h("td", {class: "nw"}, r.started ? took(r.started, r.ended) : ""))))))
+  );
+}
+
+// ---------------------------------------------------------------- moving about
+function go(where) { WHERE = where; location.hash = where; render(); document.getElementById("main").focus({preventScroll: true}); }
+addEventListener("keydown", (e) => {
+  if (e.altKey || e.ctrlKey || e.metaKey || /^(input|textarea|select)$/i.test(e.target.tagName)) return;
+  if (e.key === "u") go("hub");
+  else if (VIEW) { const b = VIEW.blocks.find(x => x.page === e.key); if (b) go(b.id); }
+});
+async function poll() {
+  try {
+    VIEW = await api("/api/run");
+    if (VIEW.wanted) go(VIEW.wanted === "hub" ? "hub" : VIEW.wanted);
+    else render();
+  } catch (e) { /* (the server's gone: the page stays as it was) */ }
+}
+function pickers() {
+  const info = {classic: "Classic", dionysus: "Dionysus"}, own = window.PCTHEME.own() || {};
+  const now = {theme: own.theme || document.documentElement.getAttribute("data-theme"), mode: own.mode || "auto"};   // (the app's default until a choice is made here)
+  const seg = (id, choices, key) => {
+    const el = document.getElementById(id);
+    el.replaceChildren(...Object.entries(choices).map(([v, label]) => h("button", {role: "tab", "aria-selected": String(now[key] === v),
+      onclick: () => { window.PCTHEME.setOwn(Object.assign({}, now, window.PCTHEME.own() || {}, {[key]: v})); pickers(); }}, label)));
+  };
+  seg("themepick", info, "theme"); seg("modepick", {auto: "Auto", light: "Light", dark: "Dark"}, "mode");
+}
+WHERE = (location.hash || "#hub").slice(1) || "hub";
+pickers();
+poll();
+TIMER = setInterval(poll, 1000);
+/*BEAT*/
+</script>
+</body>
+</html>

@@ -10,6 +10,7 @@
 // address instead (192.168.1.10), like a real install would.
 const { chromium } = require("playwright");
 const path = require("path");
+const { SHOT, fontsFirst, settle } = require("./still.js");   // (taken still: the same picture each time, dev/style-sample.js too)
 
 const OUT = path.join(__dirname, "..", "docs", "screenshots");
 const MAIN = process.env.MAIN || "http://127.0.0.1:8650";
@@ -34,16 +35,18 @@ async function tidy(page) {
 
 async function shot(browser, { url, name, scheme = "light", height = 1000, full = false, element, before }) {
   const page = await browser.newPage({ viewport: { width: 1280, height }, deviceScaleFactor: 2, colorScheme: scheme });
+  await fontsFirst(page);
   await page.goto(url);
   await page.waitForTimeout(2500);
   if (before) await before(page);
   await tidy(page);
+  await settle(page);
   const file = path.join(OUT, name + ".png");
   if (element) {
     const el = await element(page);
-    await el.screenshot({ path: file });
+    await el.screenshot({ ...SHOT, path: file });
   } else {
-    await page.screenshot({ path: file, fullPage: full });
+    await page.screenshot({ ...SHOT, path: file, fullPage: full });
   }
   console.log("saved", file);
   await page.close();

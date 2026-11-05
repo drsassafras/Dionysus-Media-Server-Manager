@@ -31,7 +31,7 @@ NOTE = ("You are running headless and can only read files. The code to audit is 
         "(uncommitted changes included). The code on main is in {main}: read it there to answer each finding's main. "
         "Answer with the TOML only, as the prompt says.")
 PUSHED = " The code as pushed to this branch is in {pushed}."
-# (where its installers put it: a page started from tnsync's board may not have it on its PATH)
+# (where its installers put it: a page started from devtools's board may not have it on its PATH)
 PLACES = ("~/.local/bin/claude", "~/.claude/local/claude", "/opt/homebrew/bin/claude", "/usr/local/bin/claude",
           "~/.npm-global/bin/claude", "~/.bun/bin/claude")
 # (the Claude desktop app's own copy, one folder per version: when it's the only one on this computer)

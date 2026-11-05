@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""tnsync's board: its steps run at once, each in a section of its own that's redrawn as it goes.
+"""devtools's board: its steps run at once, each in a section of its own that's redrawn as it goes.
 
     python3 dev/board.py <plan.json> <results>
 
-tnsync writes the plan ({"header": [its lines: what this run is], "commit": "a1b2c3d + uncommitted" (after the first
+devtools writes the plan ({"header": [its lines: what this run is], "commit": "a1b2c3d + uncommitted" (after the first
 line, the first thing cut when there's no room), "keys": [{"key": "Enter", "does": "Cancel"}: the keys it offers, said
 "[Enter] Cancel" on the header's next line with each section's key while it works, the tally of sections done on its
-right], "sections": [...]}, or just the list) and reads the results (KEY=value lines) when the board is done; each
-section's output is kept beside the results (their folder's logs/, which tnsync removes):
+right], "ui": {"cmd": "python3 dev/devui.py", "cwd": "…"}: the devtools UI (u on the board opens it at its hub, a
+section's letter at that section's page; running already, it's told which page to show: "wanted" beside the results),
+"sections": [...]}, or just the list) and reads the results (KEY=value lines) when the board is done; each section's
+output is kept beside the results (their folder's logs/), and how the board stands is written beside them as it goes
+(state.json: Board.snapshot, what the UI shows — the run's record, which devtools keeps):
 
     {"id": "current", "title": "Current Tests", "cmd": "python3 tests/run.py", "cwd": "/the/code",
      "after": ["…"],        # (optional) starts only once these have passed; one that didn't (or a test of it failed): not run
@@ -17,6 +20,8 @@ section's output is kept beside the results (their folder's logs/, which tnsync 
      "tell": {"rc": 3, "note": "…"},   # (optional) that exit code only tells (grey: the translations between releases), the note its header's
      "not_run_rc": 3,       # (optional) the exit code that means "couldn't be set up" (yellow: nothing is known)
      "upkeep": true,        # (optional) the dependencies: its output's first line says current / behind / cves / else
+     "page": "c",           # (optional) its letter, underlined in its title while the board runs: pressed, it opens the
+                            # devtools UI (the plan's "ui") at this section's page (a section with a "key" has that instead)
      "key": {"key": "r", "cmd": "…", "cwd": "…", "does": "Review Style Changes", "opens": "the review page",
              "line": "press r to review them"},   # (optional) while the board runs, whatever the section's state
                             # (waiting, running or done), that key starts cmd (the style guide's review page), on the
@@ -57,7 +62,7 @@ if ROOT not in sys.path:  # (run as a script: dev/ is on the path, not the proje
 from dev.progress import DIM, OFF, RED, Progress, capsule, counted, fields, record, wider  # noqa: E402 — the bar the dev tools share
 
 # blue: under way (running, or waiting its turn); then what came of it — green passed, orange a warning (stopped with
-# Enter, the dependencies behind), red failed, grey for the record (not run, skipped, already in sync): tnsync's colours
+# Enter, the dependencies behind), red failed, grey for the record (not run, skipped, already in sync): devtools's colours
 BLUE = WAIT = "\033[1;97;48;2;10;90;128m"   # (Prussian blue #0A5A80, truecolour: running or waiting alike)
 GREY, GOOD, MEH, BAD = "\033[1;97;48;5;240m", "\033[1;97;48;5;22m", "\033[1;30;48;5;214m", "\033[1;97;48;5;88m"
 COLOUR = {"running": BLUE, "waiting": WAIT, "pass": GOOD, "warn": MEH, "stopped": MEH, "fail": BAD,
@@ -117,7 +122,7 @@ class Section:
         tell = spec.get("tell") or {}   # (optional) {"rc": 3, "note": "…"}: that exit code only tells (grey), the note its header's
         self.tell_rc, self.tell_note = tell.get("rc"), tell.get("note")
         # (optional) its last step, once every other section is done, it's ended in a warning and none has failed, on a
-        # terminal: an action of its own run as a step (blue: "doing", its bar's label "label") — tnsync's review page,
+        # terminal: an action of its own run as a step (blue: "doing", its bar's label "label") — devtools's review page,
         # open until it's closed — then its own check again ("check", with "env"), which gives its end state; Enter skips it
         self.finale: dict = dict(spec.get("finale") or {})
         self.final_phase = 0   # 0 not yet, 1 the action, 2 the check again, 3 done (or skipped)
@@ -127,6 +132,7 @@ class Section:
         self.info = spec.get("info")   # (a section that only tells: grey when it's done, this its header)
         self.then: dict = dict(spec.get("then") or {})
         self.key = dict(spec.get("key") or {})   # (its key, while the board runs: {"key", "cmd", "cwd", "does", "opens"})
+        self.page = str(spec.get("page") or "")[:1]   # (its letter: the UI at its page, while the board runs)
         self.helper: subprocess.Popen | None = None   # (what its key started)
         self.live = False   # (the board is running and reads keys: its key works)
         self.why = ""       # (its key's command's errors, a file)
@@ -221,7 +227,10 @@ class Section:
         self.key_said = "" if rc == 0 else said or f"(exit {rc})"   # (why, in its last line)
 
     def start(self, cmd: str, cwd: str | None = None, more: dict | None = None):
-        env = dict(os.environ, PLEXCACHE_PROGRESS="feed", PYTHONDONTWRITEBYTECODE="1", PYTHONUNBUFFERED="1", **self.env, **(more or {}))
+        # (and where its tool writes its detail for its page in the devtools UI: dev/progress.py's detail, in the record)
+        detail = os.path.join(os.path.dirname(os.path.dirname(self.log)), "detail", f"{self.id}.json")
+        env = dict(os.environ, PLEXCACHE_PROGRESS="feed", PYTHONDONTWRITEBYTECODE="1", PYTHONUNBUFFERED="1", DEVTOOLS_DETAIL=detail,
+                   **self.env, **(more or {}))
         self.proc = subprocess.Popen(["bash", "-c", cmd], cwd=cwd or self.cwd, env=env, stdin=subprocess.DEVNULL,
                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
         os.set_blocking(self.proc.stdout.fileno(), False)  # type: ignore[union-attr]
@@ -375,7 +384,12 @@ class Section:
         left = f"  {self.title:<{TITLE}}{said}"
         room = width - len(took) - 3
         left = left[:room] if len(left) > room else left
-        head = f"{COLOUR[self.shown]}{left}{' ' * (room - len(left))} {took}  {OFF}"
+        letter = self.page if self.page and self.live else self.key.get("key", "") if self.keyed else ""
+        if letter:   # (its letter underlined in its title: pressed, it opens a page — put in after the padding, so nothing moves)
+            at = underlined(self.title, letter)
+            if at >= 0:
+                left = left[: 2 + at] + "\033[4m" + left[2 + at] + "\033[24m" + left[3 + at:]
+        head = f"{COLOUR[self.shown]}{left}{' ' * (room - len(ANSI.sub('', left)))} {took}  {OFF}"
         bar = ""
         shown = [b for b in self.bars.values() if (b.done or b.label) and not between]   # (one reset to nothing to do, or none at work: not shown)
         if shown:
@@ -410,6 +424,22 @@ class Section:
         return body + text.replace(OFF, OFF + body) + " " * max(0, pad) + OFF
 
 
+def quoted(text: str) -> str:
+    """A path or word as one argument on a bash command line."""
+    import shlex
+    return shlex.quote(text)
+
+
+def underlined(title: str, letter: str) -> int:
+    """Where a section's letter is underlined in its title: at the start of a word when it begins one ("Current Tests",
+    c; "Security Audit", a), else its first occurrence ("Style Approval", r); -1 when it isn't in it."""
+    low = title.lower()
+    for i, ch in enumerate(low):
+        if ch == letter.lower() and (i == 0 or low[i - 1] == " "):
+            return i
+    return low.find(letter.lower())
+
+
 def stop_group(proc: subprocess.Popen):
     """SIGTERM to its process group (tests/run.py then says how far it got), SIGKILL 2 s later if it's still there."""
     try:
@@ -432,6 +462,11 @@ class Board:
         self.header = [str(x) for x in plan.get("header") or []]   # (the board's own block on top: what this run is)
         self.commit = str(plan.get("commit") or "")   # (the commit checked: after the header's first line)
         self.offered = [dict(k) for k in plan.get("keys") or []]   # (the keys the board says under it: Enter)
+        self.ui = dict(plan.get("ui") or {})   # (the devtools UI: u opens its hub, a section's letter its page)
+        self.record = os.path.dirname(logs)    # (the run's record: the plan and results, each section's log, and state.json)
+        self.ui_proc: subprocess.Popen | None = None   # (the UI, once a key opened it from here)
+        self.written = ""        # (state.json as last written: written again only when it changed)
+        self.touched = 0.0       # (when it was last written or touched)
         self.started: float | None = None   # (its timer, on the header's right: from the start until the last section ends)
         self.ended: float | None = None
         self.sections = [Section(s, logs) for s in plan["sections"]]
@@ -561,10 +596,70 @@ class Board:
             if ch in "\r\n":
                 self.enter()
                 continue
+            if self.ui and ch == "u":
+                self.open_ui("")
+                continue
             for s in self.sections:
                 if s.keyed and s.key.get("key") == ch:
                     s.press(sys.stdin.fileno())
                     self.pressed = True
+                elif self.ui and s.page and s.page == ch and s.live:
+                    self.open_ui(s.id)
+
+    def open_ui(self, page: str):
+        """The devtools UI (the plan's "ui"), on the terminal in a session of its own (as a section's key starts its
+        page: it stays open after the board), at a section's page, or its hub (""). Open already, it's told which page to
+        show: "wanted" beside the results, which it reads."""
+        if self.ui_proc is not None and self.ui_proc.poll() is None:
+            with open(os.path.join(self.record, "wanted"), "w", encoding="utf-8") as fh:
+                fh.write(page)
+            return
+        env = {k: v for k, v in os.environ.items() if k != "PLEXCACHE_PROGRESS"}
+        cmd = f"{self.ui['cmd']} --record {quoted(self.record)} --from-board" + (f" --open {quoted(page)}" if page else "")
+        with open(os.path.join(self.record, "ui.key.log"), "w", encoding="utf-8") as why:
+            self.ui_proc = subprocess.Popen(["bash", "-c", cmd], cwd=self.ui.get("cwd") or None, env=env, stdin=sys.stdin.fileno(),
+                                            stdout=sys.stdout.fileno(), stderr=why, start_new_session=True)
+        self.pressed = True
+
+    def snapshot(self) -> dict:
+        """How the board stands, as the UI shows it: the run's header, and each section's state, status line, bar, last
+        line, issues and times (dev/devui.py reads it; nothing it says is decided there)."""
+        out = {"header": self.header, "commit": self.commit, "started": self.started, "ended": self.ended,
+               "done": self.ended is not None, "aborted": self.aborted, "sections": []}
+        for s in self.sections:
+            said = status(s.then["fail_note"]) if s.then_failed and s.done else status(s.note or SAID[s.state])
+            if s.doing and not s.done and not s.note:
+                said = status(s.doing)
+            bars = [{"name": b.bar, "done": b.done, "total": b.total, "bad": b.bad, "warned": b.warned, "label": b.label,
+                     "unit": b.unit, "workers": b.workers, "tests": b.tests, "ticking": b.since is not None}
+                    for b in s.bars.values() if b.done or b.label]
+            out["sections"].append({
+                "id": s.id, "title": s.title, "page": s.page, "key": s.key.get("key", ""), "state": s.state, "shown": s.shown,
+                "status": said, "note": s.note, "last": s.said if s.said is not None else s.last, "rc": s.rc, "log": s.log,
+                "started": s.started, "ended": s.ended, "bar": bars[-1] if bars else None, "issues": self.found(s) if s.done else list(s.issues),
+                "warned": s.warned})
+        return out
+
+    def write_state(self):
+        """state.json beside the results, as the board stands (put in place whole: a reader never sees half of it)."""
+        text = json.dumps(self.snapshot(), default=str)
+        path = os.path.join(self.record, "state.json")
+        if text == self.written:   # (nothing new: its time touched, so a reader knows the board is still here)
+            if time.time() - self.touched >= 1:
+                self.touched = time.time()
+                try:
+                    os.utime(path)
+                except OSError:
+                    pass
+            return
+        self.touched = time.time()
+        try:
+            with open(path + ".tmp", "w", encoding="utf-8") as fh:
+                fh.write(text)
+            os.replace(path + ".tmp", path)
+        except OSError:
+            return
+        self.written = text
 
     def enter(self):
         for s in self.sections:   # (a last step under way: Enter skips it, the section as it was before it)
@@ -617,6 +712,8 @@ class Board:
             self.widths = wider(self.widths, fields(b.done, b.total, b.bad, b.warned))
         header = list(self.header) or [""]
         keys = list(self.offered) + ([s.key for s in self.sections if s.keyed] if not self.pressed else [])
+        if self.ui and self.stdin_tty and not self.pressed:
+            keys.append({"key": "u", "does": "Open the devtools UI"})
         last = [s for s in self.sections if s.final_phase in (1, 2) and not s.done]
         if last:   # (a last step under way: Enter skips it)
             keys = [{"key": "Enter", "does": last[0].finale.get("enter", "Skip")}]
@@ -673,6 +770,7 @@ class Board:
                 s.helped()
             if time.time() - last >= FRAME:
                 self.frame()
+                self.write_state()
                 last = time.time()
         self.ended = max((s.ended for s in self.sections if s.ended), default=None) or time.time()   # (the timer stops)
         for s in self.sections:   # (the board done: no key works now, and its block says the command to run instead)
@@ -680,6 +778,7 @@ class Board:
             if s.helper is None:
                 s.opened = ""
         self.frame()
+        self.write_state()
         if self.tty:
             sys.stdout.write("\033[?25h")
             sys.stdout.flush()
@@ -716,7 +815,7 @@ class Board:
         s.out.flush()
         with open(s.log, encoding="utf-8", errors="replace") as fh:
             text = fh.read().rstrip()
-        if s.upkeep:   # (its first line is the word tnsync reads; the rest, the box)
+        if s.upkeep:   # (its first line is the word devtools reads; the rest, the box)
             text = "\n".join(line for line in text.split("\n")[1:] if record(line) is None).strip("\n")
         lines = text.split("\n")
         if lines and plain(lines[-1]) == s.last and s.said is None:   # (its last line is in its block already: not said twice)
@@ -805,7 +904,7 @@ def main() -> int:
             import termios
             termios.tcsetattr(sys.stdin.fileno(), termios.TCSANOW, old)
         signal.signal(signal.SIGINT, signal.SIG_DFL)
-        os.kill(os.getpid(), signal.SIGINT)  # (ended as Ctrl-C ends a command, so tnsync stops too)
+        os.kill(os.getpid(), signal.SIGINT)  # (ended as Ctrl-C ends a command, so devtools stops too)
         return 130
     finally:
         if old is not None:

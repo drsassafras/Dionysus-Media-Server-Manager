@@ -1,4 +1,4 @@
-# Security audits (dev/audit.py, tnsync's Security Audit block): what counts as app code, the dev rule, and where the
+# Security audits (dev/audit.py, devtools's Security Audit block): what counts as app code, the dev rule, and where the
 # private half of each audit lives. Public on purpose: nothing here names an auditor. The release rules (they do) live in
 # the private audits repo's rules.toml.
 #
@@ -15,7 +15,7 @@ code = [
     "Dockerfile",
     "compose.yaml",
     ".github/workflows/*.yml",
-    "dev/tnsync",
+    "dev/devtools",
     # the dev tools that serve a page on this computer or run commands on it
     "dev/auditgui.py",
     "dev/auditgui.html",

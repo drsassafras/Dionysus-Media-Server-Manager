@@ -12,7 +12,7 @@ that Python (Homebrew's takes no pip installs).
 
 Both run through dev/checks.py, the code every check tool shares: what they find is said one way
 (file:line:column - severity: message (Tool CODE)), then the result line every dev tool says ("0 errors · 0 warnings ·
-0 Ruff findings"). On tnsync's board (PLEXCACHE_PROGRESS=feed: its Python Validation section) its bar is the files checked.
+0 Ruff findings"). On devtools's board (PLEXCACHE_PROGRESS=feed: its Python Validation section) its bar is the files checked.
 On GitHub, the findings are annotated on their lines too. Exit 0 clean, 1 something found, else one of them couldn't run.
 """
 

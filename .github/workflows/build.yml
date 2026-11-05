@@ -37,14 +37,14 @@ jobs:
       - name: Style guide
         if: ${{ !cancelled() }}   # (its answer either way, whatever the tests did)
         run: python -W error::DeprecationWarning -W error::PendingDeprecationWarning -m unittest tests.test_plexcache.StyleGuideTests -v
-      # the Python validation (dev/typecheck.py), as tnsync's Python Validation block runs it: the type check
+      # the Python validation (dev/typecheck.py), as devtools's Python Validation block runs it: the type check
       # (pyrightconfig.json: an error is a fault — an undefined name, a variable read before it's set — a warning an
       # annotation that says less than the code does) and Ruff's lint (ruff.toml: unused imports, likely bugs, the import
       # order, security…), each at zero and kept there; Ruff's findings are annotated on their lines
       - name: Python validation
         if: ${{ !cancelled() }}
         run: python dev/typecheck.py   # (each tool at its version in dev/tools.toml, moved by dev/upkeep.py)
-      # the build validation (dev/buildcheck.py), as tnsync's Build Validation block runs it: ShellCheck on dev/tnsync,
+      # the build validation (dev/buildcheck.py), as devtools's Build Validation block runs it: ShellCheck on dev/devtools,
       # actionlint on these workflows (and ShellCheck on each step's script), hadolint on the Dockerfile; kept at zero
       - name: Build validation
         if: ${{ !cancelled() }}
@@ -97,7 +97,7 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7
         with:
           python-version: "3.15"
-      # the CVEs to act on (dev/cves.py, as tnsync's Dependencies block says them): in this image (Trivy), the
+      # the CVEs to act on (dev/cves.py, as devtools's Dependencies block says them): in this image (Trivy), the
       # web's npm packages (OSV) and the tools the image is built with (NVD). Each one a warning on the run, never a
       # failure: what someone else is already fixing isn't said
       - name: CVEs to act on

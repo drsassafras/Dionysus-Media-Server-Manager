@@ -1,0 +1,51 @@
+# Public security audits (dev/audit.py record).
+id = "2026-11-05-5"
+date = 2026-11-05
+commit = "825419695f858e9bb638d7a8a18181a4ec8775a8"
+kind = "partial"
+scope = ["dev/style.py:made_from", "dev/style.py:sample_shows", "dev/style.py:_sample", "dev/style.py:approve", "dev/style.py:main"]
+uncommitted = true
+prints = [
+    "004ca918bf7a", "03a01d55b4ea", "04f5232183bd", "0523acedc223", "0530cd4f7aa6", "057336c59fc3",
+    "07081a3e9c5f", "08faf34af465", "0ae3c3ca8aa9", "0c3f94871008", "0c60d6974c6a", "0dec103ad12f",
+    "11d972fff357", "12bed8f007a3", "12de9b0643a5", "13add9e9e2f1", "13fb540a5725", "153fc2a87491",
+    "15baac7e76e4", "15e9f372754f", "16c9d0f4c250", "17478c24db8f", "198bae03a727", "1a5f062e7666",
+    "1bc036fee20c", "1f05462442e9", "1f0f0e23b096", "1f7939b38075", "20a822991a1e", "212c368382bb",
+    "22c5be1b013e", "2338e147206d", "2433d3a71c15", "25db98a902f5", "272f0ef2eb79", "278262943619",
+    "2926ffaaf3c1", "2c081cc73294", "2d744f3f54be", "2e82420b3174", "2ea5ab9377de", "30e4863a3b75",
+    "31b55d653f07", "336242eb7f21", "3367d992d12d", "34a9d059eb49", "359101c0b835", "37a33443308c",
+    "37e50bd0e035", "3863aa555e32", "395eb68a4229", "399a22d83f73", "3b9040449060", "3cc57903071d",
+    "3d6c0debfb8c", "3dd67513f2e6", "3df7f744df3a", "3ebfcd9e3fc1", "3efb4ceeaf9a", "3eff36db2b87",
+    "414255fed00b", "42e0947d2983", "44ca58c609a9", "4507288bf2fd", "461425f72b13", "465867f73fa0",
+    "46ba7121d6e3", "47b2aef0b38c", "4a072370c2ca", "4aa912b2faff", "4b637a6e1539", "4baebed9910e",
+    "4c84f63df256", "4cdae2735ccb", "4ece220354e1", "5001074c19c1", "522b2ad2e889", "5337c2011315",
+    "537321bbc64c", "54bedcfb14e0", "5675466f1f05", "575cdb082050", "57629be681ca", "57d738e331a4",
+    "58510b3e6fbe", "589f08ca6f98", "59070db90c5b", "5a52675d8973", "5a658dbc2caa", "5ac70ca7c34f",
+    "5d670604685c", "5e12b11badad", "5e296e2ffeb7", "5ec1f876ad0a", "5f60ccfca8aa", "612b5a0e9446",
+    "63930cbdab5f", "648124c93c11", "64fec05cf116", "675cdd43bef6", "683515bffb53", "6947e013e81e",
+    "69950575f80d", "6a9039e4d54f", "6bb1a87eca7b", "6cc767675e7f", "6d197fed89e7", "6db36a9418ed",
+    "6eac5b52342d", "716f2e562efb", "72ad5a9d5e7f", "72d77372c476", "730066db069e", "735dba16178b",
+    "73f7a5e29725", "74928d2807db", "777928d24284", "786ea1aeca9f", "786f8f44bcf5", "78e5aba980c8",
+    "7982dd0953c1", "7a07c0a6a81d", "7ba34bcb9a91", "7d1333b5ece5", "80ca41021690", "81b6cedf111b",
+    "81d4b763d787", "83a64df85087", "83a662100241", "83fe1de62b45", "8526af02f21f", "868227946e40",
+    "887127a16ec3", "88743f6288c5", "888bd92b7fad", "89777e107f4b", "89797ec34949", "8cf5a4fda066",
+    "8d4972fb9709", "8d6610eaf61a", "8f20fb3b0562", "8f537a6b32f5", "8f82ff4fa2f4", "8f9817d5ce14",
+    "904996134efe", "905355dd412e", "90b0b93d3e53", "90f0eec1be39", "91abc88a22e6", "9366ca2fbba7",
+    "93c9ff42e828", "958e6b6d2341", "965427d0c72f", "9712ea144ab0", "984703ca6197", "99cf14f49791",
+    "9b9d27d101ba", "9c56dd59b9b9", "9fef624a5c5d", "a0eca15ce288", "a145520a5829", "a17d1f4eb044",
+    "a19d681cd42b", "a41d72f184e7", "a479716a1be2", "a4f4f3c16a1f", "a565b6fdb9ac", "a71806dce3a3",
+    "a8cbd5f3d023", "a9e9b50de68e", "aa0ac1784b83", "aacc6c96f62f", "aaefa90e55ea", "ab458c622a84",
+    "ad1c345e6d0a", "ada25fa6da07", "af45c666413e", "b1ba6e194cad", "b270ec606f8b", "b4543080b9a8",
+    "b64d52a31802", "b6e5fe7243d2", "b723b696616e", "b92bde7581c1", "b93ead31b6d2", "ba20b0b2869f",
+    "be98a88c53b2", "beb2b06ee942", "bf61652283d3", "c087c6ffa838", "c0c2f3e0e5f8", "c167ea1f3e35",
+    "c20f3c654287", "c23011b7087f", "c2e17b5ecc3e", "c54bffb19f07", "c5a11bbe32fe", "c70fc3613daa",
+    "c8b19f9721eb", "ca0ee7fc26b1", "ca18c9b1ecac", "ca3303ac17ef", "cb264ef5995f", "ce81351daac8",
+    "d227435ab98a", "d29eb4f7d553", "d2d1ab7550ee", "d338a404cea6", "d64b99c7a69b", "d787676f84c8",
+    "d9892803801e", "dbd49fd12f0e", "dcd0c01fd3e5", "df0a8c35e917", "df27547bd451", "df57adcf56b2",
+    "e09d2169bcde", "e0ca38f0ac94", "e12d362a394f", "e18834187a90", "e2901fd9084d", "e376cb759eb7",
+    "e3b00c90d5ef", "e46d576c4875", "e47013de256a", "e5db1a395343", "e66bb5efd318", "e871e1709a94",
+    "e87c326c32b3", "e989056d24dc", "e9cdd826565e", "ecce8cb0dbba", "ed3bf7b84f0c", "ed68ed74989a",
+    "ed778ecfc3ec", "ef0ac4ef74c2", "ef24000bd410", "f0cebe36a8a3", "f0dd80f92c89", "f1849e7efae8",
+    "f1eb9c794b71", "f3d2f098d327", "f408c2e5cbe9", "f61d9faf6f84", "f65c71f63642", "f8fb14e8014e",
+    "f9799b6636c1", "fae8560c0912", "faf0b51ea161", "fd5f2db469b4", "ffb4eb0a1c13", "ffcc961f668c",
+]

@@ -855,6 +855,19 @@ svg.edgevine{position:absolute;overflow:visible;pointer-events:none;z-index:-1}
 :root[data-grapes="on"] .meter:not(.usage)>div{display:none}
 .meter>svg.mvine{display:block;max-width:100%}
 :root:not([data-grapes="on"]) .meter>svg.mvine{display:none}
+/* a progress bar's state (devtools' blocks: passed, warned, failed): its filled part, or with grapes its ripe grapes, in
+   the badge's colour */
+.meter.ok{--accent:var(--ok);--wine:var(--ok)}.meter.warn{--accent:var(--warn);--wine:var(--warn)}.meter.bad{--accent:var(--bad);--wine:var(--bad)}
+/* and every checkbox is a grape, unripe till it's ticked: decor.js draws each state in the theme's colours */
+:root[data-checks="on"] input[type=checkbox]{appearance:none;border:0;border-radius:35%;background:var(--check-off) center/100% 100% no-repeat;cursor:pointer}
+:root[data-checks="on"] input[type=checkbox]:hover{background-image:var(--check-hover)}
+:root[data-checks="on"] input[type=checkbox]:checked{background-image:var(--check-on)}
+:root[data-checks="on"] input[type=checkbox]:indeterminate{background-image:var(--check-mixed)}
+:root[data-checks="on"] input[type=checkbox]:disabled{background-image:var(--check-dis);cursor:default}
+:root[data-checks="on"] input[type=checkbox]:checked:disabled{background-image:var(--check-dis-on)}
+:root[data-checks="on"] input[type=checkbox]:indeterminate:disabled{background-image:var(--check-dis-mixed)}
+/* (pictures aren't drawn with the system's high-contrast colours: there, the system's own box) */
+@media (forced-colors:active){:root[data-checks="on"] input[type=checkbox]{appearance:auto}}
 .mvine .ripen{fill:var(--unripe);animation:ripen 1.6s ease-in-out infinite}
 @keyframes ripen{0%,100%{fill:var(--unripe)}40%{fill:var(--wine)}}
 @media (prefers-reduced-motion:reduce){.mvine .ripen{animation:none;fill:var(--wine);opacity:.5}}

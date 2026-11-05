@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Test coverage, held by how settled the code is (tnsync's Coverage block): nothing to install (sys.monitoring).
+"""Test coverage, held by how settled the code is (devtools's Coverage block): nothing to install (sys.monitoring).
 
     python3 dev/coverage.py              # run the suite (tests/run.py --coverage), then the table and the checks
     python3 dev/coverage.py --missing    # the table with the lines that never ran
-    python3 dev/coverage.py --tnsync     # the checks, from the coverage the last tests/run.py --coverage saved
-    python3 dev/coverage.py --release    # the release bar too (tnsync --release: its failure is red)
+    python3 dev/coverage.py --devtools     # the checks, from the coverage the last tests/run.py --coverage saved
+    python3 dev/coverage.py --release    # the release bar too (devtools --release: its failure is red)
 
 What counts: every line of plexcache/ that holds code — not a docstring, nor a ``def`` or ``class`` line (they run on
 import, whatever the tests do), nor the ``if __name__ == "__main__":`` tail a test imports rather than runs. Nothing is
@@ -20,7 +20,7 @@ git says how long each line has stood (``git blame``), so nobody marks code fres
 
 The suite's run saves what it reached (tests/run.py --coverage, every worker's, in ~/.cache/plex-cache/coverage.json), so
 the checks don't run it again; the coverage of other code (a change since) isn't used. Through dev/checks.py, as every check says it: what's missing one line each (file:line -
-warning: …), then the result line. Exit 0 every rule met, 1 something to add (tnsync's block orange; with --release, a
+warning: …), then the result line. Exit 0 every rule met, 1 something to add (devtools's block orange; with --release, a
 release bar not met: red), 2 no coverage saved for this code.
 """
 
@@ -178,7 +178,7 @@ def save(hit: dict[str, list[int]], tests: str) -> None:
 
 
 def code_signature() -> str:
-    """The code measured, as a whole: every file of plexcache/, by what's in it (tnsync's copy of the same code, wherever
+    """The code measured, as a whole: every file of plexcache/, by what's in it (devtools's copy of the same code, wherever
     it is, is the same code)."""
     import hashlib
     h = hashlib.sha256()
@@ -194,7 +194,7 @@ def load() -> tuple[dict | None, str]:
         with open(SAVED, encoding="utf-8") as fh:
             got = json.load(fh)
     except (OSError, ValueError):
-        return None, "no coverage saved yet: the tests save it with --coverage (in .tnsync, TN_TEST=python3 tests/run.py --coverage …)"
+        return None, "no coverage saved yet: the tests save it with --coverage (in .devtools, TN_TEST=python3 tests/run.py --coverage …)"
     if got.get("code") != code_signature():
         return None, "plexcache/ has changed since the coverage was saved: python3 tests/run.py --coverage again"
     return got, ""
@@ -341,9 +341,9 @@ def table(files: list[File], missing: bool) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = sys.argv[1:] if argv is None else argv
-    release = "--release" in args or os.environ.get("TNSYNC_RELEASE") == "1"
-    if "--tnsync" not in args and "--saved" not in args:
+    args = ["--devtools" if a == "--tnsync" else a for a in (sys.argv[1:] if argv is None else argv)]   # (the flag's old name still read)
+    release = "--release" in args or os.environ.get("DEVTOOLS_RELEASE") == "1"
+    if "--devtools" not in args and "--saved" not in args:
         run = subprocess.run([sys.executable, os.path.join(ROOT, "tests", "run.py"), "--coverage"], cwd=ROOT)
         if run.returncode not in (0, 1):
             return 2
@@ -351,9 +351,9 @@ def main(argv: list[str] | None = None) -> int:
     if saved is None:
         from dev.progress import result
         print(result("coverage not measured", why))   # (on the board, its last line: why, and what to do)
-        return 3 if "--tnsync" in args else 2   # (on the board: a warning, orange, "not measured": not a test to add)
+        return 3 if "--devtools" in args else 2   # (on the board: a warning, orange, "not measured": not a test to add)
     files, note = measure(saved["hit"])
-    if "--tnsync" not in args:
+    if "--devtools" not in args:
         table(files, "--missing" in args)
     outcomes = [fresh_check(files), settled_check(files)]
     rules = [Check(o.tool, (lambda o=o: o)) for o in outcomes]
@@ -363,7 +363,25 @@ def main(argv: list[str] | None = None) -> int:
         rules.append(Check("Release bar", lambda: release_check(files)))
     if note:
         print(f"  ({note})")
-    return checks.run(rules, bar="coverage")
+    return checks.run(rules, bar="coverage", more=page(files, note, release, saved.get("tests", "")))
+
+
+def page(files: list[File], note: str, release: bool, tests: str) -> dict:
+    """What the Coverage page in the devtools UI shows beyond the rules' findings (dev/checks.py's detail): each file's
+    lines, what ran, its fresh lines and the ranges no test runs; the rules' thresholds; the totals."""
+    total, ran = sum(len(f.code) for f in files), sum(len(f.ran) for f in files)
+    settled, settled_ran = sum(len(f.settled) for f in files), sum(len(f.settled & f.ran) for f in files)
+    fresh_units = [u for f in files for u in f.units if u.lines & f.fresh]
+    return {"kind": "coverage", "note": note, "release": release, "tests": tests,
+            "rules": {"fresh_days": FRESH_DAYS, "settled": SETTLED, "release": RELEASE, "release_file": RELEASE_FILE},
+            "totals": {"lines": total, "ran": ran, "pct": round(_pct(ran, total), 1), "settled": settled, "settled_ran": settled_ran,
+                       "settled_pct": round(_pct(settled_ran, settled), 1), "fresh": sum(len(f.fresh) for f in files),
+                       "fresh_units": len(fresh_units), "fresh_reached": sum(1 for f in files for u in f.units if u.lines & f.fresh and u.lines & f.ran)},
+            "files": [{"path": f.rel, "lines": len(f.code), "ran": len(f.ran), "pct": round(_pct(len(f.ran), len(f.code)), 1),
+                       "fresh": len(f.fresh), "fresh_ran": len(f.fresh & f.ran), "missing": _ranges(sorted(f.code - f.ran)),
+                       "units": [{"kind": u.kind, "name": u.name, "line": u.line, "fresh": bool(u.lines & f.fresh), "ran": bool(u.lines & f.ran)}
+                                 for u in f.units if u.lines & f.fresh]}
+                      for f in sorted(files, key=lambda f: f.rel)]}
 
 
 if __name__ == "__main__":

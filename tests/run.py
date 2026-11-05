@@ -4,7 +4,7 @@
     python3 tests/run.py <module>         # another test module, by its import name
     python3 tests/run.py -j 1             # one test at a time, in this process (also PLEXCACHE_TEST_JOBS=1)
     python3 tests/run.py -j 4             # four workers (the default: two per core)
-    python3 tests/run.py --exclude WebBuildTests   # all but that class (tnsync runs it in a section of its own)
+    python3 tests/run.py --exclude WebBuildTests   # all but that class (devtools runs it in a section of its own)
     python3 tests/run.py --coverage       # and what of plexcache/ it ran, every worker's, saved for dev/coverage.py
 
 The tests are shared out among worker processes: a test at a time, except that a class set up once for all its tests
@@ -16,9 +16,9 @@ default is two workers per core. The warnings options the run was started with (
 test, or -j 1, it runs in this process, as unittest would.
 
 PLEXCACHE_PROGRESS=bar draws the bar even when the output isn't a terminal (a log shown on one later); COLUMNS then says
-how wide. PLEXCACHE_PROGRESS=feed sends it to tnsync's board instead (dev/board.py), which draws it in the tests' section.
+how wide. PLEXCACHE_PROGRESS=feed sends it to devtools's board instead (dev/board.py), which draws it in the tests' section.
 
-GitHub runs the suite with unittest itself (build.yml), one test at a time: this file is for runs by hand, tnsync
+GitHub runs the suite with unittest itself (build.yml), one test at a time: this file is for runs by hand, devtools
 and dev/future.py.
 
 On a terminal, one line is redrawn as tests finish:
@@ -26,12 +26,12 @@ On a terminal, one line is redrawn as tests finish:
     [##########----------]  57 passed · 2 failed · 1 warning · 118 total  ServerTests.test_export_has_no_secrets
 
 The counts are the same everywhere (dev/progress.py's ``counts``): passed, failed, the warnings the run printed, and
-the total — on the bar, in its result line at the end, and on tnsync's board (where the result line leaves them to the
+the total — on the bar, in its result line at the end, and on devtools's board (where the result line leaves them to the
 bar). When the output isn't a terminal (CI, a log file), it prints a line every 10%.
 Failures are listed in full at the end, as unittest normally does, and the
 exit code is non-zero if anything failed.
 
-A stop signal (SIGTERM: what tnsync sends when you press Enter) ends the run at
+A stop signal (SIGTERM: what devtools sends when you press Enter) ends the run at
 once, mid-test. The tests that were running when it came aren't counted as failed:
 the run says how many tests ran and how many weren't run, and exits with 130.
 """
@@ -56,7 +56,7 @@ os.chdir(ROOT)
 
 from dev import coverage  # noqa: E402 — (--coverage: what the tests ran, for dev/coverage.py)
 from dev.progress import FEED as FEED_MARK  # noqa: E402 — (a record's mark: run's FEED says whether there's a board)
-from dev.progress import OFF, RED, Progress, drawn, feeding, short_version, tested, timed  # noqa: E402 — the bar the dev tools share (dev/upkeep.py's too)
+from dev.progress import OFF, RED, Progress, detail, drawn, feeding, short_version, tested, timed  # noqa: E402 — the bar the dev tools share (dev/upkeep.py's too)
 from dev.progress import result as result_line  # noqa: E402 — (``result`` is run's: the result line every dev tool says)
 
 FEED = feeding()  # (read before main() takes PLEXCACHE_PROGRESS out of the tests' environment)
@@ -82,7 +82,7 @@ TIMES = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.
 
 
 def ran_on() -> list[str]:
-    """On tnsync's board, after a run's result: what it ran on, read now (so Current Tests and Future Tests, the same
+    """On devtools's board, after a run's result: what it ran on, read now (so Current Tests and Future Tests, the same
     suite on this machine and in the next Python's image, show where they differ) — the software the app and its tests
     lean on most, the most first (the board leaves the last off when there's no room): Python, Node (the web's checks),
     MKVToolNix and ffmpeg (the optimizer's tools), OpenSSL (every https and TLS connection). One that isn't there is left
@@ -192,7 +192,7 @@ def run_here(module: str, suite, total: int, tty: bool, started: float) -> int:
     unittest.registerResult(result)
 
     def stop(*_):
-        # Stopped from outside (tnsync's Enter): end now, without waiting for the test that's running.
+        # Stopped from outside (devtools's Enter): end now, without waiting for the test that's running.
         # That test didn't finish, so it isn't a failure; only the tests that finished are counted.
         if tty:
             sys.stdout.write("\r\033[K")
@@ -214,6 +214,9 @@ def run_here(module: str, suite, total: int, tty: bool, started: float) -> int:
         sys.stdout.write("\r\033[K")
     took = time.time() - started
     bad = len(result.failures) + len(result.errors)
+    blocks = [f"{result.separator1}\nFAIL: {result.getDescription(t)}\n{result.separator2}\n{text}" for t, text in result.failures]
+    blocks += [f"{result.separator1}\nERROR: {result.getDescription(t)}\n{result.separator2}\n{text}" for t, text in result.errors]
+    detailed(result.testsRun - bad, blocks, WARNED[0], total, took, 1)
     if bad:
         result.printErrors()
         print(f"\n    {RED if tty else ''}{result_line(tested(result.testsRun, bad, WARNED[0], feed=FEED), *ran_on())}{OFF if tty else ''}{timed(f'{took:.0f} s', feed=FEED)}")
@@ -318,6 +321,23 @@ class Worker:
         self.proc.wait()
 
 
+def failure_name(text: str) -> tuple[str, str]:
+    """A failure block's kind and test ("FAIL", "tests.test_x.ATests.test_it"), as unittest prints its head."""
+    head = next((x for x in text.split("\n") if x.startswith(("FAIL: ", "ERROR: "))), "")
+    m = re.match(r"(FAIL|ERROR): (\S+)(?: \(([\w.]+)\))?", head)
+    return (m.group(1), m.group(3) or m.group(2)) if m else ("", "")
+
+
+def detailed(passed: int, failed: list[str], warned: int, total: int, took: float, workers: int, stopped: bool = False,
+             times: dict | None = None) -> None:
+    """The run's page in the devtools UI (dev/progress.py's detail): the counts, each failure as unittest printed it, what
+    the suite ran on, and the slowest classes (the times run_parallel keeps for its sharing-out)."""
+    detail({"kind": "tests", "passed": passed, "failed": len(failed), "warnings": warned, "total": total, "not_run": max(0, total - passed - len(failed)),
+            "took": round(took, 1), "workers": workers, "stopped": stopped, "ran_on": ran_on(),
+            "failures": [{"kind": failure_name(t)[0], "test": failure_name(t)[1], "text": t} for t in failed],
+            "times": sorted(((k, v) for k, v in (times or {}).items()), key=lambda kv: -kv[1])[:25]})
+
+
 def run_parallel(module: str, units: list, total: int, jobs: int, tty: bool, started: float) -> int:
     times = _load_times()
     # the longest first (last run's times; a class not timed yet, by its number of tests), so none is left to the end
@@ -327,15 +347,13 @@ def run_parallel(module: str, units: list, total: int, jobs: int, tty: bool, sta
     failures: list[str] = []
 
     def failed(text: str):
-        """A failure, kept for the end; on tnsync's board said now too (a "tell" record: the board puts it above itself as
+        """A failure, kept for the end; on devtools's board said now too (a "tell" record: the board puts it above itself as
         it comes, not once the run is over), so it isn't printed again at the end there."""
         failures.append(text)
         if FEED:
             # (and in the board's Issues: the test, and the command that runs it alone)
-            head = next((x for x in text.split("\n") if x.startswith(("FAIL: ", "ERROR: "))), "")
-            m = re.match(r"(FAIL|ERROR): (\S+)(?: \(([\w.]+)\))?", head)
-            name = (m.group(3) or m.group(2)) if m else ""
-            issue = {"level": "error", "text": f"{m.group(1)}: {name}" if m else "a test failed",
+            kind, name = failure_name(text)
+            issue = {"level": "error", "text": f"{kind}: {name}" if kind else "a test failed",
                      "fix": f"python3 -m unittest {name}" if name.startswith("tests.") else ""}
             sys.stdout.write(FEED_MARK + json.dumps({"tell": text}) + "\n" + FEED_MARK + json.dumps({"issue": issue}) + "\n")
             sys.stdout.flush()
@@ -358,6 +376,7 @@ def run_parallel(module: str, units: list, total: int, jobs: int, tty: bool, sta
             for block in failures:
                 print(block)
         took = time.time() - started
+        detailed(progress.done - bad, failures, progress.warned, total, took, started_workers, stopped, times)
         if stopped:
             print(f"\n    {result_line('stopped', tested(progress.done, bad, progress.warned, total, feed=FEED), f'{total - progress.done} not run')}")
         elif bad:
@@ -368,7 +387,7 @@ def run_parallel(module: str, units: list, total: int, jobs: int, tty: bool, sta
         return code
 
     def stop(*_):
-        # tnsync's Enter: every worker ends now, mid-test (they have the signal too, as its process group); the
+        # devtools's Enter: every worker ends now, mid-test (they have the signal too, as its process group); the
         # tests that were running aren't failures.
         os._exit(finish(130, stopped=True))
     signal.signal(signal.SIGTERM, stop)

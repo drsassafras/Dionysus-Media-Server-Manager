@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Security audits, line by line (tnsync's Security Audit block): which app code an audit has seen, what's stale or never
+"""Security audits, line by line (devtools's Security Audit block): which app code an audit has seen, what's stale or never
 audited, and the release rules.
 
-    python3 dev/audit.py                 # the checks (tnsync: TN_AUDIT=python3 dev/audit.py)
-    python3 dev/audit.py --release       # the release rules too (tnsync --release: their failure is red)
+    python3 dev/audit.py                 # the checks (devtools: TN_AUDIT=python3 dev/audit.py)
+    python3 dev/audit.py --release       # the release rules too (devtools --release: their failure is red)
     python3 dev/audit.py next            # what most needs an audit, grouped into batches by file
     python3 dev/audit.py start [PATH…]   # the standard prompt, filled in (no paths: a full audit; paths: a partial)
     python3 dev/audit.py record FILE     # a filled-in templates/audit.toml, checked, split and saved
@@ -29,7 +29,7 @@ counts once it is committed, however it's committed (one commit or many, squashe
 lines where git no longer knows its commit. Change a line, or the line next to it, and its fingerprint changes: it needs
 an audit again. Nobody marks lines by hand.
 
-Through dev/checks.py, as every check says it. Exit 0 every rule met, 1 something to audit (tnsync's block orange; with
+Through dev/checks.py, as every check says it. Exit 0 every rule met, 1 something to audit (devtools's block orange; with
 --release, a release rule not met: red), 2 the records couldn't be read.
 """
 
@@ -54,7 +54,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from dev import checks  # noqa: E402 — the check tools' shared code
 from dev.checks import Check, Finding, Outcome  # noqa: E402
-from dev.checks import repo_at as _repo  # noqa: E402 — where git knows these lines (this checkout, or tnsync's copy's)
+from dev.checks import repo_at as _repo  # noqa: E402 — where git knows these lines (this checkout, or devtools's copy's)
 from dev.progress import counted  # noqa: E402
 
 CONFIG = os.path.join(ROOT, "dev", "audit.toml")
@@ -141,10 +141,10 @@ def config() -> dict:
 
 def private_root() -> str:
     """The private audits repo's checkout: PLEXCACHE_AUDITS, else dev/audit.toml's ``private`` from the project's folder
-    (the one tnsync copied from, when this is its copy)."""
+    (the one devtools copied from, when this is its copy)."""
     if os.environ.get("PLEXCACHE_AUDITS"):
         return os.environ["PLEXCACHE_AUDITS"]
-    base = os.environ.get("TNSYNC_REPO") or ROOT
+    base = os.environ.get("DEVTOOLS_REPO") or ROOT
     return os.path.normpath(os.path.join(base, config().get("private", "../TrueNAS-Plex-Caching-audits")))
 
 
@@ -1415,7 +1415,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {rel}{mark}: {counted(n, 'line')}, waiting since {datetime.date.fromtimestamp(when).isoformat()}")
         print(f"\n  to start a partial audit of the first batch: python3 dev/audit.py start {' '.join(r for r, *_ in rows[:5])}")
         return 0
-    release = "--release" in args or os.environ.get("TNSYNC_RELEASE") == "1"
+    release = "--release" in args or os.environ.get("DEVTOOLS_RELEASE") == "1"
     for line in bad:
         print(f"  {line}")
     m = measure(audits)

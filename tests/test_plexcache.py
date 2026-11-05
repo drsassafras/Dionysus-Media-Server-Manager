@@ -30,7 +30,15 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(__file__))
 
-TMP = tempfile.mkdtemp(prefix="plexcache-test-")
+# The tests' temp folder, reached through a symlink on every system, as a Mac's own is (/var is /private/var): a path
+# said as given where one as it really is was meant (or the other way round) fails here, on Linux and GitHub too, and
+# not only on a Mac. Every temp folder the tests make (tempfile's, and a program's TMPDIR) is in it.
+_TMP_BASE = tempfile.mkdtemp(prefix="plexcache-test-")
+os.mkdir(os.path.join(_TMP_BASE, "real"))
+os.symlink(os.path.join(_TMP_BASE, "real"), os.path.join(_TMP_BASE, "link"))
+TMP = os.path.join(_TMP_BASE, "link")
+tempfile.tempdir = TMP
+os.environ["TMPDIR"] = TMP
 
 
 def some[T](x: T | None) -> T:
@@ -128,7 +136,7 @@ logging.getLogger("plexcache").addHandler(logging.NullHandler())
 def tearDownModule():
     PLEX.close()
     TRUENAS.close()
-    shutil.rmtree(TMP, ignore_errors=True)
+    shutil.rmtree(_TMP_BASE, ignore_errors=True)
     if THREAD_ERRORS:
         raise AssertionError(f"{len(THREAD_ERRORS)} error(s) in background threads:\n\n" + "\n".join(THREAD_ERRORS))
 
@@ -2441,7 +2449,7 @@ class AppTests(unittest.TestCase):
             self.assertIn(b"/static/app.js", body)
         status, _, headers = self.get("/static/app.js")
         self.assertIn("javascript", headers["Content-Type"])
-        # After an update (or tnsync) browsers mustn't keep the old interface: the page names its
+        # After an update (or devtools) browsers mustn't keep the old interface: the page names its
         # files with the build, files carry an ETag (unchanged ones get a 304), and the state says
         # which build is running so open tabs reload themselves
         from plexcache.server import BUILD
@@ -3309,6 +3317,35 @@ class ThemeTests(unittest.TestCase):
         self.assertNotIn("frame", old["light"]["colors"])
         self.assertEqual(old["light"]["colors"]["bg"], "#E7E8E2")
 
+    def test_themes_say_only_their_own(self):
+        """A built-in look sets only what's its own: none of its colours is what it would be anyway (from the look it's
+        based on, or the colour it follows: themes.FOLLOWS), so a default is said once. A colour that follows another
+        changes with it in a theme that sets that one (a theme's accent is its bars', charts' and ripe grapes'), and
+        otherwise is the base theme's, so a theme based on Classic that changes nothing looks like Classic."""
+        from plexcache import themes
+        self.assertLessEqual(set(themes.FOLLOWS) | set(themes.FOLLOWS.values()), set(themes.COLORS))
+        self.assertFalse(set(themes.FOLLOWS) & set(themes.FOLLOWS.values()))   # (one step: a colour followed follows none)
+        built = {t["id"]: t for t in themes.BUILT_IN}
+        for (tid, mode), (base, own) in themes.AUTHORED.items():
+            whole = built[tid][mode]["colors"]
+            self.assertEqual(themes.follow(own, built[base[0]][base[1]]["colors"] if base else None), whole, (tid, mode))
+            for k in own:
+                if base is None and k not in themes.FOLLOWS:
+                    continue   # (the root sets every colour that follows none)
+                rest = {x: v for x, v in own.items() if x != k}
+                try:
+                    anyway = themes.follow(rest, built[base[0]][base[1]]["colors"] if base else None)[k]
+                except KeyError:
+                    continue
+                self.assertNotEqual(anyway, own[k], f"{tid} {mode}: {k} is {own[k]} anyway")
+        for mode in ("light", "dark"):
+            classic = built["classic"][mode]["colors"]
+            for k, lead in themes.FOLLOWS.items():
+                t = themes.validate({"name": "Mine", "based_on": "classic", mode: {"colors": {lead: "#123456"}}})
+                self.assertEqual(t[mode]["colors"][k], "#123456", (mode, k))
+                self.assertEqual(themes.validate({"name": "Plain"})[mode]["colors"][k], classic[k], (mode, k))
+                self.assertEqual(themes.validate({"name": "Mine", mode: {"colors": {lead: "#123456", k: "#ABCDEF"}}})[mode]["colors"][k], "#ABCDEF")
+
     def test_theme_files_are_checked(self):
         """A theme from a file: #hex colours only, for its light and its dark look, fonts and decorations from their lists,
         no built-in's id; what it leaves out comes from the theme it's based on. A downloaded theme uploads again as it is."""
@@ -3393,14 +3430,19 @@ class ThemeTests(unittest.TestCase):
         self.assertEqual(self.req("GET", "/static/fonts/../app.css")[0], 404)
 
     def test_every_page_wears_the_theme(self):
-        """The sign-in page and the app load the theme before they draw, and the decorations after, and show the one logo
-        whatever the theme; the app's pages are drawn by one function that hands each page to the decorations, so none goes without."""
+        """The sign-in page, the app and the devtools page load the theme before they draw, and nothing else of it: the theme
+        loads what its decorations need (themes.ASSETS, by /theme.js), so a page never names them, and a page served
+        elsewhere (devtools) serves them beside it (themes.files). They show the one logo whatever the theme; the app's
+        pages are drawn by one function that hands each page to the decorations, so none goes without."""
+        from dev import devui
+        from plexcache import themes
         for name in ("index.html", "login.html"):
             html = _read(self._root("plexcache", "web", name), encoding="utf-8")
             head = html[:html.index("</head>")]
             self.assertIn('<link rel="stylesheet" href="/theme.css">', head, name)
             self.assertIn('<script src="/theme.js"></script>', head, name)
-            self.assertIn('<script src="/static/decor.js"></script>', html, name)
+            for asset in themes.ASSETS:
+                self.assertNotIn(asset, html, name)
             # the logo is the same in every theme: the Full house theatre, and its tab icon
             self.assertIn('<link rel="icon" type="image/svg+xml" href="/static/theatre-tab.svg">', head, name)
             self.assertIn('<img src="/static/theatre.svg"', html, name)
@@ -3408,6 +3450,22 @@ class ThemeTests(unittest.TestCase):
         self.assertEqual(js.count("main.innerHTML = PAGES[page]();"), 1)
         draw = js[js.index("main.innerHTML = PAGES[page]();"):]
         self.assertLess(draw.index("PCDECOR.paint(main)"), draw.index("\n  }"))
+        # /theme.js loads decor.js (once, as the build's file) when the theme shown has a decoration, with its own nonce
+        # where the page has one (the devtools page's policy runs only that)
+        self.assertEqual(themes.ASSETS, {"decor.js": tuple(themes.DECOR)})
+        body = self.req("GET", "/theme.js")[1].decode()
+        from plexcache.server import BUILD
+        self.assertIn('s.src="/static/"+f+"?v=' + BUILD + '"', body)
+        self.assertIn("if(NONCE)s.nonce=NONCE", body)
+        self.assertEqual(self.req("GET", "/static/decor.js")[0], 200)
+        page = devui.page()
+        self.assertIn(themes.script(None), page)
+        self.assertNotIn("decor.js\"", page.replace(themes.script(None), ""))
+        served = devui.files()
+        for name, path in themes.files(self._root("plexcache", "web")).items():
+            self.assertEqual(served[name], path)
+            self.assertTrue(os.path.isfile(path), path)
+        self.assertIn("static/decor.js", served)
 
     def test_the_app_installs_with_its_icons(self):
         """Every page names the tab icon, the iPhone's home-screen icon, the manifest that lets a browser install the app
@@ -3469,6 +3527,22 @@ class ThemeTests(unittest.TestCase):
         self.assertIn('if (on("grapes")) meters(root);', decor)
         css = _read(self._root("plexcache", "web", "app.css"), encoding="utf-8")
         self.assertIn(':root[data-grapes="on"] .meter:not(.usage)>div{display:none}', css)
+        # the dev tools' pages too: their bars are the app's (class "meter", role "progressbar", the filled part a <div>),
+        # and no page of theirs styles a bar or a decoration of its own, or undoes the theme's
+        dev = self._root("dev")
+        for name in sorted(os.listdir(dev)):
+            if not name.endswith((".html", ".css")):
+                continue
+            text = _read(os.path.join(dev, name), encoding="utf-8")
+            for m in re.finditer(r'class: "meter([^"]*)"([^)]*)\)', text):
+                self.assertIn('role: "progressbar"', m.group(2), name)
+            self.assertNotIn("<progress", text, name)
+            styles = text if name.endswith(".css") else "".join(re.findall(r"<style>(.*?)</style>", text, re.S))
+            self.assertNotRegex(styles, r"\.meter\b|\.mvine\b|data-(grapes|vines|film|spots)=", name)
+        self.assertIn('class: "meter" + state, role: "progressbar"', _read(os.path.join(dev, "devui.html"), encoding="utf-8"))
+        # a bar's state (devtools' blocks): the badge's colour, for its filled part and for its ripe grapes
+        for state in ("ok", "warn", "bad"):
+            self.assertIn(f".meter.{state}{{--accent:var(--{state});--wine:var(--{state})}}", css)
 
     def test_system_page_themes_card(self):
         """System → Themes: the theme to show and its mode (Auto, Light or Dark), this device's own theme and mode, every
@@ -4294,7 +4368,7 @@ class AppEdgeTests(unittest.TestCase):
         try:
             # main() sets up logging to the screen; catch what it says instead of printing it mid-progress-bar.
             # Its stop-signal handler is caught too: left installed, it would swallow the SIGTERM that stops the
-            # test run (tnsync's Enter), and the rest of the suite would carry on.
+            # test run (devtools's Enter), and the rest of the suite would carry on.
             with self.assertLogs("plexcache", "WARNING") as logs, mock.patch("signal.signal"):
                 self.assertEqual(main_mod.main(), 0)
             self.assertTrue(any("login is off" in m for m in logs.output))
@@ -4347,7 +4421,7 @@ class AppEdgeTests(unittest.TestCase):
 
 class TestRunnerTests(unittest.TestCase):
     def test_a_stop_ends_the_run_at_once_and_the_unfinished_test_is_not_a_failure(self):
-        """tnsync's Enter sends tests/run.py a SIGTERM. The run ends then, mid-test, even when an earlier
+        """devtools's Enter sends tests/run.py a SIGTERM. The run ends then, mid-test, even when an earlier
         test left a SIGTERM handler of its own behind; the test it was in isn't reported as failed."""
         import signal
         import subprocess
@@ -4442,16 +4516,16 @@ class TestRunnerTests(unittest.TestCase):
 
     @unittest.skipUnless(os.path.isdir(os.path.join(ROOT, ".git")) and shutil.which("git"),
                          "a copy, not the checkout, or no git here (the image: dev/future.py): no git record to read")
-    def test_tnsync_stays_executable(self):
-        """dev/tnsync is run as `tnsync`, so git must record it executable (100755). An editor or tool that
+    def test_devtools_stays_executable(self):
+        """dev/devtools is run as `devtools`, so git must record it executable (100755). An editor or tool that
         rewrites the file can drop the bit, and a commit then makes every checkout say 'permission denied'."""
         import subprocess
-        listed = subprocess.run(["git", "-C", ROOT, "ls-files", "-s", "--", "dev/tnsync"],
+        listed = subprocess.run(["git", "-C", ROOT, "ls-files", "-s", "--", "dev/devtools"],
                                 capture_output=True, text=True, check=True).stdout.split()
-        self.assertTrue(listed, "dev/tnsync isn't tracked")
-        self.assertEqual(listed[0], "100755", "git records dev/tnsync as not executable: run `chmod +x dev/tnsync` and commit")
-        self.assertTrue(os.access(os.path.join(ROOT, "dev", "tnsync"), os.X_OK),
-                        "dev/tnsync lost its executable bit: run `chmod +x dev/tnsync`")
+        self.assertTrue(listed, "dev/devtools isn't tracked")
+        self.assertEqual(listed[0], "100755", "git records dev/devtools as not executable: run `chmod +x dev/devtools` and commit")
+        self.assertTrue(os.access(os.path.join(ROOT, "dev", "devtools"), os.X_OK),
+                        "dev/devtools lost its executable bit: run `chmod +x dev/devtools`")
 
     def test_a_bar_goes_to_the_board_and_is_drawn_there_with_the_same_code(self):
         """PLEXCACHE_PROGRESS=feed: dev/progress.py's bar sends each change as a line the board reads (FEED, then JSON)
@@ -4540,6 +4614,33 @@ class TestRunnerTests(unittest.TestCase):
         self.assertEqual(upkeep.found(None, "timed out"), [("error", "upstream not reached: timed out", "python3 dev/upkeep.py")])
         stylelint = upkeep.Report(news=[("stylelint", "17.16.0", "18.0.0", "major", "by hand")])   # (a package: its fix the npm command)
         self.assertEqual(upkeep.found(stylelint), [("warning", "stylelint 17.16.0 → 18.0.0 (major)", "npm install --prefix dev --save-exact stylelint@18.0.0")])
+        # its page in the devtools UI (upkeep.page, written on a --devtools run): the box's word and lines, each
+        # dependency as a row, what moved and what's new, the CVEs as judged, the Issues as the board has them
+        from dev.cves import Judged
+        r.deps = [{"name": "Node", "have": "24.2.0", "newest": "24.2.0", "state": "moved", "level": "minor", "where": "Dockerfile", "package": ""}]
+        r.cves = Judged(act=[("CVE-1 in x", "move it")], shown=1, notes=["Trivy not run"])
+        got = upkeep.page(r, "dev", step="move")
+        self.assertEqual((got["kind"], got["state"], got["where"], got["step"], got["stale"], got["error"]), ("upkeep", "behind", "dev", "move", False, ""))
+        self.assertEqual(got["head"], "NEW VERSIONS UPSTREAM  -  1 MOVED, 1 FOR YOU, 1 CVE")
+        self.assertEqual((got["deps"], got["moved"], got["bumped"]), (r.deps, r.moved, r.bumped))
+        self.assertEqual(got["news"], [{"name": "pyright", "have": "1.1.400", "newest": "2.0.0", "level": "major", "todo": "by hand"}])
+        self.assertEqual((got["cves"]["act"], got["cves"]["shown"], got["cves"]["notes"]), ([["CVE-1 in x", "move it"]], 1, ["Trivy not run"]))
+        self.assertEqual(got["issues"][0], {"level": "notice", "text": "moved Node 24.1.0 → 24.2.0: test it, then commit", "fix": ""})
+        self.assertEqual([i["level"] for i in got["issues"]], ["notice", "warning", "warning", "notice"])
+        self.assertEqual(json.loads(json.dumps(got))["lines"][:2], ["", "Moved here (dev): run the tests, then commit them."])
+        gone = upkeep.page(None, None, "timed out", "look")
+        self.assertEqual((gone["state"], gone["error"], gone["deps"], gone["cves"], gone["issues"][0]["level"]), ("unknown", "timed out", [], None, "error"))
+        # a --devtools run writes it (DEVTOOLS_DETAIL), the look's and then the move's in the same place
+        folder = tempfile.mkdtemp(dir=TMP)
+        path = os.path.join(folder, "upkeep.json")
+        with mock.patch.object(upkeep, "check", return_value=r), mock.patch.object(upkeep, "branch", return_value="dev"), \
+                mock.patch.object(upkeep, "_progress", return_value=None), mock.patch.object(sys, "argv", ["upkeep.py", "--devtools"]), \
+                mock.patch.dict(os.environ, {"DEVTOOLS_DETAIL": path, "DEVTOOLS_UPKEEP": "look", "PLEXCACHE_PROGRESS": ""}), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(upkeep.main(), 0)
+        with open(path, encoding="utf-8") as fh:
+            written = json.load(fh)
+        self.assertEqual((written["step"], written["deps"]), ("look", r.deps))
 
     def test_the_board_lists_every_issue_under_it(self):
         """Under the board, at the end: its Issues — each section's errors, warnings and notices, as it sent them
@@ -4603,7 +4704,7 @@ class TestRunnerTests(unittest.TestCase):
 
     def test_run_py_sends_its_bar_to_the_board_and_can_leave_a_class_out(self):
         """tests/run.py on the board (PLEXCACHE_PROGRESS=feed): its bar as records (bar "tests"), its summary as text;
-        --exclude <Class> leaves that class out (tnsync runs WebBuildTests in a section of its own), in this process or
+        --exclude <Class> leaves that class out (devtools runs WebBuildTests in a section of its own), in this process or
         shared out among workers."""
         import subprocess
         import textwrap
@@ -4641,7 +4742,7 @@ class TestRunnerTests(unittest.TestCase):
         ("stop_with": the future tests with the current ones) is stopped when that fails; an exit code that means "couldn't
         be set up" is not run, not failed; the dependencies' section ("upkeep") looks, then runs again once the checks are
         done ("then"), its colour from that run's first line. What a failed section printed comes after the board; the
-        results say how each went, for tnsync."""
+        results say how each went, for devtools."""
         import subprocess
         folder = tempfile.mkdtemp(dir=TMP)
         plan = [{"id": "slow1", "title": "One", "cmd": "sleep 1; echo one done"},
@@ -4651,7 +4752,7 @@ class TestRunnerTests(unittest.TestCase):
                 {"id": "next", "title": "Next", "cmd": "echo after one", "after": ["slow1"]},
                 {"id": "never", "title": "Never", "cmd": "echo ran", "after": ["bad"]},
                 {"id": "unset", "title": "Unset", "cmd": "echo download failed; exit 3", "not_run_rc": 3},
-                {"id": "deps", "title": "Dependencies", "cmd": "echo current; echo looked: $TNSYNC_PHASE", "env": {"TNSYNC_PHASE": "look"}, "upkeep": True,
+                {"id": "deps", "title": "Dependencies", "cmd": "echo current; echo looked: $DEVTOOLS_PHASE", "env": {"DEVTOOLS_PHASE": "look"}, "upkeep": True,
                  "then": {"cmd": "echo behind; echo moved", "after": ["slow1", "slow2", "bad", "gone"]}}]
         with open(os.path.join(folder, "plan.json"), "w", encoding="utf-8") as fh:
             json.dump(plan, fh)
@@ -4774,7 +4875,7 @@ class TestRunnerTests(unittest.TestCase):
         self.assertIn("26 dependencies up to date", drawn[2])
 
     def test_a_failure_is_told_as_it_comes_and_named_in_the_issues(self):
-        """On tnsync's board tests/run.py says each failure as it comes (a "tell" record, put above the board) and names
+        """On devtools's board tests/run.py says each failure as it comes (a "tell" record, put above the board) and names
         it in the board's Issues (an "issue" record: the test, and the command that runs it alone) — not the run's result
         line — and doesn't print it again at its end."""
         import subprocess
@@ -4888,7 +4989,7 @@ class TestRunnerTests(unittest.TestCase):
         self.assertIn("PASSED · 2 WARNINGS", s.lines(60)[0])
 
     def test_style_approval_makes_the_sample_while_the_board_runs(self):
-        """tnsync's Style Approval: once its check says looks wait, the block's second step ("then", after nothing) makes
+        """devtools's Style Approval: once its check says looks wait, the block's second step ("then", after nothing) makes
         their sample there and then, the block saying so (LOOKS WAITING: MAKING SAMPLE), then LOOKS WAITING as the check
         left it; a sample that can't be made leaves it LOOKS WAITING: NO SAMPLE, what it said above the board — never a
         failure."""
@@ -4933,7 +5034,7 @@ class TestRunnerTests(unittest.TestCase):
             for goodbye in (True, False):
                 urls, got, log = [], [], os.path.join(tmp, "review.log")
                 t = threading.Thread(target=lambda got=got, log=log, urls=urls: got.append(s.review(tmp, terminal=True, open_browser=False, log=log, gone=(0.3, 1.0),
-                                                                         ready=lambda server, url: urls.append(url))))
+                                                                         ready=lambda server, url, token: urls.append(url))))
                 t.start()
                 for _ in range(100):
                     if urls:
@@ -4984,7 +5085,7 @@ class TestRunnerTests(unittest.TestCase):
                 self.assertEqual(os.stat(log).st_mode & 0o777, 0o600)
 
     def test_one_style_sample_at_a_time(self):
-        """dev/style.py sample while another is being made (tnsync's board makes one; r, or a terminal, another): it waits
+        """dev/style.py sample while another is being made (devtools's board makes one; r, or a terminal, another): it waits
         for that one, and once it's done, and shows what waits, makes none of its own."""
         import fcntl
         import importlib.util
@@ -5034,11 +5135,33 @@ class TestRunnerTests(unittest.TestCase):
                     mock.patch.object(s, "sample", lambda: made.append(1) or 0), mock.patch.object(s, "review", lambda log=None, **_: served.append(log) or 0):
                 self.assertEqual(s.main(["style.py", "review", "--board"]), 0)
                 self.assertEqual((made, served), ([1], [os.path.join(tmp, "review.log")]))   # (made again, then served)
-                with open(os.path.join(tmp, "sample.json"), "w", encoding="utf-8") as f:   # (one that shows it)
-                    json.dump({"fingerprint": s.fingerprint(diff)}, f)
+                with open(os.path.join(tmp, "sample.json"), "w", encoding="utf-8") as f:   # (it, but drawn by other code)
+                    json.dump({"fingerprint": s.fingerprint(diff), "made_from": "0" * 64}, f)
+                self.assertFalse(s.sample_shows(diff, tmp))
+                with open(os.path.join(tmp, "sample.json"), "w", encoding="utf-8") as f:   # (one that shows it, as drawn now)
+                    json.dump({"fingerprint": s.fingerprint(diff), "made_from": s.made_from()}, f)
                 self.assertTrue(s.sample_shows(diff, tmp))
                 self.assertEqual(s.main(["style.py", "review", "--board"]), 0)
                 self.assertEqual(made, [1])   # (not made again)
+            # what it's made from: the app, the demo and its fakes, the tools that draw it, the Python, the Before's source
+            for top in ("plexcache", "tests/demo.py", "tests/fakes.py", "dev/style.py", "dev/style-sample.js", "dev/still.js", "dev/devpage.py"):
+                self.assertIn(top, s.MADE_FROM)
+            self.assertEqual(s.made_from(), s.made_from())
+            self.assertNotEqual(s.made_from(), s.made_from(before=tmp))
+            for rel in ("plexcache/web/app.js", "tests/demo.py", "dev/still.js"):   # a byte changed in any of them: another sample
+                tree = os.path.join(tmp, "tree")
+                for top in s.MADE_FROM:
+                    src, dst = os.path.join(ROOT, top), os.path.join(tree, top)
+                    if os.path.isdir(src):
+                        shutil.copytree(src, dst, ignore=shutil.ignore_patterns("__pycache__"), dirs_exist_ok=True)
+                    elif os.path.exists(src):
+                        os.makedirs(os.path.dirname(dst), exist_ok=True)
+                        shutil.copy2(src, dst)
+                was = s.made_from(root=tree)
+                with open(os.path.join(tree, rel), "a", encoding="utf-8") as f:
+                    f.write(" ")
+                self.assertNotEqual(s.made_from(root=tree), was, rel)
+                shutil.rmtree(tree)
 
     def test_a_section_that_only_tells(self):
         """A section with "tell" (the Translations and Release checks blocks between releases): its exit code means
@@ -5102,7 +5225,7 @@ class TestRunnerTests(unittest.TestCase):
         some(s.helper).wait(5)
         s.helped()
         self.assertIn("LOOKS WAITING: THE REVIEW PAGE HAS CLOSED", s.lines(80)[0])
-        s.key["cmd"] = "echo \"There's no sample to review. To make it: python3 dev/style.py sample\" >&2; exit 1"
+        s.key["cmd"] = "echo \"There's no sample to review, and no look waits for approval\" >&2; exit 1"
         s.press(null)
         some(s.helper).wait(5)
         s.helped()
@@ -5118,25 +5241,25 @@ class TestRunnerTests(unittest.TestCase):
         s.live = False                                     # (the board done: the command again, and no key)
         self.assertFalse(s.keyed)
         self.assertIn("3 looks need your approval: python3 dev/style.py review", s.lines(80)[2])
-        self.assertIn('review --board', _read(os.path.join(ROOT, "dev", "tnsync"), encoding="utf-8"))
+        self.assertIn('review --board', _read(os.path.join(ROOT, "dev", "devtools"), encoding="utf-8"))
 
-    @unittest.skipUnless(shutil.which("rsync") and shutil.which("bash"), "no rsync here (tnsync copies with it)")
+    @unittest.skipUnless(shutil.which("rsync") and shutil.which("bash"), "no rsync here (devtools copies with it)")
     def test_no_sample_keeps_the_style_check_as_it_was(self):
-        """tnsync --no-sample: Style Approval is the check alone, as before the sample was made on the board — no second
-        step, and its bar every look against the guide by its one process, nothing of a sample on it (TNSYNC_SAMPLE=0)."""
+        """devtools --no-sample: Style Approval is the check alone, as before the sample was made on the board — no second
+        step, and its bar every look against the guide by its one process, nothing of a sample on it (DEVTOOLS_SAMPLE=0)."""
         import subprocess
 
         from dev.progress import record
         got = subprocess.run([sys.executable, os.path.join(ROOT, "dev", "style.py"), "check"], cwd=ROOT, capture_output=True, text=True, timeout=120,
-                             env=dict(os.environ, PLEXCACHE_PROGRESS="feed", TNSYNC_SAMPLE="0"))
+                             env=dict(os.environ, PLEXCACHE_PROGRESS="feed", DEVTOOLS_SAMPLE="0"))
         bars = [r for r in map(record, got.stdout.split("\n")) if r and "bar" in r]
         self.assertEqual([(b["label"], b["workers"], b["done"] == b["total"]) for b in bars], [("looks · against the style guide", 1, True)])
         self.assertNotIn("sample", " ".join(str(b) for b in bars))
-        tnsync = _read(os.path.join(ROOT, "dev", "tnsync"), encoding="utf-8")
-        self.assertIn('local then=", \\"env\\": {\\"TNSYNC_SAMPLE\\": \\"0\\"}"', tnsync)   # (--no-sample: no "then", the check as it was)
-        self.assertIn('if [ "$NO_SAMPLE" != 1 ] && [[ "$TN_STYLE" == *" check" ]]; then', tnsync)
+        devtools = _read(os.path.join(ROOT, "dev", "devtools"), encoding="utf-8")
+        self.assertIn('local then=", \\"env\\": {\\"DEVTOOLS_SAMPLE\\": \\"0\\"}"', devtools)   # (--no-sample: no "then", the check as it was)
+        self.assertIn('if [ "$NO_SAMPLE" != 1 ] && [[ "$TN_STYLE" == *" check" ]]; then', devtools)
 
-    def test_tnsync_opens_the_review_once_the_board_is_done(self):
+    def test_devtools_opens_the_review_once_the_board_is_done(self):
         """Once the rest of the board is done with looks waiting (Style Approval LOOKS WAITING, none failed), their review is
         the block's last step, on the board (TN_STYLE's check made review --step: IN REVIEW while the page is open), then
         the check again: ALL APPROVED once nothing waits. Not with --no-sample, not without a terminal, nor when a check
@@ -5151,8 +5274,8 @@ class TestRunnerTests(unittest.TestCase):
             fh.write('#!/bin/bash\nwhile [ $# -gt 0 ]; do case "$1" in -o|-p|-l) shift 2 ;; -O) exit 0 ;; -*) shift ;; *) break ;; esac; done\n'
                      'shift; [ $# -eq 0 ] && exit 0; exec bash -c "$*"\n')
         style = os.path.join(fake, "style")
-        with open(style, "w", encoding="utf-8") as fh:   # (dev/style.py as tnsync sees it: check, sample, review)
-            fh.write(f'#!/bin/bash\ncase "$1" in check) [ -n "$TNSYNC_RECHECK" ] && [ -f {folder}/reviewed ] && exit 0; '
+        with open(style, "w", encoding="utf-8") as fh:   # (dev/style.py as devtools sees it: check, sample, review)
+            fh.write(f'#!/bin/bash\ncase "$1" in check) [ -n "$DEVTOOLS_RECHECK" ] && [ -f {folder}/reviewed ] && exit 0; '
                      f'echo "2 looks not in the style guide, for the maintainer to look at and approve: x"; '
                      f"printf '\\036{{\"then\": 0}}\\n'; exit 1 ;; review) echo \"review $*\" >> {folder}/reviewed; sleep 0.6; "
                      f"printf '\\036{{\"said\": \"2 approved just now · commit dev/style-guide.json and dev/style-approved.zip\"}}\\n' ;; esac\n")
@@ -5160,22 +5283,22 @@ class TestRunnerTests(unittest.TestCase):
         os.chmod(style, 0o755)
         with open(os.path.join(folder, "config"), "w", encoding="utf-8") as fh:
             fh.write("TN_HOST=nas.example\nTN_USER=me\n")
-        env = dict(os.environ, PATH=fake + os.pathsep + os.environ.get("PATH", ""), TNSYNC_CONFIG=os.path.join(folder, "config"),
+        env = dict(os.environ, PATH=fake + os.pathsep + os.environ.get("PATH", ""), DEVTOOLS_CONFIG=os.path.join(folder, "config"),
                    XDG_STATE_HOME=os.path.join(folder, "state"), TMPDIR=folder)
         env.pop("PLEXCACHE_PROGRESS", None)
 
         def run(*args, test="echo 1 test passed", terminal=True):
-            with open(os.path.join(project, ".tnsync"), "w", encoding="utf-8") as fh:
+            with open(os.path.join(project, ".devtools"), "w", encoding="utf-8") as fh:
                 fh.write(f"TN_APP=myapp\nTN_DEST={nas}\nTN_PATHS=app\nTN_TEST={test}\nTN_STYLE={style} check\n")
             with open(os.path.join(project, "app", "code.py"), "w", encoding="utf-8") as fh:   # (something to copy each time)
                 fh.write(f"{time.time()}\n")
             if os.path.exists(os.path.join(folder, "reviewed")):
                 os.remove(os.path.join(folder, "reviewed"))
-            cmd = [os.path.join(ROOT, "dev", "tnsync"), "local", *args]
+            cmd = [os.path.join(ROOT, "dev", "devtools"), "local", *args]
             if not terminal:
                 got = subprocess.run(cmd, cwd=project, env=env, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
                 return got.returncode, got.stdout + got.stderr
-            # tnsync on a terminal of its own: a pty's far end as its stdin, stdout and stderr, started by subprocess (not
+            # devtools on a terminal of its own: a pty's far end as its stdin, stdout and stderr, started by subprocess (not
             # pty.fork: forking a process with threads running, as the suite's are, can deadlock the child)
             fd, far = pty.openpty()
             with subprocess.Popen(cmd, cwd=project, env=env, stdin=far, stdout=far, stderr=far, start_new_session=True) as proc:
@@ -5207,7 +5330,7 @@ class TestRunnerTests(unittest.TestCase):
             self.assertNotIn("IN REVIEW", out)
 
     def test_enter_skips_a_sections_last_step(self):
-        """A section's last step ("finale": tnsync's review on the board), under way: blue, what it does its status, its
+        """A section's last step ("finale": devtools's review on the board), under way: blue, what it does its status, its
         bar's label, Enter offered to skip it; Enter puts the section back as it was (LOOKS WAITING, its line)."""
         from dev import board
         from dev.progress import FEED
@@ -5238,9 +5361,9 @@ class TestRunnerTests(unittest.TestCase):
         self.assertIn("6 looks need your approval", drawn[2])
         self.assertFalse(b.finale_due(s))   # (skipped: not again)
 
-    @unittest.skipUnless(shutil.which("rsync") and shutil.which("bash"), "no rsync here (tnsync copies with it)")
-    def test_tnsync_copies_no_link_out_and_keeps_its_socket_private(self):
-        """tnsync's copy never puts a link that leads out of the copy on the NAS (one committed to /mnt/..., say, would
+    @unittest.skipUnless(shutil.which("rsync") and shutil.which("bash"), "no rsync here (devtools copies with it)")
+    def test_devtools_copies_no_link_out_and_keeps_its_socket_private(self):
+        """devtools's copy never puts a link that leads out of the copy on the NAS (one committed to /mnt/..., say, would
         be the running app's), and its SSH connection's socket is in a folder only you can open, not a name anyone could
         take first in the shared /tmp."""
         import stat
@@ -5265,13 +5388,13 @@ class TestRunnerTests(unittest.TestCase):
         os.symlink("/etc", os.path.join(project, "app", "etc"))
         with open(os.path.join(folder, "config"), "w", encoding="utf-8") as fh:
             fh.write("TN_HOST=nas.example\nTN_USER=me\n")
-        with open(os.path.join(project, ".tnsync"), "w", encoding="utf-8") as fh:
+        with open(os.path.join(project, ".devtools"), "w", encoding="utf-8") as fh:
             fh.write(f"TN_APP=myapp\nTN_DEST={nas}\nTN_PATHS=app\n")
         state = os.path.join(folder, "state")
-        env = dict(os.environ, PATH=fake + os.pathsep + os.environ.get("PATH", ""), TNSYNC_CONFIG=os.path.join(folder, "config"),
+        env = dict(os.environ, PATH=fake + os.pathsep + os.environ.get("PATH", ""), DEVTOOLS_CONFIG=os.path.join(folder, "config"),
                    XDG_STATE_HOME=state, TMPDIR=folder)
         env.pop("PLEXCACHE_PROGRESS", None)
-        got = subprocess.run([os.path.join(ROOT, "dev", "tnsync"), "local", "-y"], cwd=project, env=env, capture_output=True,
+        got = subprocess.run([os.path.join(ROOT, "dev", "devtools"), "local", "-y"], cwd=project, env=env, capture_output=True,
                              text=True, timeout=120, stdin=subprocess.DEVNULL)
         out = got.stdout + got.stderr
         self.assertEqual(_read(os.path.join(nas, "app", "code.py"), encoding="utf-8"), "one\n", out)
@@ -5280,15 +5403,15 @@ class TestRunnerTests(unittest.TestCase):
         args = _read(os.path.join(folder, "ssh-args"), encoding="utf-8")
         sock = os.path.dirname(some(re.search(r"ControlPath=(\S+)", args)).group(1))
         # (the state folder's; one of your own in /tmp only when that path is too long for a socket's name, as here maybe)
-        self.assertIn(sock, (os.path.join(state, "tnsync", "ssh"), f"/tmp/tnsync-ssh-{os.getuid()}"))
+        self.assertIn(sock, (os.path.join(state, "devtools", "ssh"), f"/tmp/devtools-ssh-{os.getuid()}"))
         self.assertEqual((stat.S_IMODE(os.lstat(sock).st_mode), os.lstat(sock).st_uid), (0o700, os.getuid()))
 
-    @unittest.skipUnless(shutil.which("rsync") and shutil.which("bash") and shutil.which("git"), "no rsync here (tnsync copies with it)")
-    def test_tnsync_holds_its_settings_to_what_they_say(self):
-        """tnsync's settings can't be walked round: TN_DEST is never the NAS's root however it's written (rsync --delete
+    @unittest.skipUnless(shutil.which("rsync") and shutil.which("bash") and shutil.which("git"), "no rsync here (devtools copies with it)")
+    def test_devtools_holds_its_settings_to_what_they_say(self):
+        """devtools's settings can't be walked round: TN_DEST is never the NAS's root however it's written (rsync --delete
         works on it), a TN_PATHS entry stays in the project and TN_DEST and carries no quote into the NAS's shell, TN_HOST
         and TN_USER are plain names (one starting with - would be an option to ssh), and ssh has -- before the NAS. The
-        .tnsync is the project's own: never one in a folder above the repository, nor one others may change. The dev
+        .devtools is the project's own: never one in a folder above the repository, nor one others may change. The dev
         tools' packages (dev/ only) are installed with no install scripts run, and not at all with --skip-tests
         (F-2026-017 to 020)."""
         import subprocess
@@ -5309,7 +5432,7 @@ class TestRunnerTests(unittest.TestCase):
             with open(os.path.join(project, rel), "w", encoding="utf-8") as fh:
                 fh.write(text)
         config = os.path.join(folder, "config")
-        env = dict(os.environ, PATH=fake + os.pathsep + os.environ.get("PATH", ""), TNSYNC_CONFIG=config,
+        env = dict(os.environ, PATH=fake + os.pathsep + os.environ.get("PATH", ""), DEVTOOLS_CONFIG=config,
                    XDG_STATE_HOME=os.path.join(folder, "state"), TMPDIR=folder)
         env.pop("PLEXCACHE_PROGRESS", None)
         good = f"TN_APP=myapp\nTN_DEST={nas}\nTN_PATHS=app\n"
@@ -5318,10 +5441,10 @@ class TestRunnerTests(unittest.TestCase):
             with open(config, "w", encoding="utf-8") as fh:
                 fh.write(shared)
             if settings is not None:
-                with open(os.path.join(project, ".tnsync"), "w", encoding="utf-8") as fh:
+                with open(os.path.join(project, ".devtools"), "w", encoding="utf-8") as fh:
                     fh.write(settings)
-                os.chmod(os.path.join(project, ".tnsync"), 0o644)
-            got = subprocess.run([os.path.join(ROOT, "dev", "tnsync"), "local", *args], cwd=cwd, env=env, capture_output=True,
+                os.chmod(os.path.join(project, ".devtools"), 0o644)
+            got = subprocess.run([os.path.join(ROOT, "dev", "devtools"), "local", *args], cwd=cwd, env=env, capture_output=True,
                                  text=True, timeout=120, stdin=subprocess.DEVNULL)
             return got.returncode, got.stdout + got.stderr
         for dest in ("//", "/.", "/mnt/..", f"{nas}/../..", "/./"):
@@ -5350,30 +5473,30 @@ class TestRunnerTests(unittest.TestCase):
         self.assertTrue(all("-- me@nas.example" in line for line in args.splitlines() if "-O exit" in line or line.endswith("me@nas.example true")), args)
         rc, out = run(good, "-n")
         self.assertEqual(rc, 0, out)
-        # (the folder as the shell has it: on a Mac, /var is /private/var)
-        self.assertIn(_read(os.path.join(folder, "npm-args"), encoding="utf-8"),
-                      {f"ci --prefix {where}/dev --ignore-scripts --no-audit --no-fund\n" for where in (project, os.path.realpath(project))})
-        # the .tnsync: the project's own, from a folder of the project below it (and said which), never one others may change
+        # (the folder as it really is: on a Mac, /var is /private/var)
+        self.assertEqual(_read(os.path.join(folder, "npm-args"), encoding="utf-8"),
+                         f"ci --prefix {os.path.realpath(project)}/dev --ignore-scripts --no-audit --no-fund\n")
+        # the .devtools: the project's own, from a folder of the project below it (and said which), never one others may change
         rc, out = run(None, "-n", "--skip-tests", cwd=os.path.join(project, "app"))
         self.assertEqual(rc, 0, out)
-        self.assertRegex(out, r"Settings from \S*/project/\.tnsync")
-        os.chmod(os.path.join(project, ".tnsync"), 0o664)
+        self.assertRegex(out, r"Settings from \S*/project/\.devtools")
+        os.chmod(os.path.join(project, ".devtools"), 0o664)
         rc, out = run(None, "-n", "--skip-tests")
         self.assertEqual(rc, 1, out)
-        self.assertIn(".tnsync isn't used", out)
+        self.assertIn(".devtools isn't used", out)
         # and never one in a folder above the repository (/tmp, say)
-        with open(os.path.join(folder, ".tnsync"), "w", encoding="utf-8") as fh:
+        with open(os.path.join(folder, ".devtools"), "w", encoding="utf-8") as fh:
             fh.write(good + "TN_TEST=touch pwned\n")
         other = os.path.join(folder, "other")
         os.makedirs(other)
         subprocess.run(["git", "init", "-q", other], check=True)
         rc, out = run(None, "-n", cwd=other)
         self.assertEqual(rc, 1, out)
-        self.assertIn("no .tnsync file here", out)
+        self.assertIn("no .devtools file here", out)
         self.assertFalse(os.path.exists(os.path.join(other, "pwned")))
 
-    def test_tnsync_runs_its_steps_at_once(self):
-        """tnsync local -y: the copy (and restart) and every check .tnsync sets run at the same time, each a section of
+    def test_devtools_runs_its_steps_at_once(self):
+        """devtools local -y: the copy (and restart) and every check .devtools sets run at the same time, each a section of
         the board (each passing only while the other two run); nothing is said again after it, the result kept, so
         the next run with nothing changed says the tests already passed. With --tests-first, a check that fails means
         nothing is copied. Without -y, the app isn't restarted (there's no question asked)."""
@@ -5403,24 +5526,24 @@ class TestRunnerTests(unittest.TestCase):
             checks = ("echo the failure; echo 1/1 test failed; exit 1", "echo checked", "echo 0 errors", "echo 0 findings") if failing else \
                 (together("test", "12 tests passed"), together("validate", "checked"), together("types", "0 errors"),
                  together("build", "0 ShellCheck findings"))
-            with open(os.path.join(project, ".tnsync"), "w", encoding="utf-8") as fh:
+            with open(os.path.join(project, ".devtools"), "w", encoding="utf-8") as fh:
                 fh.write(f"TN_APP=myapp\nTN_DEST={nas}\nTN_PATHS=app\nTN_TEST={checks[0]}\nTN_VALIDATE={checks[1]}\nTN_TYPES={checks[2]}\n"
                          f"TN_BUILD={checks[3]}\n"
                          # (once the tests are done: their marker gone; a test to add is a warning, not a failure)
                          f"TN_COVERAGE=[ ! -f {folder}/test ] && echo 2 fresh functions no test reaches; exit 1\n"
-                         "TN_UPKEEP=echo current; echo DEPENDENCIES  -  ALL UP TO DATE; echo; echo upkeep: $TNSYNC_UPKEEP\n"
+                         "TN_UPKEEP=echo current; echo DEPENDENCIES  -  ALL UP TO DATE; echo; echo upkeep: $DEVTOOLS_UPKEEP\n"
                          "TN_AUDIT=echo 3 lines no audit has seen; exit 1\n"   # (code to audit: a warning, straight away)
                          "TN_STYLE=echo '  new: css .a'; echo 2 looks need your approval: /the/page.html; exit 1\n")
-        env = dict(os.environ, PATH=fake + os.pathsep + os.environ.get("PATH", ""), TNSYNC_CONFIG=os.path.join(folder, "config"),
+        env = dict(os.environ, PATH=fake + os.pathsep + os.environ.get("PATH", ""), DEVTOOLS_CONFIG=os.path.join(folder, "config"),
                    XDG_STATE_HOME=os.path.join(folder, "state"), TMPDIR=folder)
         env.pop("PLEXCACHE_PROGRESS", None)
 
-        def tnsync(*args, **more):
-            got = subprocess.run([os.path.join(ROOT, "dev", "tnsync"), "local", *args], cwd=project, env=dict(env, **more), capture_output=True,
+        def devtools(*args, **more):
+            got = subprocess.run([os.path.join(ROOT, "dev", "devtools"), "local", *args], cwd=project, env=dict(env, **more), capture_output=True,
                                  text=True, timeout=120, stdin=subprocess.DEVNULL)
             return got.returncode, got.stdout + got.stderr
         settings()
-        rc, out = tnsync("-y")
+        rc, out = devtools("-y")
         self.assertEqual(rc, 0, out)   # (the four checks at once, each passing only while the others run: not one after the other)
         self.assertEqual(_read(os.path.join(nas, "app", "code.py"), encoding="utf-8"), "one\n")
         self.assertRegex(out, r"Copied \d+ files? · restarted myapp")   # (rsync's count: openrsync, on a Mac, lists a folder too)
@@ -5428,13 +5551,13 @@ class TestRunnerTests(unittest.TestCase):
         self.assertNotIn("ALL CHECKS PASSED", out)   # (each section said its own: nothing said again)
         self.assertNotIn("\n  DEPENDENCIES  -  ALL UP TO DATE", out)   # (its box: none when all are current)
         for said in ("Current Tests: PASSED (12 tests passed)", "HTML/JS/CSS Validation: PASSED (checked)", "Python Validation: PASSED (0 errors)",
-                     "Build Validation: PASSED (0 ShellCheck findings)", "Dependencies: UP TO DATE", "==> Dependencies: export TNSYNC_UPKEEP=move",
+                     "Build Validation: PASSED (0 ShellCheck findings)", "Dependencies: UP TO DATE", "==> Dependencies: export DEVTOOLS_UPKEEP=move",
                      "Style Approval: LOOKS WAITING (2 looks need your approval: /the/page.html)",
                      "Coverage: TESTS TO ADD (2 fresh functions no test reaches)",
                      "Security Audit: CODE TO AUDIT (3 lines no audit has seen)"):
             self.assertIn(said, out)
         self.assertNotIn("\n  new: css .a\n", out)   # (the looks waiting: its block says how many and where, the rest not printed; nor a failure: rc 0)
-        rc, out = tnsync("-y")
+        rc, out = devtools("-y")
         self.assertEqual(rc, 0, out)
         self.assertIn("Sync to nas.example: ALREADY IN SYNC (Nothing copied · nas.example already has these files", out)   # (in its block, as each check is)
         self.assertRegex(out, r"Current Tests: ALREADY PASSED \(Passed just now \(\d{4}-\d\d-\d\d \d\d:\d\d\) · 12 tests passed\)")   # (when, and its result from then)
@@ -5446,23 +5569,23 @@ class TestRunnerTests(unittest.TestCase):
         self.assertNotIn("ALREADY IN SYNC  -", out)   # (no box of its own: its block says it)
         if shutil.which("git"):   # a change outside what's copied (the tests, the dev tools) is a change to the code too: tested again
             subprocess.run(["git", "init", "-q", project], check=True)
-            rc, out = tnsync("-y")   # (now a checkout: what the tests ran on is known, and this is the first time it is)
+            rc, out = devtools("-y")   # (now a checkout: what the tests ran on is known, and this is the first time it is)
             self.assertIn("The code has changed since the last test run", out)
-            rc, out = tnsync("-y")
+            rc, out = devtools("-y")
             self.assertRegex(out, r"Current Tests: ALREADY PASSED")
             os.makedirs(os.path.join(project, "tests"))
             with open(os.path.join(project, "tests", "test_it.py"), "w", encoding="utf-8") as fh:
                 fh.write("one more\n")
-            rc, out = tnsync("-y")
+            rc, out = devtools("-y")
             self.assertEqual(rc, 0, out)
             self.assertIn("Sync to nas.example: IN SYNC (The code has changed since the last test run", out)
             self.assertIn("Current Tests: PASSED (12 tests passed)", out)
-            rc, out = tnsync("-y")
+            rc, out = devtools("-y")
             self.assertRegex(out, r"Current Tests: ALREADY PASSED")
         # the NAS out of reach: the Sync block says so, red, with what ssh said; the checks run all the same
-        rc, out = tnsync("-y", "--no-sample")   # (Style Approval only checks: said in the header's modes)
+        rc, out = devtools("-y", "--no-sample")   # (Style Approval only checks: said in the header's modes)
         self.assertRegex(out, r"\nLocal Copy[^\n]* · No sample")
-        rc, out = tnsync("-y", NAS_DOWN="1")
+        rc, out = devtools("-y", NAS_DOWN="1")
         self.assertEqual(rc, 1, out)
         self.assertIn("Sync to nas.example: CAN'T CONNECT: NOTHING COPIED (ssh: connect to host nas.example: timed out)", out)
         self.assertIn("Current Tests: PASSED", out)
@@ -5470,19 +5593,524 @@ class TestRunnerTests(unittest.TestCase):
         with open(os.path.join(project, "app", "code.py"), "w", encoding="utf-8") as fh:
             fh.write("two\n")
         settings(failing=True)
-        rc, out = tnsync("--tests-first")
+        rc, out = devtools("--tests-first")
         self.assertEqual(rc, 1, out)
         self.assertEqual(_read(os.path.join(nas, "app", "code.py"), encoding="utf-8"), "one\n")
         self.assertIn("Sync to nas.example: NOT RUN: CURRENT TESTS DIDN'T PASS", out)
         self.assertIn("\nthe failure\n", out)
         self.assertIn("\nLocal Copy", out)   # (the board's header)
         settings()
-        rc, out = tnsync()
+        rc, out = devtools()
         self.assertEqual(rc, 0, out)
         self.assertEqual(_read(os.path.join(nas, "app", "code.py"), encoding="utf-8"), "two\n")
-        self.assertIn("not restarted · to restart it too: tnsync local -y", out)
+        self.assertIn("not restarted · to restart it too: devtools local -y", out)
         self.assertEqual(_read(os.path.join(folder, "restarts"), encoding="utf-8").count("\n"), 1)
 
+
+class DevToolsUITests(unittest.TestCase):
+    """devtools' records, the board's letters and state, and the devtools UI (dev/devui.py) that shows them."""
+
+    def toy(self):
+        """A small project devtools can run on: a NAS that's a folder here (a fake ssh, which notes each call), checks
+        that only echo. Returns (folder, run) — run(*args, **env) runs devtools local there."""
+        import subprocess
+        folder = tempfile.mkdtemp(dir=TMP)
+        project, nas, fake = (os.path.join(folder, d) for d in ("project", "nas", "bin"))
+        for d in (os.path.join(project, "app"), nas, fake):
+            os.makedirs(d)
+        with open(os.path.join(fake, "ssh"), "w", encoding="utf-8") as fh:
+            fh.write(f'#!/bin/bash\necho "$*" >> {folder}/ssh-calls\n'
+                     'while [ $# -gt 0 ]; do case "$1" in -o|-p|-l) shift 2 ;; -O) exit 0 ;; -*) shift ;; *) break ;; esac; done\n'
+                     'shift; [ $# -eq 0 ] && exit 0; exec bash -c "$*"\n')
+        with open(os.path.join(fake, "midclt"), "w", encoding="utf-8") as fh:
+            fh.write(f'#!/bin/bash\necho "$*" >> {folder}/restarts\n')
+        for name in ("ssh", "midclt"):
+            os.chmod(os.path.join(fake, name), 0o755)
+        with open(os.path.join(project, "app", "code.py"), "w", encoding="utf-8") as fh:
+            fh.write("one\n")
+        with open(os.path.join(folder, "config"), "w", encoding="utf-8") as fh:
+            fh.write("TN_HOST=nas.example\nTN_USER=me\n")
+        with open(os.path.join(project, ".devtools"), "w", encoding="utf-8") as fh:
+            fh.write(f"TN_APP=myapp\nTN_DEST={nas}\nTN_PATHS=app\nTN_TEST=echo 3 tests passed\nTN_TYPES=echo 0 errors\n"
+                     "TN_BUILD=echo 2 ShellCheck findings; exit 1\nTN_COVERAGE=echo 1 fresh function no test reaches; exit 1\n"
+                     "TN_UPKEEP=echo current; echo DEPENDENCIES  -  ALL UP TO DATE\nTN_AUDIT=echo 3 lines no audit has seen; exit 1\n"
+                     "TN_I18N=echo 32% translated; exit 3\nTN_RELEASE=echo 3 of 8 ready; exit 3\n")
+        env = dict(os.environ, PATH=fake + os.pathsep + os.environ.get("PATH", ""), DEVTOOLS_CONFIG=os.path.join(folder, "config"),
+                   XDG_STATE_HOME=os.path.join(folder, "state"), TMPDIR=folder)
+        for k in ("PLEXCACHE_PROGRESS", "DEVTOOLS_STEP", "DEVTOOLS_RUNS"):
+            env.pop(k, None)
+
+        def run(*args, **more):
+            got = subprocess.run([os.path.join(ROOT, "dev", "devtools"), *args], cwd=project, env=dict(env, **more), capture_output=True,
+                                 text=True, timeout=120, stdin=subprocess.DEVNULL)
+            return got.returncode, got.stdout + got.stderr
+        return folder, run
+
+    @staticmethod
+    def records(folder: str) -> list[str]:
+        runs = os.path.join(folder, "state", "devtools", "runs")
+        return sorted(n for n in os.listdir(runs) if n[:1].isdigit()) if os.path.isdir(runs) else []
+
+    def test_each_run_is_kept_as_a_record(self):
+        """Every run of devtools leaves a record (its STATE_DIR's runs/<when>-<n>/, in the order started): the plan it wrote — what the run
+        is (mode, kind), the UI the board's keys open, each block's letter — the board's state as it ended (state.json),
+        each block's output. --checks-only runs the checks alone (nothing copied, the NAS not asked, no result recorded
+        for it), --only one block alone, --sync-only the copy alone (no dependencies); the oldest records beyond
+        DEVTOOLS_KEEP_RUNS go. A project's .tnsync, and tnsync's state folder, are read where it still has them."""
+        folder, run = self.toy()
+        rc, out = run("local", "--checks-only")
+        self.assertEqual(rc, 1, out)   # (the build check fails: said, as on any run)
+        self.assertIn("Local Copy · Checks only", out)
+        self.assertNotIn("Sync to", out)
+        self.assertFalse(os.path.exists(os.path.join(folder, "ssh-calls")))   # (the NAS wasn't asked)
+        self.assertEqual([n for n in os.listdir(os.path.join(folder, "state", "devtools")) if n not in ("runs", "ssh")], [])   # (no result for the NAS)
+        names = self.records(folder)
+        self.assertEqual(len(names), 1)
+        self.assertRegex(names[0], r"^\d{8}-\d{6}-\d+$")
+        record = os.path.join(folder, "state", "devtools", "runs", names[0])
+        self.assertEqual(sorted(os.listdir(record)), ["logs", "plan.json", "results", "state.json"])
+        with open(os.path.join(record, "plan.json"), encoding="utf-8") as fh:
+            plan = json.load(fh)
+        self.assertEqual((plan["mode"], plan["kind"], plan["only"], plan["release"]), ("local", "checks", "", 0))
+        self.assertEqual(plan["project"], os.path.realpath(os.path.join(folder, "project")))   # (the folder as it really is: on a Mac, /var is /private/var)
+        self.assertEqual(plan["ui"]["cmd"], f"python3 {shlex.quote(os.path.join(os.path.realpath(ROOT), 'dev', 'devui.py'))}")
+        pages = {s["id"]: s.get("page") for s in plan["sections"]}
+        self.assertEqual(pages, {"current": "c", "types": "p", "build": "b", "audit": None, "coverage": "o", "i18n": "t",
+                                 "release": "e", "upkeep": "d"})   # (the audit's key is a: the audits page, as it was)
+        self.assertEqual(plan["sections"][3]["key"]["key"], "a")
+        with open(os.path.join(record, "state.json"), encoding="utf-8") as fh:
+            state = json.load(fh)
+        self.assertTrue(state["done"])
+        self.assertEqual({s["id"]: s["state"] for s in state["sections"]},
+                         {"current": "pass", "types": "pass", "build": "fail", "audit": "warn", "coverage": "warn", "i18n": "info",
+                          "release": "info", "upkeep": "pass"})
+        build = next(s for s in state["sections"] if s["id"] == "build")
+        self.assertEqual((build["status"], build["last"], build["page"], build["rc"]), ("FAILED", "2 ShellCheck findings", "b", 1))
+        self.assertEqual(build["issues"], [{"level": "error", "text": "2 ShellCheck findings", "fix": ""}])   # (the board's Issues)
+        self.assertEqual(_read(build["log"], encoding="utf-8"), "2 ShellCheck findings\n")
+        self.assertTrue(build["log"].startswith(record))
+        # one block alone, and the copy alone
+        rc, out = run("local", "--only", "build")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("Local Copy · One block again", out)
+        self.assertNotIn("Current Tests", out)
+        with open(os.path.join(folder, "state", "devtools", "runs", self.records(folder)[-1], "plan.json"), encoding="utf-8") as fh:
+            plan = json.load(fh)
+        self.assertEqual(([s["id"] for s in plan["sections"]], plan["kind"], plan["only"]), (["build"], "only", "build"))
+        rc, out = run("local", "--sync-only")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("Local Copy · Sync only", out)
+        self.assertIn("Sync to nas.example: PASSED", out)
+        self.assertNotIn("Dependencies", out)
+        self.assertNotIn("Tests and checks", out)
+        self.assertEqual(_read(os.path.join(folder, "nas", "app", "code.py"), encoding="utf-8"), "one\n")
+        with open(os.path.join(folder, "state", "devtools", "runs", self.records(folder)[-1], "plan.json"), encoding="utf-8") as fh:
+            plan = json.load(fh)
+        self.assertEqual(([s["id"] for s in plan["sections"]], plan["kind"]), (["sync"], "sync"))
+        self.assertEqual(plan["sections"][0]["page"], "s")
+        with open(os.path.join(folder, "state", "devtools", "runs", self.records(folder)[-1], "detail", "sync.json"), encoding="utf-8") as fh:
+            sync = json.load(fh)   # (the copy's page: what went where, each file as rsync listed it)
+        self.assertEqual((sync["kind"], sync["result"], sync["host"], sync["user"], sync["app"], sync["mode"], sync["dry_run"], sync["restart"], sync["restarted"]),
+                         ("sync", "copied", "nas.example", "me", "myapp", "local", False, False, False))
+        self.assertEqual((sync["source"], sync["dest"], sync["paths"], sync["changed"]), (os.path.realpath(os.path.join(folder, "project")), os.path.join(folder, "nas"), ["app"], 1))
+        self.assertEqual(sync["files"], ["code.py"])   # (as rsync lists them: within the path)
+        rc, out = run("local", "--only", "nope")
+        self.assertEqual(rc, 1)
+        self.assertIn("--only nope: not a block", out)
+        rc, out = run("local", "--sync-only", "--checks-only")
+        self.assertEqual(rc, 1)
+        # the oldest records go
+        self.assertEqual(len(self.records(folder)), 3)
+        rc, out = run("local", "--only", "types", DEVTOOLS_KEEP_RUNS="2")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(len(self.records(folder)), 2)
+        # tnsync's names, still read: a project's .tnsync, and the state folder it kept
+        os.rename(os.path.join(folder, "project", ".devtools"), os.path.join(folder, "project", ".tnsync"))
+        os.rename(os.path.join(folder, "state", "devtools"), os.path.join(folder, "state", "tnsync"))
+        rc, out = run("local", "--only", "types")
+        self.assertEqual(rc, 0, out)
+        self.assertFalse(os.path.exists(os.path.join(folder, "state", "tnsync")))
+        self.assertEqual(len(self.records(folder)), 3)
+        rc, out = run("local", "--only", "types", DEVTOOLS_CONFIG=os.path.join(folder, "none"))   # (no config at all: as before)
+        self.assertEqual(rc, 1)
+        self.assertIn("TN_HOST isn't set", out)
+        self.assertIn("devtools ui", _read(os.path.join(ROOT, "dev", "devtools"), encoding="utf-8").split("\n\n")[0] or "x")
+        rc, out = run("--help")
+        self.assertIn("devtools ui", out)
+        self.assertIn("--only <id>", out)
+
+    def test_the_board_writes_its_state_and_underlines_the_letters(self):
+        """dev/board.py: each section's letter (page) is underlined in its title while the board runs, pressed it opens
+        the UI (the plan's ui) at its page, u at the hub — told to the UI already open by "wanted"; and how the board
+        stands is written beside the results as it goes (state.json), the record the UI reads."""
+        from dev import board
+        self.assertEqual(board.underlined("Current Tests", "c"), 0)
+        self.assertEqual(board.underlined("Coverage", "o"), 1)        # (not at a word's start: its first)
+        self.assertEqual(board.underlined("Security Audit", "a"), 9)   # (a word's start first)
+        self.assertEqual(board.underlined("Style Approval", "r"), 9)
+        self.assertEqual(board.underlined("Release checks", "e"), 1)
+        self.assertEqual(board.underlined("Sync", "z"), -1)
+        folder = tempfile.mkdtemp(dir=TMP)
+        logs = os.path.join(folder, "logs")
+        os.makedirs(logs)
+        plan = {"header": ["Local Copy · Checks only"], "commit": "a1b2c3d", "ui": {"cmd": "echo ui", "cwd": folder},
+                "sections": [{"id": "current", "title": "Current Tests", "cmd": "echo 3 tests passed; echo $DEVTOOLS_DETAIL > $(dirname $(dirname $DEVTOOLS_DETAIL))/logs/where", "page": "c"},
+                             {"id": "build", "title": "Build Validation", "cmd": "echo 2 findings; exit 1", "page": "b"},
+                             {"id": "style", "title": "Style Approval", "cmd": "echo waiting; exit 1", "warn": {"rc": 1, "note": "looks waiting"},
+                              "key": {"key": "r", "cmd": "true", "does": "Review"}}]}
+        s = board.Section(plan["sections"][0], logs)
+        self.addCleanup(s.out.close)
+        self.assertNotIn("\033[4m", s.lines(80)[0])   # (the board not reading keys: nothing underlined)
+        s.live = True
+        head = s.lines(80)[0]
+        self.assertIn("\033[4mC\033[24murrent Tests", head)
+        self.assertEqual(len(board.ANSI.sub("", head)), 80)   # (the padding counts the letters, not the codes)
+        st = board.Section(plan["sections"][2], logs)
+        self.addCleanup(st.out.close)
+        st.live = True
+        self.assertIn("Style App\033[4mr\033[24moval", st.lines(80)[0])   # (its key's letter)
+        b = board.Board(plan, logs, tty=False)
+        with contextlib.redirect_stdout(io.StringIO()):
+            b.run()
+        b.report()
+        for sec in b.sections:
+            sec.out.close()
+        with open(os.path.join(folder, "state.json"), encoding="utf-8") as fh:
+            state = json.load(fh)
+        self.assertEqual((state["header"], state["commit"], state["done"], state["aborted"]), (["Local Copy · Checks only"], "a1b2c3d", True, False))
+        self.assertEqual([(x["id"], x["state"], x["page"], x["key"], x["status"], x["last"]) for x in state["sections"]],
+                         [("current", "pass", "c", "", "PASSED", "3 tests passed"), ("build", "fail", "b", "", "FAILED", "2 findings"),
+                          ("style", "warn", "", "r", "LOOKS WAITING", "waiting")])
+        self.assertEqual(state["sections"][2]["issues"], [{"level": "warning", "text": "waiting", "fix": ""}])
+        self.assertEqual(_read(os.path.join(logs, "where"), encoding="utf-8").strip(), os.path.join(folder, "detail", "current.json"))   # (where its tool's detail goes)
+        self.assertIsNotNone(state["started"])
+        self.assertGreaterEqual(state["ended"], state["started"])
+        # the keys: u the hub, a section's letter its page; the UI open already is told which
+        b.ui_proc = cast(Any, types.SimpleNamespace(poll=lambda: None))
+        b.keys("u")
+        self.assertEqual(_read(os.path.join(folder, "wanted"), encoding="utf-8"), "")
+        b.sections[1].live = True
+        b.keys("b")
+        self.assertEqual(_read(os.path.join(folder, "wanted"), encoding="utf-8"), "build")
+        b.keys("c")   # (not live: nothing)
+        self.assertEqual(_read(os.path.join(folder, "wanted"), encoding="utf-8"), "build")
+        b.ui_proc = None
+        with mock.patch.object(board.subprocess, "Popen") as popen, mock.patch.object(board.sys, "stdin", io.StringIO()):
+            popen.return_value.poll.return_value = None
+            with mock.patch.object(board.sys.stdin, "fileno", lambda: 0), mock.patch.object(board.sys.stdout, "fileno", lambda: 1):
+                b.keys("b")
+        cmd = popen.call_args[0][0][2]
+        self.assertEqual(cmd, f"echo ui --record {shlex.quote(folder)} --from-board --open build")
+        self.assertTrue(popen.call_args[1]["start_new_session"])
+        self.assertNotIn("PLEXCACHE_PROGRESS", popen.call_args[1]["env"])
+
+    def test_the_tools_write_their_detail_for_their_pages(self):
+        """dev/progress.py's detail: a tool's own account of what it found, as JSON in the file the board names
+        (DEVTOOLS_DETAIL), nothing without one. dev/checks.py's run writes each tool's findings; tests/run.py the counts,
+        the failures as unittest printed them, what it ran on and the slowest classes — in a run shared out among workers
+        and in one in its own process alike."""
+        import subprocess
+        import textwrap
+
+        from dev import checks, progress
+        folder = tempfile.mkdtemp(dir=TMP)
+        with mock.patch.dict(os.environ, {"DEVTOOLS_DETAIL": ""}):
+            self.assertEqual(progress.detail({"kind": "x"}), "")
+        path = os.path.join(folder, "deep", "detail.json")
+        with mock.patch.dict(os.environ, {"DEVTOOLS_DETAIL": path}):
+            self.assertEqual(progress.detail({"kind": "x", "n": 1}), path)
+            with open(path, encoding="utf-8") as fh:
+                self.assertEqual(json.load(fh), {"kind": "x", "n": 1})
+            found = checks.Finding("Ruff", "a.py", 3, 1, "warning", "unused", "F401", True)
+            cs = [checks.Check("Ruff", lambda: checks.Outcome("Ruff", "0.1", [found]), lambda: ["a.py", "b.py"]),
+                  checks.Check("pyright", lambda: checks.Outcome("pyright", "1.1", None, "pyright didn't start"), lambda: ["a.py"])]
+            with mock.patch.dict(os.environ, {"PLEXCACHE_PROGRESS": "feed"}):
+                self.assertEqual(checks.run(cs, stream=io.StringIO()), 2)
+            with open(path, encoding="utf-8") as fh:
+                got = json.load(fh)
+        self.assertEqual((got["kind"], got["result"], got["files"]), ("checks", "1 Ruff finding · pyright didn't run", ["a.py", "b.py"]))
+        self.assertEqual(got["tools"][0], {"name": "Ruff", "tool": "Ruff", "version": "0.1", "ran": True, "why": "", "facts": ["1 Ruff finding"], "failed": True,
+                                           "findings": [{"tool": "Ruff", "path": "a.py", "line": 3, "col": 1, "severity": "warning", "message": "unused", "code": "F401", "fixable": True}]})
+        self.assertEqual((got["tools"][1]["ran"], got["tools"][1]["why"], got["tools"][1]["findings"]), (False, "pyright didn't start", []))
+        with open(os.path.join(folder, "detail_probe_tests.py"), "w", encoding="utf-8") as fh:
+            fh.write(textwrap.dedent("""
+                import unittest
+                class Kept(unittest.TestCase):
+                    def test_1(self):
+                        pass
+                    def test_2(self):
+                        self.fail("on purpose")
+            """))
+        runner = os.path.join(os.path.dirname(os.path.abspath(__file__)), "run.py")
+        for jobs in ("1", "2"):
+            os.unlink(path)
+            got = subprocess.run([sys.executable, runner, "-j", jobs, "detail_probe_tests"], capture_output=True, text=True, timeout=60,
+                                 env=dict(os.environ, PYTHONPATH=folder, XDG_CACHE_HOME=folder, PLEXCACHE_PROGRESS="feed", DEVTOOLS_DETAIL=path))
+            self.assertEqual(got.returncode, 1, got.stdout + got.stderr)
+            with open(path, encoding="utf-8") as fh:
+                d = json.load(fh)
+            self.assertEqual((d["kind"], d["passed"], d["failed"], d["total"], d["not_run"], d["workers"], d["stopped"]), ("tests", 1, 1, 2, 0, int(jobs), False), jobs)
+            self.assertEqual((d["failures"][0]["kind"], d["failures"][0]["test"]), ("FAIL", "detail_probe_tests.Kept.test_2"), jobs)
+            self.assertIn("AssertionError: on purpose", d["failures"][0]["text"])
+            self.assertIn(f"Python {__import__('platform').python_version()}", d["ran_on"])
+            self.assertIsInstance(d["took"], float)
+            if jobs == "2":
+                self.assertEqual(sorted(k for k, _ in d["times"]), ["detail_probe_tests.Kept.test_1", "detail_probe_tests.Kept.test_2"])
+
+    def test_the_coverage_and_future_pages_have_their_detail(self):
+        """dev/coverage.py's page: each file's lines, what ran, its fresh lines and functions, the rules' thresholds and the
+        totals, with the rules' findings (dev/checks.py's detail, ``more``); dev/future.py's: the channels' choices, the
+        build, and from each container the suite's own account (tests/run.py's detail, written to a folder mounted in)."""
+        from dev import checks, coverage, future
+        folder = tempfile.mkdtemp(dir=TMP)
+        path = os.path.join(folder, "detail.json")
+        a = coverage.File("plexcache/a.py", {1, 2, 3, 4}, {1, 2, 3}, fresh={4}, units=[coverage.Unit("function", "f", 4, {4})])
+        b = coverage.File("plexcache/b.py", {1, 2}, {1, 2}, fresh=set(), units=[])
+        got = coverage.page([b, a], "no git history here", False, "python3 tests/run.py --coverage")
+        self.assertEqual((got["kind"], got["note"], got["release"], got["tests"]), ("coverage", "no git history here", False, "python3 tests/run.py --coverage"))
+        self.assertEqual(got["rules"], {"fresh_days": coverage.FRESH_DAYS, "settled": coverage.SETTLED, "release": coverage.RELEASE, "release_file": coverage.RELEASE_FILE})
+        self.assertEqual(got["totals"], {"lines": 6, "ran": 5, "pct": 83.3, "settled": 5, "settled_ran": 5, "settled_pct": 100.0, "fresh": 1, "fresh_units": 1, "fresh_reached": 0})
+        self.assertEqual([f["path"] for f in got["files"]], ["plexcache/a.py", "plexcache/b.py"])
+        self.assertEqual(got["files"][0], {"path": "plexcache/a.py", "lines": 4, "ran": 3, "pct": 75.0, "fresh": 1, "fresh_ran": 0, "missing": "4",
+                                           "units": [{"kind": "function", "name": "f", "line": 4, "fresh": True, "ran": False}]})
+        self.assertEqual(got["files"][1]["units"], [])
+        with mock.patch.dict(os.environ, {"DEVTOOLS_DETAIL": path, "PLEXCACHE_PROGRESS": "feed"}):
+            checks.run([checks.Check("Fresh code", lambda: coverage.fresh_check([a, b]))], bar="coverage", stream=io.StringIO(), more=got)
+        with open(path, encoding="utf-8") as fh:
+            written = json.load(fh)
+        self.assertEqual((written["kind"], written["totals"]["pct"], written["tools"][0]["tool"], len(written["tools"][0]["findings"])), ("coverage", 83.3, "Fresh code", 1))
+        # the future run: the suite's own detail from inside each container, with the choices and the build around it
+        runs = []
+
+        class Proc:
+            def __init__(self, cmd, **kw):
+                image = cmd[cmd.index("--entrypoint") + 2]
+                runs.append(cmd)
+                where = cmd[cmd.index("DEVTOOLS_DETAIL=/detail/plain.json" if image.startswith("python:") else "DEVTOOLS_DETAIL=/detail/image.json") - 2]
+                host = where.split(":")[0]   # (the folder mounted at /detail: the container's tests/run.py writes there)
+                name = "plain" if image.startswith("python:") else "image"
+                with open(os.path.join(host, f"{name}.json"), "w", encoding="utf-8") as fh:
+                    json.dump({"kind": "tests", "passed": 5 if name == "plain" else 1, "failed": 0 if name == "plain" else 1, "failures": []}, fh)
+                self.stdout = [f"ran on {image}\n"]
+                self.returncode = 0 if name == "plain" else 1
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+        picks = [future.Pick("Python", "3.16.0a1", "alpha", "newest", "python:3.16.0a1-slim-trixie")]
+        with mock.patch.dict(os.environ, {"PLEXCACHE_PROGRESS": "feed", "DEVTOOLS_DETAIL": path}), mock.patch.object(sys, "stdout", io.StringIO()), \
+                mock.patch.object(future, "TESTS", [6]), mock.patch.object(future, "build_image", return_value=True), \
+                mock.patch.object(future, "docker_cpus", return_value=2), mock.patch.object(future, "fetch_node", return_value=None), \
+                mock.patch.object(future, "install_web", return_value=[]), mock.patch.object(future, "test_classes", return_value=["AppTests", "OptimizerTests"]), \
+                mock.patch.object(future.subprocess, "Popen", Proc), mock.patch.object(future.subprocess, "run", return_value=mock.Mock(returncode=0)):
+            rc = future.parallel_route("3.16.0a1-slim-trixie", [], picks, None, [])
+        self.assertEqual(rc, 1)
+        self.assertEqual(len(runs), 2)
+        with open(path, encoding="utf-8") as fh:
+            d = json.load(fh)
+        self.assertEqual((d["kind"], d["python"], d["build"]["ok"], d["picks"][0]["name"], d["picks"][0]["channel"]), ("future", "3.16.0a1-slim-trixie", True, "Python", "alpha"))
+        self.assertEqual((d["parts"]["plain"]["passed"], d["parts"]["image"]["failed"]), (5, 1))
+        self.assertEqual(d["results"], {"plain": {"rc": 0, "last": "ran on python:3.16.0a1-slim-trixie"}, "image": {"rc": 1, "last": f"ran on {future.IMAGE}"}})
+        mounted = runs[0][runs[0].index("DEVTOOLS_DETAIL=/detail/plain.json") - 2].split(":")[0]
+        self.assertFalse(os.path.exists(mounted))   # (the folder mounted in: gone once the page is written)
+        with mock.patch.dict(os.environ, {"DEVTOOLS_DETAIL": ""}):   # (no board: no folder, nothing mounted)
+            page = future.Detail()
+        self.assertEqual((page.folder, page.mount("plain")), ("", []))
+
+    def record(self, runs: str, name: str, plan: dict, state: dict | None, detail: dict | None = None) -> str:
+        folder = os.path.join(runs, name)
+        os.makedirs(os.path.join(folder, "logs"), exist_ok=True)
+        with open(os.path.join(folder, "plan.json"), "w", encoding="utf-8") as fh:
+            json.dump(plan, fh)
+        if state is not None:
+            with open(os.path.join(folder, "state.json"), "w", encoding="utf-8") as fh:
+                json.dump(state, fh)
+        for s in (state or {}).get("sections", []):
+            with open(os.path.join(folder, "logs", f"{s['id']}.log"), "w", encoding="utf-8") as fh:
+                fh.write(f"{s['last']}\n")
+        if detail:
+            os.makedirs(os.path.join(folder, "detail"))
+            for sid, d in detail.items():
+                with open(os.path.join(folder, "detail", f"{sid}.json"), "w", encoding="utf-8") as fh:
+                    json.dump(d, fh)
+        return folder
+
+    @staticmethod
+    def section(sid: str, title: str, state: str, last: str, page: str = "") -> dict:
+        return {"id": sid, "title": title, "page": page, "key": "", "state": state, "shown": state, "status": state.upper(), "note": "",
+                "last": last, "rc": 0, "log": "", "started": 1.0, "ended": 2.0, "bar": None, "issues": [], "warned": 0}
+
+    def test_the_hub_shows_the_newest_word_on_each_block(self):
+        """dev/devui.py's view: the last full run's blocks (a run, or the checks alone), each from the newest record that has
+        it — a block run again on its own, the copy alone, over it — with what it said the time before; the run under way
+        (its state written just now, not done); the history."""
+        from dev import devui
+        runs = tempfile.mkdtemp(dir=TMP)
+        data = devui.Data(runs=runs)
+        self.assertEqual(data.view()["blocks"], [])
+        self.assertEqual(data.view()["mode"], "local")
+        done = {"header": ["Local Copy"], "commit": "aaa", "started": 1.0, "ended": 9.0, "done": True, "aborted": False}
+        self.record(runs, "20260101-100000-1", {"kind": "run", "mode": "dev", "header": ["Committed Copy on Dev"], "sections": []},
+                    dict(done, sections=[self.section("sync", "Sync to nas", "pass", "Copied 1 file", "s"), self.section("current", "Current Tests", "fail", "1 failed", "c"),
+                                         self.section("build", "Build Validation", "pass", "0 findings", "b")]))
+        self.record(runs, "20260101-110000-1", {"kind": "run", "mode": "local", "release": 1, "header": ["Local Copy"], "sections": []},
+                    dict(done, sections=[self.section("sync", "Sync to nas", "pass", "Copied 2 files", "s"), self.section("current", "Current Tests", "pass", "3 tests passed", "c"),
+                                         self.section("build", "Build Validation", "fail", "2 findings", "b")]), detail={"build": {"findings": 2}})
+        self.record(runs, "20260101-120000-1", {"kind": "only", "only": "build", "mode": "local", "header": ["Local Copy · One block again"], "sections": []},
+                    dict(done, sections=[self.section("build", "Build Validation", "pass", "0 findings", "b")]))
+        self.record(runs, "20260101-130000-1", {"kind": "sync", "mode": "local", "header": ["Local Copy · Sync only"], "sections": []},
+                    dict(done, sections=[self.section("sync", "Sync to nas", "fail", "rsync stopped partway", "s")]))
+        view = data.view()
+        self.assertEqual((view["header"], view["commit"], view["mode"], view["release"], view["run"]), (["Local Copy"], "aaa", "local", True, "20260101-110000-1"))
+        self.assertEqual([(b["id"], b["state"], b["last"], b["run"]) for b in view["blocks"]],
+                         [("sync", "fail", "rsync stopped partway", "20260101-130000-1"), ("current", "pass", "3 tests passed", "20260101-110000-1"),
+                          ("build", "pass", "0 findings", "20260101-120000-1")])
+        self.assertEqual([(b["before"] or {}).get("last") for b in view["blocks"]], ["Copied 2 files", "1 failed", "2 findings"])
+        self.assertEqual([b["detail"] for b in view["blocks"]], [False, False, False])   # (the detail is the 11:00 run's; the block the 12:00's)
+        self.assertIsNone(view["live"])
+        self.assertEqual([(r["run"], r["kind"], r["blocks"].get("build")) for r in view["history"]],
+                         [("20260101-130000-1", "sync", None), ("20260101-120000-1", "only", "pass"), ("20260101-110000-1", "run", "fail"), ("20260101-100000-1", "run", "pass")])
+        # a run under way: its blocks as the board has them now, and the plan's for the ones not written yet
+        self.record(runs, "20260101-140000-1", {"kind": "checks", "mode": "local", "header": ["Local Copy · Checks only"],
+                                                "sections": [{"id": "current", "title": "Current Tests", "page": "c"}, {"id": "build", "title": "Build Validation", "page": "b"}]},
+                    {"header": ["Local Copy · Checks only"], "commit": "", "started": 5.0, "ended": None, "done": False, "aborted": False,
+                     "sections": [dict(self.section("current", "Current Tests", "running", "", "c"), bar={"name": "tests", "done": 4, "total": 9, "bad": 0, "warned": 0, "label": "test_x", "unit": "", "workers": 2, "tests": True, "ticking": False}),
+                                  self.section("build", "Build Validation", "waiting", "", "b")]})
+        view = data.view()
+        self.assertEqual(view["live"]["run"], "20260101-140000-1")
+        self.assertEqual([(b["id"], b["state"], b["live"]) for b in view["blocks"]], [("current", "running", True), ("build", "waiting", True)])
+        self.assertEqual(view["blocks"][0]["bar"]["done"], 4)
+        self.assertEqual(view["blocks"][0]["before"]["last"], "3 tests passed")
+        self.assertEqual(data.log({"id": "current"})["text"], "\n")
+        self.assertEqual(data.detail({"id": "build"})["detail"], None)
+        old = time.time() - 60   # (left, not under way: the board hasn't written for a while)
+        os.utime(os.path.join(runs, "20260101-140000-1", "state.json"), (old, old))
+        self.assertIsNone(data.view()["live"])
+        with self.assertRaises(ValueError):
+            data.log({"id": "nope"})
+        # a record with a plan alone (the board not started yet): its blocks waiting
+        self.record(runs, "20260101-150000-1", {"kind": "only", "only": "build", "mode": "local", "sections": [{"id": "build", "title": "Build Validation", "page": "b"}]}, None)
+        view = data.view()
+        self.assertEqual([(b["id"], b["state"]) for b in view["blocks"]], [("current", "running"), ("build", "waiting")])
+        self.assertEqual(view["blocks"][1]["run"], "20260101-150000-1")
+
+    def test_the_devtools_page_runs_devtools_and_is_this_computers_alone(self):
+        """The devtools page (dev/devui.py): served as the dev tools' pages are (the browser that opened its address, its
+        token), in the app's stylesheet and themes; its buttons run devtools itself (the checks again, one block, the
+        copy), one at a time, and the page shows the record that run writes; a block's output and detail; the board's
+        word on which block to show (wanted)."""
+        import http.client
+        import threading
+
+        from dev import devui
+        folder = tempfile.mkdtemp(dir=TMP)
+        runs = os.path.join(folder, "runs")
+        script = os.path.join(folder, "devtools")
+        with open(script, "w", encoding="utf-8") as fh:   # (a devtools that only writes a record of what it was asked)
+            fh.write(f'#!/bin/bash\nd="{runs}/$(date +%Y%m%d-%H%M%S)-$$"; mkdir -p "$d/logs"\n'
+                     'k=checks; case "$*" in *--only*) k=only ;; *--sync-only*) k=sync ;; esac\n'
+                     'printf \'{"kind": "%s", "mode": "%s", "args": "%s", "sections": [{"id": "current", "title": "Current Tests", "page": "c"}]}\' "$k" "$1" "$*" > "$d/plan.json"\n'
+                     'sleep 0.5\nprintf \'{"done": true, "started": 1, "ended": 2, "header": ["Local Copy"], "sections": [{"id": "current", "title": "Current Tests", "page": "c", "state": "pass", "status": "PASSED", "last": "ran: %s", "log": "", "issues": []}]}\' "$*" > "$d/state.json"\n')
+        os.chmod(script, 0o755)
+        record = self.record(runs, "20260101-100000-1", {"kind": "run", "mode": "dev", "header": ["Committed Copy on Dev"], "sections": []},
+                             {"header": ["Committed Copy on Dev"], "commit": "abc", "started": 1.0, "ended": 9.0, "done": True, "aborted": False,
+                              "sections": [self.section("current", "Current Tests", "pass", "3 tests passed", "c"), self.section("build", "Build Validation", "fail", "2 findings", "b")]},
+                             detail={"build": {"findings": [{"file": "dev/devtools", "line": 3, "text": "SC2086"}]}})
+        data = devui.Data(runs=runs, record=record, script=script)
+        up = threading.Event()
+        box: dict = {}
+
+        def ready(server, url, token):
+            box.update(server=server, port=server.server_port, token=token, url=url)
+            up.set()
+        t = threading.Thread(target=devui.serve, args=(data,), kwargs={"open_browser": False, "ready": ready, "first": "build", "scan": False}, daemon=True)
+        with contextlib.redirect_stdout(io.StringIO()):
+            t.start()
+            self.assertTrue(up.wait(10))
+            try:
+                def ask(method, path, body=None, host=None, token=None, cookie=None, more=None):
+                    c = http.client.HTTPConnection("127.0.0.1", box["port"], timeout=30)
+                    c.request(method, path, body=json.dumps(body) if body is not None else None,
+                              headers={"Host": host or f"127.0.0.1:{box['port']}", "X-Page-Token": box["token"] if token is None else token,
+                                       "Cookie": box.get("cookie", "") if cookie is None else cookie, **(more or {})})
+                    res = c.getresponse()
+                    box["headers"] = dict(res.getheaders())
+                    return res.status, res.read()
+                self.assertEqual(ask("GET", "/")[0], 403)   # (not without the address's code: dev/devpage.py's session)
+                self.assertEqual(ask("GET", "/?" + box["url"].split("?", 1)[1])[0], 200)
+                box["cookie"] = box["headers"]["Set-Cookie"].split(";")[0]
+                status, page = ask("GET", "/")
+                self.assertEqual(status, 200)
+                page_text = page.decode()
+                self.assertIn(box["token"], page_text)
+                csp = box["headers"]["Content-Security-Policy"]
+                nonce = some(re.search(r"script-src 'nonce-([^']+)'", csp)).group(1)
+                self.assertIn(f'<link rel="stylesheet" nonce="{nonce}" href="/static/app.css">', page_text)   # (the app's stylesheet, by this response's nonce)
+                self.assertIn(f'<style nonce="{nonce}">', page_text)
+                self.assertIn(':root[data-theme="dionysus"][data-mode="dark"]', page_text)   # (the app's themes: plexcache/themes.py)
+                self.assertIn("window.PCTHEME=", page_text)
+                self.assertIn("sendBeacon('/bye'", page_text)
+                self.assertNotIn("/*EXTRA*/", page_text)
+                self.assertNotIn("__TOKEN__", page_text)
+                self.assertIn("font-src 'self'", csp)
+                self.assertEqual(ask("GET", "/static/app.css")[0], 200)
+                self.assertEqual(box["headers"]["Content-Type"], "text/css; charset=utf-8")
+                self.assertEqual(ask("GET", "/static/fonts/cinzel-latin.woff2")[0], 200)
+                self.assertEqual(ask("GET", "/static/nope.css")[0], 404)
+                self.assertEqual(ask("GET", "/api/run", token="wrong")[0], 403)
+                status, body = ask("GET", "/api/run")
+                view = json.loads(body)
+                self.assertEqual((status, view["wanted"], view["mode"], [b["id"] for b in view["blocks"]]), (200, "build", "dev", ["current", "build"]))
+                self.assertEqual(json.loads(ask("GET", "/api/run")[1])["wanted"], "")   # (taken once)
+                with open(os.path.join(record, "wanted"), "w", encoding="utf-8") as fh:   # (the board's: u pressed)
+                    fh.write("")
+                self.assertEqual(json.loads(ask("GET", "/api/run")[1])["wanted"], "hub")
+                self.assertFalse(os.path.exists(os.path.join(record, "wanted")))
+                status, body = ask("GET", "/api/detail?id=build")
+                self.assertEqual(json.loads(body)["detail"]["findings"][0]["text"], "SC2086")
+                status, body = ask("GET", "/api/log?id=build")
+                self.assertEqual(json.loads(body)["text"], "2 findings\n")
+                self.assertEqual(ask("GET", "/api/log?id=nope")[0], 400)
+                # the buttons: devtools run, with the last full run's mode; one at a time
+                status, body = ask("POST", "/api/rerun", {"id": "build"})
+                self.assertEqual((status, json.loads(body)["what"]), (200, "build again"))
+                self.assertTrue(json.loads(ask("GET", "/api/run")[1])["job"]["running"])
+                status, body = ask("POST", "/api/scan", {})
+                self.assertEqual(status, 400)
+                self.assertIn("still running", json.loads(body)["error"])
+                self.assertEqual(ask("POST", "/api/rerun", {"id": "../x"})[0], 400)
+                for _ in range(100):
+                    if not json.loads(ask("GET", "/api/run")[1])["job"]["running"]:
+                        break
+                    time.sleep(0.05)
+                view = json.loads(ask("GET", "/api/run")[1])
+                self.assertEqual((view["job"]["running"], view["job"]["rc"]), (False, 0))
+                self.assertEqual(view["blocks"][0]["last"], "ran: dev --only build")   # (the record the run wrote: the newest word)
+                self.assertEqual(view["blocks"][1]["last"], "2 findings")
+                status, body = ask("POST", "/api/sync", {"restart": True, "mode": "local"})
+                self.assertEqual(status, 200)
+                for _ in range(100):
+                    if not json.loads(ask("GET", "/api/run")[1])["job"]["running"]:
+                        break
+                    time.sleep(0.05)
+                self.assertEqual(json.loads(ask("GET", "/api/run")[1])["blocks"][0]["last"], "ran: local --sync-only -y")
+                status, body = ask("POST", "/api/scan", {})
+                self.assertEqual(status, 200)
+                for _ in range(100):
+                    if not json.loads(ask("GET", "/api/run")[1])["job"]["running"]:
+                        break
+                    time.sleep(0.05)
+                self.assertEqual(json.loads(ask("GET", "/api/run")[1])["blocks"][0]["last"], "ran: dev --checks-only")
+                self.assertEqual(os.stat(os.path.join(runs, "ui-job.log")).st_mode & 0o777, 0o600)
+            finally:
+                box["server"].shutdown()
+            t.join(10)
+        # the dev tools' pages: the UI's own looks are outside the style guide's files (dev/style.py looks at the app's)
+        from dev import style
+        self.assertFalse(style.look_file("dev/devui.css"))
+        self.assertFalse(style.look_file("dev/devui.html"))
 
 
 class _RawWS:
@@ -15327,14 +15955,14 @@ class TranslationTests(unittest.TestCase):
     # The catalogs are only brought in step with the code for a release (README.md → Translations):
     # in between, a new text isn't in them yet (the app shows the English) and an old one lingers.
     # So that's only checked where they gate — dev/i18n.py's strict_now, the one place that decides
-    # (for these tests and tnsync's Translations block alike): a release run, master, a tag's sync.
+    # (for these tests and devtools's Translations block alike): a release run, master, a tag's sync.
     # What a catalog does hold — placeholders, tags, plural forms — is checked every time.
 
     def test_the_board_block(self):
-        """dev/i18n.py --tnsync, tnsync's Translations block: the overall share translated, one number; between
+        """dev/i18n.py --devtools, devtools's Translations block: the overall share translated, one number; between
         releases it only tells (exit 3), and where the catalogs gate (strict_now: master, a release run) anything
         untranslated is a finding, red — the one place that decides, for this suite's strictness too."""
-        quiet = {"PLEXCACHE_PROGRESS": "", "PLEXCACHE_I18N_RELEASE": "", "TNSYNC_RELEASE": "", "TNSYNC_MODE": ""}
+        quiet = {"PLEXCACHE_PROGRESS": "", "PLEXCACHE_I18N_RELEASE": "", "DEVTOOLS_RELEASE": "", "DEVTOOLS_MODE": ""}
         catalogs = lambda code: {"Idle": "x", "Busy": "y" if code == "de" else None}
         patched = lambda: (mock.patch.object(self.tool, "all_keys", return_value={"Idle": None, "Busy": None}),
                            mock.patch.object(self.tool, "TRANSLATED", ["de", "fr"]),
@@ -15343,16 +15971,16 @@ class TranslationTests(unittest.TestCase):
         with contextlib.ExitStack() as stack:
             for m in patched() + (mock.patch.dict(os.environ, quiet), contextlib.redirect_stdout(out)):
                 stack.enter_context(m)
-            self.assertEqual(self.tool.main(["i18n.py", "--tnsync"]), 3)   # (between releases: it only tells)
+            self.assertEqual(self.tool.main(["i18n.py", "--devtools"]), 3)   # (between releases: it only tells)
         self.assertIn("75.0% translated · 2 languages · 2 texts", out.getvalue())
         self.assertNotIn("error", out.getvalue())
-        for env in ({"TNSYNC_MODE": "master"}, {"TNSYNC_RELEASE": "1"}, {"PLEXCACHE_I18N_RELEASE": "1"}):
+        for env in ({"DEVTOOLS_MODE": "master"}, {"DEVTOOLS_RELEASE": "1"}, {"PLEXCACHE_I18N_RELEASE": "1"}):
             with self.subTest(env), contextlib.ExitStack() as stack:
                 out = io.StringIO()
                 for m in patched() + (mock.patch.dict(os.environ, quiet | env), contextlib.redirect_stdout(out)):
                     stack.enter_context(m)
                 self.assertTrue(self.tool.strict_now())
-                self.assertEqual(self.tool.main(["i18n.py", "--tnsync"]), 1)   # (main must ship complete: red)
+                self.assertEqual(self.tool.main(["i18n.py", "--devtools"]), 1)   # (main must ship complete: red)
             self.assertIn(os.path.join("plexcache", "web", "i18n", "fr.json") + ":0:0 - error: 1 of 2 texts untranslated",
                           out.getvalue())
         out = io.StringIO()
@@ -15362,7 +15990,7 @@ class TranslationTests(unittest.TestCase):
                       mock.patch.object(self.tool, "load", return_value={"Idle": "x"}),
                       mock.patch.dict(os.environ, quiet), contextlib.redirect_stdout(out)):
                 stack.enter_context(m)
-            self.assertEqual(self.tool.main(["i18n.py", "--tnsync"]), 0)   # (complete: green, any run)
+            self.assertEqual(self.tool.main(["i18n.py", "--devtools"]), 0)   # (complete: green, any run)
         self.assertIn("100.0% translated · 2 languages · 1 text", out.getvalue())
 
     def test_catalogs_consistent(self):
@@ -15379,6 +16007,42 @@ class TranslationTests(unittest.TestCase):
         self.assertEqual(self.tool.check_catalog("fr", keys, {"Idle": "Inactif", "{n} files": None}, release=True), [])
         # a translation that doesn't match its English fails either way
         self.assertEqual(len(self.tool.check_catalog("fr", {"{n} left": None}, {"{n} left": "restants"})), 1)
+
+    def test_the_translations_page_is_the_tools_one_account(self):
+        """dev/i18n.py's page (its detail for the devtools UI): every text once, as ``missing`` exports it, and each
+        language's needs as indexes into them — so the page's Export is the same file ``missing`` prints — with what's
+        wrong in each catalog; written on a --devtools run, strict or not (DEVTOOLS_DETAIL)."""
+        tool = self.tool
+        keys = {"Idle": None, "{n} files": "{n} file", "Gone": None}
+        cats = {"fr": {"Idle": "Inactif", "{n} files": {"one": "{n} fichier", "other": "{n} fichiers"}}, "de": {"Idle": "Leer", "Gone": "{x}"}, "en-GB": {}, "en-US": {}}
+        with mock.patch.object(tool, "TRANSLATED", ["fr", "de"]), mock.patch.object(tool, "load", side_effect=lambda code: cats.get(code, {})), \
+                mock.patch.object(tool, "leftovers", return_value=["app.js:1: 'Hello there'"]):
+            got = tool.page(keys, ["a note"], strict=False)
+            self.assertEqual(tool.needed(keys, cats["de"]), {"{n} files": {"one": "{n} file", "other": "{n} files"}})
+            self.assertEqual(tool.needed(keys, cats["fr"]), {"Gone": "Gone"})
+        self.assertEqual(got["kind"], "i18n")
+        self.assertEqual(got["texts"], [["Idle", "Idle"], ["{n} files", {"one": "{n} file", "other": "{n} files"}], ["Gone", "Gone"]])
+        fr, de = got["languages"]
+        self.assertEqual((fr["code"], fr["name"], fr["done"], fr["total"], fr["needs"], fr["problems"]), ("fr", "Français", 2, 3, [2], []))
+        self.assertEqual((de["done"], de["needs"], len(de["problems"])), (2, [1], 1))   # ("{x}": a translation with a placeholder the English hasn't)
+        self.assertEqual((got["pct"], got["problems"], got["leftovers"]), (66.7, ["a note"], ["app.js:1: 'Hello there'"]))
+        self.assertEqual([v["code"] for v in got["variants"]], ["en-US", "en-GB"])
+        # the export, as the page builds it from the indexes, is what missing prints
+        for lang, cat in ((fr, cats["fr"]), (de, cats["de"])):
+            self.assertEqual(dict(got["texts"][i] for i in lang["needs"]), tool.needed(keys, cat))
+        # a --devtools run writes it, whether it only tells (between releases) or gates (strict)
+        folder = tempfile.mkdtemp(dir=TMP)
+        path = os.path.join(folder, "i18n.json")
+        for strict, rc in ((False, 3), (True, 1)):
+            with mock.patch.dict(os.environ, {"DEVTOOLS_DETAIL": path, "PLEXCACHE_PROGRESS": ""}), mock.patch.object(tool, "strict_now", return_value=strict), \
+                    mock.patch.object(tool, "all_keys", return_value=keys), mock.patch.object(tool, "TRANSLATED", ["fr", "de"]), \
+                    mock.patch.object(tool, "load", side_effect=lambda code: cats.get(code, {})), mock.patch.object(tool, "leftovers", return_value=[]), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(tool.main(["i18n.py", "--devtools"]), rc)
+            with open(path, encoding="utf-8") as fh:
+                page = json.load(fh)
+            self.assertEqual((page["kind"], page["strict"], len(page["languages"])), ("i18n", strict, 2))
+            self.assertEqual("tools" in page, strict)   # (strict: the check's findings too, a language a finding)
 
     def test_untranslated_falls_back_to_english(self):
         from unittest import mock
@@ -15470,7 +16134,7 @@ class FutureTests(unittest.TestCase):
         self.assertEqual((future.cores_hint(8, 16), future.cores_hint(0, 16), future.cores_hint(2, 0)), ("", "", ""))
 
     def test_the_tests_that_need_no_tools_run_while_the_image_builds(self):
-        """On tnsync's board the suite runs in two parts: every test but the ones that need the image's tools
+        """On devtools's board the suite runs in two parts: every test but the ones that need the image's tools
         (IMAGE_CLASSES) on the plain Python image while the image builds, then those in the image. One bar for the build
         and both (their counts added up, its total the build's steps and every test from the start), each failure passed on
         as it comes, the result line the image's run's."""
@@ -15596,7 +16260,7 @@ class FutureTests(unittest.TestCase):
                                              "tests.test_plexcache.FutureTests.no_such_test"]), 1)
 
     def test_the_build_and_the_tests_are_one_bar_with_a_total_from_the_start(self):
-        """On tnsync's board the build's steps and the tests are one bar: its total the steps and the tests counted in
+        """On devtools's board the build's steps and the tests are one bar: its total the steps and the tests counted in
         the checkout from the first step, even from BuildKit, which never says how many steps (never "-"), and the suite
         in the image goes on from the steps done."""
         import io
@@ -15942,8 +16606,8 @@ class IconTests(unittest.TestCase):
 class StyleGuideTests(unittest.TestCase):
     """The style guide (dev/style.py, dev/style-guide.json): every look the app wears — each CSS rule, inline style,
     drawing, decoration, theme colour, font, image — is one the maintainer approved from a sample. A look that's new,
-    changed or gone fails here until they see its sample (dev/style.py sample) and approve it at a terminal
-    (dev/style.py approve). Nobody else writes the guide: never approve, edit the guide or loosen this test without the
+    changed or gone fails here until they see its sample and approve it at a terminal (dev/style.py review, which
+    makes the sample when it's out of date). Nobody else writes the guide: never approve, edit the guide or loosen this test without the
     maintainer's express OK (CLAUDE.md)."""
 
     @classmethod
@@ -15958,8 +16622,8 @@ class StyleGuideTests(unittest.TestCase):
     def test_every_look_is_in_the_style_guide(self):
         found = self.style.problems(now=self.now)
         self.assertEqual(found, [], "Looks the style guide (dev/style-guide.json) doesn't have, or has otherwise. Each needs "
-                         "the maintainer's OK: run python3 dev/style.py sample and show them dev/style-sample/index.html; "
-                         "only they run python3 dev/style.py approve. Don't edit the guide or this test.")
+                         f"the maintainer's OK: ask them to run {self.style.REVIEW} (it makes the sample and has the Approve "
+                         "buttons); only they approve. Don't edit the guide or this test.")
 
     def test_the_guide_holds_every_kind_of_look(self):
         kinds = {k.split(" ")[0] for k in self.style.load_guide()["looks"]}
@@ -16053,6 +16717,9 @@ class StyleGuideTests(unittest.TestCase):
             self.assertEqual(run(), 1)                                   # a sample missing a picture
             with open(os.path.join(out, "sample.json"), "w") as fh:
                 json.dump({"fingerprint": fp, "shots": ["look0.png"]}, fh)
+            self.assertEqual(run(), 1)                                   # a sample not drawn by the code as it is now
+            with open(os.path.join(out, "sample.json"), "w") as fh:
+                json.dump({"fingerprint": fp, "made_from": s.made_from(), "shots": ["look0.png"]}, fh)
             self.assertEqual(asked, [])
             self.assertEqual(run("no"), 1)                               # the maintainer says no
             self.assertEqual(s.load_guide(path)["looks"], before)
@@ -16110,6 +16777,14 @@ class StyleGuideTests(unittest.TestCase):
             page = _read(os.path.join(tmp, "index.html"), encoding="utf-8")
             self.assertIn('<figcaption class="side">Before</figcaption>', page)
             self.assertIn('<figcaption class="side after">After</figcaption>', page)
+            # one view at a time, on a toggle: Side by side (shown first), Diff, Slider
+            self.assertIn('<span class="views" role="group" aria-label="Show"><button type="button" class="vw" data-view="side" '
+                          'aria-pressed="true">Side by side</button><button type="button" class="vw" data-view="diff" '
+                          'aria-pressed="false">Diff</button><button type="button" class="vw" data-view="slider" '
+                          'aria-pressed="false">Slider</button></span>', page)
+            self.assertIn('<div class="diffview" hidden>', page)
+            self.assertIn('<img src="Dionysus light-d.png" alt="Diff">', page)   # (not lazy: hidden, it would never load)
+            self.assertNotIn("Highlight the difference", page)
             # the slider: both pictures by name, loaded with the page (a lazy one, hidden, would never load)
             slider = page[page.index('<div class="slider"'):]
             self.assertIn('<img src="Dionysus light-a.png" alt="After">', slider)
@@ -16257,6 +16932,24 @@ class StyleGuideTests(unittest.TestCase):
         js = _read(os.path.join(ROOT, "dev", "style-sample.js"), encoding="utf-8")
         self.assertIn("setFixedTime", js)                     # both sides see the same moment
         self.assertIn('ctx.route("**/*"', js)                 # the Before's files over the same demo data
+        self.assertIn("frozen(ANSWERS)", js)                   # ... and the same data: each answer kept for every page
+        # every picture of the app's pages is taken still (dev/still.js SHOT: no animation, transition or caret), by
+        # every tool that takes them, so the same look always comes out the same
+        still = _read(os.path.join(ROOT, "dev", "still.js"), encoding="utf-8")
+        self.assertIn('animations: "disabled"', still)
+        self.assertIn('caret: "hide"', still)
+        self.assertIn("fontsFirst(ctx)", js)                   # nothing measured in a fallback font before its own loads
+        for name in sorted(os.listdir(os.path.join(ROOT, "dev"))):
+            src = _read(os.path.join(ROOT, "dev", name), encoding="utf-8") if name.endswith(".js") else ""
+            if not re.search(r"\.goto\(", src):
+                continue
+            for call in re.findall(r"\.screenshot\(\{[^}]*", src):
+                self.assertIn("...SHOT", call, f"dev/{name}: {call}")
+        # the demo is the same server on any machine: its own key fixed, and no device ID read off a real Syncthing
+        demo = _read(os.path.join(ROOT, "tests", "demo.py"), encoding="utf-8")
+        self.assertIn("peer-key.json", demo)
+        self.assertIn("syncthing_mod.cert_device_id = ", demo)
+        self.assertIn("app.syncthing.refresh()", demo)
 
     @unittest.skipUnless(shutil.which("git"), "no git here")
     def test_the_guides_files_are_held_to_what_was_approved(self):
@@ -16358,7 +17051,7 @@ class StyleGuideTests(unittest.TestCase):
             with contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(s.review(tmp, terminal=False), 2)        # not at a terminal: never
                 self.assertEqual(s.review(tmp, terminal=True), 1)         # no sample
-            # opened from tnsync's board (r): what it says goes to a file, and unused it closes by itself
+            # opened from devtools's board (r): what it says goes to a file, and unused it closes by itself
             with open(os.path.join(tmp, "index.html"), "w", encoding="utf-8") as f:
                 f.write("<script>var R=window.REVIEW;</script>")
             with open(os.path.join(tmp, "sample.json"), "w", encoding="utf-8") as f:
@@ -16370,11 +17063,12 @@ class StyleGuideTests(unittest.TestCase):
             self.assertRegex(said, r"The review page: http://review-[0-9a-f]{16}\.localhost:\d+/ ")
             self.assertNotIn("code=", said)
             self.assertIn("No one has used the page", said)
-        page = _read(os.path.join(ROOT, "dev", "style.py"), encoding="utf-8")
-        for part in ('"127.0.0.1"', "X-Review-Token", "compare_digest", "_host_ok", "ended.set()"):
+        page = _read(os.path.join(ROOT, "dev", "devpage.py"), encoding="utf-8")   # (the dev pages' one server: style.py has none of its own)
+        for part in ('"127.0.0.1"', "X-Page-Token", "compare_digest", "_host_ok", "ended.set()"):
             self.assertIn(part, page)
+        self.assertNotIn("http.server", _read(os.path.join(ROOT, "dev", "style.py"), encoding="utf-8"))
 
-    def test_check_tells_tnsync_where_the_review_is(self):
+    def test_check_tells_devtools_where_the_review_is(self):
         s = self.style
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(s.review_line(3, tmp, self.now), "3 looks need your approval: python3 dev/style.py review")
@@ -16397,9 +17091,9 @@ class StyleGuideTests(unittest.TestCase):
 class UpkeepTests(unittest.TestCase):
     """The dependencies kept current (dev/upkeep.py): looked up when the suite runs by hand, never on GitHub."""
 
-    def test_moves_only_on_dev_and_tells_tnsync(self):
+    def test_moves_only_on_dev_and_tells_devtools(self):
         """Pins are moved only in a checkout of dev, or of main (its minor and patch releases; a copy isn't a checkout), and
-        --tnsync is the box tnsync shows at the end of a run (TN_UPKEEP): its first line current (green), behind
+        --devtools is the box devtools shows at the end of a run (TN_UPKEEP): its first line current (green), behind
         (yellow: what moved, what's left and what to do) or unknown (grey), every line fitting the box."""
         from dev import upkeep
         for where, moves in (("dev", True), ("main", True), ("feature", False), (None, False)):
@@ -16409,10 +17103,10 @@ class UpkeepTests(unittest.TestCase):
                         mock.patch.object(sys, "argv", ["upkeep.py"]), mock.patch("builtins.print"):
                     upkeep.main()
                 self.assertEqual(check.call_args.kwargs["apply"], moves, where)
-                # on tnsync's board it looks while the tests run (TNSYNC_UPKEEP=look: nothing moved), and moves once they're done
+                # on devtools's board it looks while the tests run (DEVTOOLS_UPKEEP=look: nothing moved), and moves once they're done
                 for phase, phase_moves in (("look", False), ("move", moves)):
-                    with mock.patch.object(upkeep, "check", side_effect=upkeep.Offline("x")) as check, mock.patch.dict(os.environ, {"TNSYNC_UPKEEP": phase}), \
-                            mock.patch.object(sys, "argv", ["upkeep.py", "--tnsync"]), mock.patch("builtins.print"):
+                    with mock.patch.object(upkeep, "check", side_effect=upkeep.Offline("x")) as check, mock.patch.dict(os.environ, {"DEVTOOLS_UPKEEP": phase}), \
+                            mock.patch.object(sys, "argv", ["upkeep.py", "--devtools"]), mock.patch("builtins.print"):
                         upkeep.main()
                     self.assertEqual(check.call_args.kwargs["apply"], phase_moves, (where, phase))
         found = {d.name: [d.have(), d.have()] for d in upkeep.DEPS}
@@ -16450,8 +17144,8 @@ class UpkeepTests(unittest.TestCase):
         found["terser"] = [found["terser"][0], found["terser"][0]]
         with mock.patch.object(upkeep, "lookup", return_value=(found, False)):
             self.assertEqual(upkeep.box(upkeep.check(apply=False, where="main"), "main")[0], "current")   # (only a major behind: nothing to do on main)
-        # tnsync shows it last, from your folder, coloured by that first line; this project's .tnsync names it
-        tool = _read(os.path.join(ROOT, "dev", "tnsync"), encoding="utf-8")
+        # devtools shows it last, from your folder, coloured by that first line; this project's .devtools names it
+        tool = _read(os.path.join(ROOT, "dev", "devtools"), encoding="utf-8")
         for word in ("TN_UPKEEP", 'current) green_banner "${lines[@]}" ;;', 'behind|cves) yellow_banner "${lines[@]}" ;;',
                      'out="$( cd "$ROOT" && PYTHONDONTWRITEBYTECODE=1 bash -c "$TN_UPKEEP"'):
             self.assertIn(word, tool)
@@ -16480,7 +17174,7 @@ class UpkeepTests(unittest.TestCase):
             self.assertTrue(any(p.startswith("eslint ") for p in r.prompts))
 
     def test_the_look_shows_each_step_on_the_shared_bar(self):
-        """While it looks (tnsync's last box waits on it), the bar tests/run.py draws (dev/progress.py) says what's being
+        """While it looks (devtools's last box waits on it), the bar tests/run.py draws (dev/progress.py) says what's being
         looked up — every dependency asked at once — then which pin is being moved, the packages of dev/package.json in one
         npm install, with its seconds so far; and it's gone at the end. A pin that can't be moved (npm failing, or too
         slow) is said, not a crash; when the one install of them all fails, each is tried alone, to say which."""
@@ -16541,7 +17235,7 @@ class UpkeepTests(unittest.TestCase):
                 mock.patch.object(upkeep, "DEPS", deps[2:3]), mock.patch.dict(os.environ, {"PLEXCACHE_PROGRESS": ""}):
             upkeep.check(apply=True, fresh=True, progress=Progress(0, stream=out))
         self.assertEqual(out.getvalue(), "    1/1 looked up\n")
-        # shown on a terminal later (tnsync's log of the future run): the bar all the same, as wide as COLUMNS says
+        # shown on a terminal later (devtools's log of the future run): the bar all the same, as wide as COLUMNS says
         out = io.StringIO()
         with mock.patch.dict(os.environ, {"PLEXCACHE_PROGRESS": "bar", "COLUMNS": "60"}):
             bar = Progress(2, stream=out)
@@ -16602,7 +17296,7 @@ class UpkeepTests(unittest.TestCase):
 
     @unittest.skipIf(os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS"), "by hand only: GitHub isn't asked to look upstream")
     def test_dependencies_are_current(self):
-        """From the last look's answers only (tnsync's box and dev/upkeep.py do the looking, and the moving on dev): the
+        """From the last look's answers only (devtools's box and dev/upkeep.py do the looking, and the moving on dev): the
         suite never waits on upstream or npm. A minor release behind moves by itself on dev, so only what's left to you fails it there."""
         from dev import upkeep
         try:
@@ -16653,7 +17347,7 @@ class HomeAssistantRulesTests(unittest.TestCase):
 
 class TypeCheckTests(unittest.TestCase):
     """Python Validation (dev/typecheck.py): pyright and Ruff at their versions in dev/tools.toml, through the check tools'
-    shared code (dev/checks.py), as tnsync's block and GitHub run them."""
+    shared code (dev/checks.py), as devtools's block and GitHub run them."""
 
     def test_ruffs_findings_as_every_check_says_them(self):
         from dev import checks, typecheck
@@ -16673,7 +17367,7 @@ class TypeCheckTests(unittest.TestCase):
         self.assertEqual(deps["Ruff"].have(), checks.version("ruff"))
         self.assertEqual(deps["Ruff"].major, 2)   # (a Ruff minor changes what its rules find: a prompt, not moved by itself)
         build = _read(os.path.join(ROOT, ".github", "workflows", "build.yml"), encoding="utf-8")
-        self.assertIn("run: python dev/typecheck.py", build)   # (GitHub runs what tnsync's block runs)
+        self.assertIn("run: python dev/typecheck.py", build)   # (GitHub runs what devtools's block runs)
         self.assertNotRegex(build, r"pyright@\d|ruff==\d")   # (the versions are dev/tools.toml's only)
         tools = _read(upkeep.TOOLS, encoding="utf-8")
         written = {}
@@ -16692,7 +17386,7 @@ class TypeCheckTests(unittest.TestCase):
 
 
 class CoverageTests(unittest.TestCase):
-    """dev/coverage.py, tnsync's Coverage block: what counts as code, what's fresh (git blame) and settled, the rules for
+    """dev/coverage.py, devtools's Coverage block: what counts as code, what's fresh (git blame) and settled, the rules for
     each, and the release bar; tests/run.py --coverage gathering it from every worker."""
 
     SOURCE = ('"""A module."""\n'                       # 1 docstring: not code
@@ -16788,7 +17482,7 @@ class CoverageTests(unittest.TestCase):
         self.assertGreater(some(got[2]), time.time() - 3600)   # (committed just now: fresh)
         self.assertIsNone(got[5])   # (not committed: fresh)
         head = run("rev-parse", "HEAD").stdout.decode().strip()
-        self.assertEqual(set(coverage.blame("f.py", (repo, head))), {1, 2, 3, 4})   # (a copy tnsync made: the commit it is)
+        self.assertEqual(set(coverage.blame("f.py", (repo, head))), {1, 2, 3, 4})   # (a copy devtools made: the commit it is)
 
     def test_what_the_tests_ran_is_saved_for_this_code_only(self):
         from dev import coverage
@@ -16846,10 +17540,10 @@ class CoverageTests(unittest.TestCase):
         folder = tempfile.mkdtemp(dir=TMP)
         out = io.StringIO()
         with mock.patch.object(coverage, "SAVED", os.path.join(folder, "none.json")), contextlib.redirect_stdout(out):
-            self.assertEqual(coverage.main(["--tnsync"]), 3)   # (nothing saved: orange, "not measured", not a test to add)
-        self.assertIn("Coverage not measured · no coverage saved yet: the tests save it with --coverage (in .tnsync, TN_TEST=", out.getvalue())
-        tnsync = _read(os.path.join(ROOT, "dev", "tnsync"), encoding="utf-8")
-        self.assertIn('\\"warn\\": {\\"rc\\": 1, \\"note\\": \\"tests to add\\", \\"more\\": {\\"3\\": \\"not measured\\"}}', tnsync)
+            self.assertEqual(coverage.main(["--devtools"]), 3)   # (nothing saved: orange, "not measured", not a test to add)
+        self.assertIn("Coverage not measured · no coverage saved yet: the tests save it with --coverage (in .devtools, TN_TEST=", out.getvalue())
+        devtools = _read(os.path.join(ROOT, "dev", "devtools"), encoding="utf-8")
+        self.assertIn('\\"warn\\": {\\"rc\\": 1, \\"note\\": \\"tests to add\\", \\"more\\": {\\"3\\": \\"not measured\\"}}', devtools)
         # (on the board: 1 a test to add, 3 not measured, both orange; anything else red)
         warn = {"rc": 1, "note": "tests to add", "more": {"3": "not measured"}}
         for rc, state, header in ((1, "warn", "TESTS TO ADD"), (3, "warn", "NOT MEASURED"), (2, "fail", "")):
@@ -16858,7 +17552,7 @@ class CoverageTests(unittest.TestCase):
             s.finished(rc)
             self.assertEqual(s.state, state, rc)
             self.assertIn(header, s.lines(80)[0])
-        self.assertIn('if [ "$RELEASE" = 1 ]; then warn=""; CHECK_IDS+=("coverage"); fi', tnsync)   # (red at release)
+        self.assertIn('if [ "$RELEASE" = 1 ]; then warn=""; CHECK_IDS+=("coverage"); fi', devtools)   # (red at release)
 
 
 class CVETests(unittest.TestCase):
@@ -17061,27 +17755,27 @@ class CVETests(unittest.TestCase):
         self.assertEqual(cves.images("main"), ["ghcr.io/drsassafras/plex-cache:latest"])
         self.assertEqual(cves.images(""), ["ghcr.io/drsassafras/plex-cache:latest", "ghcr.io/drsassafras/plex-cache:dev"])   # (not a checkout: both)
 
-    def test_the_look_is_of_the_copy_tnsync_checks(self):
-        """tnsync main looks at main's copy, tnsync dev at dev's, tnsync local at the folder on its branch: that copy's pins,
+    def test_the_look_is_of_the_copy_devtools_checks(self):
+        """devtools main looks at main's copy, devtools dev at dev's, devtools local at the folder on its branch: that copy's pins,
         its npm lock, and its own image built here; the published image of its branch only when it can't be built."""
         from dev import cves, upkeep
         d = tempfile.mkdtemp(dir=TMP)
         with open(os.path.join(d, "Dockerfile"), "w") as fh:
             fh.write("FROM python:3.13-alpine\nARG FFMPEG=7.1.1\nARG OXIPNG=9.0.0\n")
-        with mock.patch.dict(os.environ, {"TNSYNC_COPY": d, "TNSYNC_MODE": "main"}):
+        with mock.patch.dict(os.environ, {"DEVTOOLS_COPY": d, "DEVTOOLS_MODE": "main"}):
             self.assertEqual(cves.source(), d)
             self.assertEqual(cves.source_branch(), "main")
             self.assertEqual(cves.images(), ["ghcr.io/drsassafras/plex-cache:latest"])
             self.assertEqual(upkeep.cve_pins(cves.source()), {"ffmpeg": "7.1.1", "oxipng": "9.0.0"})
             self.assertEqual(cves.copy_os(), "alpine")
-        with mock.patch.dict(os.environ, {"TNSYNC_MODE": "beta"}):
+        with mock.patch.dict(os.environ, {"DEVTOOLS_MODE": "beta"}):
             self.assertEqual(cves.source_branch(), "dev")
-        with mock.patch.dict(os.environ, {"TNSYNC_MODE": "local"}), mock.patch.object(upkeep, "branch", return_value="main"):
+        with mock.patch.dict(os.environ, {"DEVTOOLS_MODE": "local"}), mock.patch.object(upkeep, "branch", return_value="main"):
             self.assertEqual(cves.source_branch(), "main")   # (the folder: the branch it's on)
         for name, arg in upkeep.CVE_ARGS.items():   # (each the ARG its Dep reads)
             self.assertEqual(next(dep.where for dep in upkeep.DEPS if dep.name == name), f"ARG {arg} in the Dockerfile")
-        tnsync = _read(os.path.join(ROOT, "dev", "tnsync"), encoding="utf-8")
-        self.assertRegex(tnsync, r'"id\\": \\"upkeep\\".*TNSYNC_COPY\\": \$\(json_str "\$SRC"\)')
+        devtools = _read(os.path.join(ROOT, "dev", "devtools"), encoding="utf-8")
+        self.assertRegex(devtools, r'"id\\": \\"upkeep\\".*DEVTOOLS_COPY\\": \$\(json_str "\$SRC"\)')
 
     def test_the_copys_image_is_built_and_looked_at(self):
         from dev import cves
@@ -17246,7 +17940,7 @@ class CheckToolTests(unittest.TestCase):
     """The check tools' shared code (dev/checks.py): every check tool at its version in dev/tools.toml, fetched by it, its
     findings said one way, the board's bar and the result line its; no check tool of its own beside it."""
 
-    WRAPPERS = ("typecheck.py", "buildcheck.py")   # (each check tool's section on tnsync's board, run through dev/checks.py)
+    WRAPPERS = ("typecheck.py", "buildcheck.py")   # (each check tool's section on devtools's board, run through dev/checks.py)
     USERS = ("cves.py",)   # (a tool run as a part of another section: Trivy, in the dependency check's — fetched the same way)
 
     def test_every_check_tool_runs_through_the_shared_code(self):
@@ -17303,7 +17997,7 @@ class CheckToolTests(unittest.TestCase):
                     self.assertRegex(line, r"#\s*v\d", f"{os.path.basename(path)}: the pinned commit doesn't say its version")
 
     def test_build_validation_checks_every_script_workflow_and_dockerfile(self):
-        """dev/buildcheck.py (tnsync's Build Validation block, and GitHub's): ShellCheck on every shell script the project
+        """dev/buildcheck.py (devtools's Build Validation block, and GitHub's): ShellCheck on every shell script the project
         has, actionlint on its workflows, hadolint on its Dockerfiles; a rule hadolint passes over says why."""
         import subprocess
 
@@ -17323,7 +18017,7 @@ class CheckToolTests(unittest.TestCase):
         self.assertEqual(sorted(buildcheck.SCRIPTS), sorted(scripts))
         self.assertEqual(sorted(buildcheck.DOCKERFILES), sorted(f for f in tracked if os.path.basename(f).startswith("Dockerfile")))
         build = _read(os.path.join(ROOT, ".github", "workflows", "build.yml"), encoding="utf-8")
-        self.assertIn("run: python dev/buildcheck.py", build)   # (GitHub runs what tnsync's block runs)
+        self.assertIn("run: python dev/buildcheck.py", build)   # (GitHub runs what devtools's block runs)
         self.assertIn("TN_BUILD=python3 dev/buildcheck.py", _read(os.path.join(ROOT, "dev", "README.md"), encoding="utf-8"))
         hadolint = _read(os.path.join(ROOT, ".hadolint.yaml"), encoding="utf-8")
         for rule in re.findall(r"(?m)^\s*-\s*(DL\d+|SC\d+)", hadolint):
@@ -17390,11 +18084,11 @@ class CheckToolTests(unittest.TestCase):
             self.assertRaises(FileNotFoundError, checks.call, ["t"])   # (any other failure is said as it is)
 
     def test_the_bar_counts_the_files_checked(self):
-        """On tnsync's board a check tool's bar is the files its checks read, each counted once every check that reads it is
+        """On devtools's board a check tool's bar is the files its checks read, each counted once every check that reads it is
         done (a file two tools read: when the second ends); a check that doesn't say what it reads: the checks done."""
         from dev import checks
         from dev.checks import Check, Outcome
-        self.assertEqual(checks.project_files("tnsync", under=("dev",)), ["dev/tnsync"])
+        self.assertEqual(checks.project_files("devtools", under=("dev",)), ["dev/devtools"])
         self.assertIn("dev/checks.py", checks.project_files("*.py", under=("dev",)))
         self.assertNotIn("dev/checks.py", checks.project_files("*.py", skip=("dev",)))
         gate = threading.Event()
@@ -17449,7 +18143,7 @@ class CheckToolTests(unittest.TestCase):
 
 
 class ReleaseTests(unittest.TestCase):
-    """The release checks (dev/release.py): what tnsync --release checks before dev is released, and only then."""
+    """The release checks (dev/release.py): what devtools --release checks before dev is released, and only then."""
 
     def test_version_is_a_new_minor_or_major(self):
         from dev import release
@@ -17489,6 +18183,24 @@ class ReleaseTests(unittest.TestCase):
         with mock.patch.object(i18n, "all_keys", return_value={"Idle": None}), \
                 mock.patch.object(i18n, "load", return_value={"Idle": "x"}):
             self.assertTrue(release.check_translations().ok)
+
+    def test_the_release_page_is_each_check_as_it_came(self):
+        """dev/release.py's detail for its page in the devtools UI: each check, whether it passed, its line and what to
+        do; how many are ready; and whether this run gates (strict). Written whenever the board asks (DEVTOOLS_DETAIL)."""
+        from dev import release
+        folder = tempfile.mkdtemp(dir=TMP)
+        path = os.path.join(folder, "release.json")
+        checks = [lambda: release.Result("Version", True, "0.17.0, a new release"),
+                  lambda: release.Result("Looks", False, "2 looks waiting for approval", ["new: css .a", "python3 dev/style.py review"])]
+        for args, env, rc, strict in (([], {}, 1, True), (["--devtools"], {}, 3, False), (["--devtools"], {"DEVTOOLS_RELEASE": "1"}, 1, True)):
+            with mock.patch.object(release, "CHECKS", checks), mock.patch.dict(os.environ, {"DEVTOOLS_DETAIL": path, "PLEXCACHE_PROGRESS": "", **env}), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(release.main(args), rc)
+            with open(path, encoding="utf-8") as fh:
+                got = json.load(fh)
+            self.assertEqual(got, {"kind": "release", "strict": strict, "ready": 1, "total": 2, "checks": [
+                {"name": "Version", "ok": True, "line": "0.17.0, a new release", "todo": []},
+                {"name": "Looks", "ok": False, "line": "2 looks waiting for approval", "todo": ["new: css .a", "python3 dev/style.py review"]}]})
 
     def test_every_setting_is_placed_for_mqtt(self):
         from dev import release
@@ -17567,30 +18279,30 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(got.todo[0], "changed: css .fhit")
 
     def test_the_board_block_is_a_readiness(self):
-        """dev/release.py --tnsync, tnsync's Release checks block: between releases an overall readiness that only
-        tells (exit 3, "N of M ready"); on a release run (TNSYNC_RELEASE — the tool alone decides) the blocking check
+        """dev/release.py --devtools, devtools's Release checks block: between releases an overall readiness that only
+        tells (exit 3, "N of M ready"); on a release run (DEVTOOLS_RELEASE — the tool alone decides) the blocking check
         it always was."""
         from dev import release
         from dev.progress import FEED
         checks = [lambda: release.Result("Version", True, "0.17.0, a new release"),
                   lambda: release.Result("Coverage", False, "overall 97.1%"),
                   lambda: release.Result("Looks", False, "2 looks waiting for approval")]
-        quiet = {"PLEXCACHE_PROGRESS": "feed", "TNSYNC_RELEASE": ""}
+        quiet = {"PLEXCACHE_PROGRESS": "feed", "DEVTOOLS_RELEASE": ""}
         out = io.StringIO()
         with mock.patch.object(release, "CHECKS", checks), contextlib.redirect_stdout(out), \
                 mock.patch.dict(os.environ, quiet):
-            self.assertEqual(release.main(["--tnsync"]), 3)
+            self.assertEqual(release.main(["--devtools"]), 3)
         self.assertIn("1 of 3 ready · to go: coverage, looks", out.getvalue())
         self.assertIn(FEED + json.dumps({"said": "1 of 3 ready · to go: coverage, looks"}), out.getvalue())   # (its block's line)
         out = io.StringIO()
         with mock.patch.object(release, "CHECKS", checks), contextlib.redirect_stdout(out), \
-                mock.patch.dict(os.environ, quiet | {"TNSYNC_RELEASE": "1"}):
-            self.assertEqual(release.main(["--tnsync"]), 1)   # (a release run: red, and the copy waits)
+                mock.patch.dict(os.environ, quiet | {"DEVTOOLS_RELEASE": "1"}):
+            self.assertEqual(release.main(["--devtools"]), 1)   # (a release run: red, and the copy waits)
         self.assertIn(FEED + json.dumps({"said": "Coverage: overall 97.1%; Looks: 2 looks waiting for approval"}), out.getvalue())
         out = io.StringIO()
         with mock.patch.object(release, "CHECKS", checks[:1]), contextlib.redirect_stdout(out), \
                 mock.patch.dict(os.environ, quiet):
-            self.assertEqual(release.main(["--tnsync"]), 0)
+            self.assertEqual(release.main(["--devtools"]), 0)
         self.assertIn("1 of 1 ready · ready to release", out.getvalue())
 
     def test_runs_each_check_and_says_them(self):
@@ -17606,12 +18318,12 @@ class ReleaseTests(unittest.TestCase):
         with mock.patch.object(release, "CHECKS", checks[:1]), contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(release.main(), 0)
 
-    @unittest.skipUnless(shutil.which("rsync") and shutil.which("bash"), "no rsync here (tnsync copies with it)")
-    def test_tnsync_release_and_translations_every_run(self):
-        """tnsync's Release checks and Translations blocks (TN_RELEASE, TN_I18N), every run: the tools alone decide how
-        strict they are, from TNSYNC_RELEASE and TNSYNC_MODE — between releases exit 3 only tells (grey, the run goes
+    @unittest.skipUnless(shutil.which("rsync") and shutil.which("bash"), "no rsync here (devtools copies with it)")
+    def test_devtools_release_and_translations_every_run(self):
+        """devtools's Release checks and Translations blocks (TN_RELEASE, TN_I18N), every run: the tools alone decide how
+        strict they are, from DEVTOOLS_RELEASE and DEVTOOLS_MODE — between releases exit 3 only tells (grey, the run goes
         on), and where they gate exit 1 is a failure like a failing test. The checks are told it's a release
-        (TNSYNC_RELEASE, PLEXCACHE_I18N_RELEASE) only with --release. A pass without --release doesn't count for one
+        (DEVTOOLS_RELEASE, PLEXCACHE_I18N_RELEASE) only with --release. A pass without --release doesn't count for one
         with it."""
         import subprocess
         folder = tempfile.mkdtemp(dir=TMP)
@@ -17628,27 +18340,27 @@ class ReleaseTests(unittest.TestCase):
             fh.write("TN_HOST=nas.example\nTN_USER=me\n")
 
         def settings(strict_rc: int):
-            with open(os.path.join(project, ".tnsync"), "w", encoding="utf-8") as fh:
+            with open(os.path.join(project, ".devtools"), "w", encoding="utf-8") as fh:
                 fh.write(f"TN_APP=myapp\nTN_DEST={nas}\nTN_PATHS=app\n"
-                         "TN_TEST=echo tests: release=${TNSYNC_RELEASE:-no} i18n=${PLEXCACHE_I18N_RELEASE:-no}\n"
-                         "TN_I18N=echo 32.9% translated; [ \"${TNSYNC_RELEASE:-}\" = 1 ] && exit 1; exit 3\n"
+                         "TN_TEST=echo tests: release=${DEVTOOLS_RELEASE:-no} i18n=${PLEXCACHE_I18N_RELEASE:-no}\n"
+                         "TN_I18N=echo 32.9% translated; [ \"${DEVTOOLS_RELEASE:-}\" = 1 ] && exit 1; exit 3\n"
                          "TN_RELEASE=echo the version is wrong; echo 4 of 7 ready; "
-                         f"if [ \"${{TNSYNC_RELEASE:-}}\" = 1 ]; then exit {strict_rc}; else exit 3; fi\n")
-        env = dict(os.environ, PATH=fake + os.pathsep + os.environ.get("PATH", ""), TNSYNC_CONFIG=os.path.join(folder, "config"),
+                         f"if [ \"${{DEVTOOLS_RELEASE:-}}\" = 1 ]; then exit {strict_rc}; else exit 3; fi\n")
+        env = dict(os.environ, PATH=fake + os.pathsep + os.environ.get("PATH", ""), DEVTOOLS_CONFIG=os.path.join(folder, "config"),
                    XDG_STATE_HOME=os.path.join(folder, "state"), TMPDIR=folder)
         env.pop("PLEXCACHE_PROGRESS", None)
 
-        def tnsync(*args):
-            got = subprocess.run([os.path.join(ROOT, "dev", "tnsync"), "local", *args], cwd=project, env=env, capture_output=True,
+        def devtools(*args):
+            got = subprocess.run([os.path.join(ROOT, "dev", "devtools"), "local", *args], cwd=project, env=env, capture_output=True,
                                  text=True, timeout=120, stdin=subprocess.DEVNULL)
             return got.returncode, got.stdout + got.stderr
         settings(1)
-        rc, out = tnsync()   # (between releases: both blocks only tell, grey, and the run passes)
+        rc, out = devtools()   # (between releases: both blocks only tell, grey, and the run passes)
         self.assertEqual(rc, 0, out)
         self.assertIn("Release checks: IN PROGRESS", out)
         self.assertIn("Translations: IN PROGRESS", out)
         self.assertIn("tests: release=no i18n=no", out)
-        rc, out = tnsync("--release")   # (in sync, and passed: but not as a release, so tested again)
+        rc, out = devtools("--release")   # (in sync, and passed: but not as a release, so tested again)
         self.assertEqual(rc, 1, out)
         self.assertIn("The last tests weren't a release run (--release) · nothing copied", out)
         self.assertIn("Release checks: FAILED", out)
@@ -17658,24 +18370,24 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn("Local Copy", out)   # (the board's header)
         self.assertRegex(out, r"\nLocal Copy[^\n]* · Release")
         settings(0)
-        rc, out = tnsync("--release")
+        rc, out = devtools("--release")
         self.assertEqual(rc, 1, out)   # (the translations still gate a release run)
         self.assertIn("Release checks: PASSED", out)
         self.assertIn("Translations: FAILED", out)
-        with open(os.path.join(project, ".tnsync"), "a", encoding="utf-8") as fh:
+        with open(os.path.join(project, ".devtools"), "a", encoding="utf-8") as fh:
             fh.write("TN_I18N=echo 100% translated; exit 0\n")   # (the last TN_I18N line wins)
-        rc, out = tnsync("--release")
+        rc, out = devtools("--release")
         self.assertEqual(rc, 0, out)
         self.assertIn("Release checks: PASSED", out)
         self.assertIn("Translations: PASSED", out)
-        rc, out = tnsync("--release")   # (passed, and nothing changed: readiness runs again all the same, quick)
+        rc, out = devtools("--release")   # (passed, and nothing changed: readiness runs again all the same, quick)
         self.assertEqual(rc, 0, out)
         self.assertIn("Release checks: PASSED", out)
-        # the blocks' plan: the tool decides, tnsync only tells and counts (one source of truth)
-        tnsync_src = _read(os.path.join(ROOT, "dev", "tnsync"), encoding="utf-8")
-        self.assertIn('\\"id\\": \\"i18n\\", \\"title\\": \\"Translations\\"', tnsync_src)
-        self.assertIn('\\"id\\": \\"release\\", \\"title\\": \\"Release checks\\"', tnsync_src)
-        self.assertEqual(tnsync_src.count('\\"tell\\": {\\"rc\\": 3, \\"note\\": \\"in progress\\"}'), 2)
+        # the blocks' plan: the tool decides, devtools only tells and counts (one source of truth)
+        devtools_src = _read(os.path.join(ROOT, "dev", "devtools"), encoding="utf-8")
+        self.assertIn('\\"id\\": \\"i18n\\", \\"title\\": \\"Translations\\"', devtools_src)
+        self.assertIn('\\"id\\": \\"release\\", \\"title\\": \\"Release checks\\"', devtools_src)
+        self.assertEqual(devtools_src.count('\\"tell\\": {\\"rc\\": 3, \\"note\\": \\"in progress\\"}'), 2)
 
 
 if __name__ == "__main__":
@@ -17683,7 +18395,7 @@ if __name__ == "__main__":
 
 
 class AuditTests(unittest.TestCase):
-    """dev/audit.py, tnsync's Security Audit block: each audit's public half (what was audited, when) and private half
+    """dev/audit.py, devtools's Security Audit block: each audit's public half (what was audited, when) and private half
     (who, how thoroughly, what it found); which lines each audit saw, from git blame; the dev rule's grace window; the
     release rules; and record, which splits a filled-in template into its two halves."""
 
@@ -17743,7 +18455,7 @@ class AuditTests(unittest.TestCase):
         for patch in (mock.patch.object(audit, "ROOT", repo), mock.patch.object(audit, "CONFIG", os.path.join(repo, "dev", "audit.toml")),
                       mock.patch.object(audit, "PUBLIC", os.path.join(repo, "security", "audits")),
                       mock.patch.object(audit, "_repo", return_value=(repo, "")),
-                      mock.patch.dict(os.environ, {"PLEXCACHE_AUDITS": private, "TNSYNC_RELEASE": ""})):
+                      mock.patch.dict(os.environ, {"PLEXCACHE_AUDITS": private, "DEVTOOLS_RELEASE": ""})):
             patch.start()
             self.addCleanup(patch.stop)
         return repo, private, git
@@ -17872,7 +18584,7 @@ class AuditTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("git"), "no git here")
     def test_the_blocks_line_leads_with_the_open_findings(self):
-        """With the private records, tnsync's Security Audit block's line starts with how many findings are open (the
+        """With the private records, devtools's Security Audit block's line starts with how many findings are open (the
         facts left off a line too long for the board are its last)."""
         from dev import audit
         repo, private, git = self.project()
@@ -18235,10 +18947,12 @@ class AuditTests(unittest.TestCase):
         self.assertFalse(session.ok(Asked(Host=f"{session.host}:{port}", Cookie=jar, **{"Sec-Fetch-Site": "same-site"}), port))
         self.assertIsNone(session.enter(Asked(Host=f"127.0.0.1:{port}"), port, f"code={session.code}"))
         self.assertNotIn("inline_styles", _read(os.path.join(ROOT, "dev", "devpage.py"), encoding="utf-8"))
-        for tool in ("style.py", "auditgui.py"):   # (both by the opener's file: never webbrowser.open(url))
+        self.assertIn("show(session, ", _read(os.path.join(ROOT, "dev", "devpage.py"), encoding="utf-8"))   # (serve opens the page by the opener's file)
+        for tool in ("style.py", "auditgui.py", "devui.py"):   # (each page through devpage.serve: never webbrowser.open(url), no server of its own)
             src = _read(os.path.join(ROOT, "dev", tool), encoding="utf-8")
-            self.assertIn("devpage.show(session, ", src)
+            self.assertIn("devpage.serve(", src)
             self.assertNotIn("webbrowser", src)
+            self.assertNotIn("http.server", src)
 
     @unittest.skipUnless(shutil.which("git"), "no git here")
     def test_the_audits_page_is_this_computers_alone(self):
@@ -18265,7 +18979,7 @@ class AuditTests(unittest.TestCase):
                 def ask(method, path, body=None, host=None, token=None, cookie=None, more=None):
                     c = http.client.HTTPConnection("127.0.0.1", box["port"], timeout=30)
                     c.request(method, path, body=json.dumps(body) if body is not None else None,
-                              headers={"Host": host or f"127.0.0.1:{box['port']}", "X-Audit-Token": box["token"] if token is None else token,
+                              headers={"Host": host or f"127.0.0.1:{box['port']}", "X-Page-Token": box["token"] if token is None else token,
                                        "Cookie": box.get("cookie", "") if cookie is None else cookie, **(more or {})})
                     res = c.getresponse()
                     box["headers"] = dict(res.getheaders())
@@ -18623,7 +19337,7 @@ class AuditTests(unittest.TestCase):
 
         def ask(box, path, cookie, host):
             c = http.client.HTTPConnection("127.0.0.1", box["port"], timeout=30)
-            c.request("GET", path, headers={"Host": host, "X-Audit-Token": box["token"], "Cookie": cookie})
+            c.request("GET", path, headers={"Host": host, "X-Page-Token": box["token"], "Cookie": cookie})
             res = c.getresponse()
             return res.status, dict(res.getheaders()), res.read()
         with mock.patch.dict(os.environ, {"XDG_CACHE_HOME": cache}), contextlib.redirect_stdout(io.StringIO()):

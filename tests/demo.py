@@ -5,6 +5,7 @@
 Then open http://127.0.0.1:8642/.
 """
 
+import json as _json
 import os
 import sys
 import tempfile
@@ -66,7 +67,8 @@ os.environ["PLEXCACHE_PROC"] = fakes.make_proc(tmp, media, extra=((os.path.join(
 os.environ["PLEXCACHE_SYS"] = fakes.make_sys(tmp, {"l2arc_noprefetch": 1, "l2arc_write_max": 8388608,
                                                    "l2arc_rebuild_enabled": 1, "l2arc_mfuonly": 0})
 
-from plexcache import mapping, zfs  # noqa: E402
+from plexcache import mapping, peerlink, zfs  # noqa: E402
+from plexcache import syncthing as syncthing_mod  # noqa: E402
 from plexcache.app import App  # noqa: E402
 from plexcache.server import serve  # noqa: E402
 
@@ -107,6 +109,15 @@ plex.sessions = [
     {"id": "a", "item": cat["episodes"][4], "offset": 690000, "duration": 1680000, "player": "Living room TV"},
     {"id": "b", "item": cat["movies"][3], "offset": 900000, "duration": 7200000, "player": "Phone", "local": False},
 ]
+# The same server every time, whatever machine runs the demo (the style sample photographs it twice and compares): this
+# Dionysus's own key fixed, so its fingerprint is; and no Syncthing but the fake one — without this, the app reads a device
+# ID off port 22000 of the fake's host (127.0.0.1) before the fake has answered, which is whatever Syncthing runs on
+# the machine running the demo (the developer's own), and shows that as this server's identity.
+os.makedirs(os.path.join(tmp, "config"), exist_ok=True)
+_demo_private = int("5eed" * 16, 16) | (1 << 255)
+with open(os.path.join(tmp, "config", "peer-key.json"), "w", encoding="utf-8") as _f:
+    _json.dump({"private": format(_demo_private, "x"), "public": format(pow(peerlink.G, _demo_private, peerlink.P), "x")}, _f)
+syncthing_mod.cert_device_id = lambda host, port=syncthing_mod.SYNC_PORT, timeout=4: None  # (the fake has no sync port)
 app = App(os.path.join(tmp, "config"))
 app.settings.update({
     "plex": {"url": plex.url, "token": "good-token"},
@@ -204,6 +215,7 @@ for day in range(7, 365):
 app.activity.metrics.sort(key=lambda m: m["t"])
 app.activity.record("stream", label="Just now", player="Phone", transcoding=False, local=True, media="movie")
 app.start()
+app.syncthing.refresh()  # (its first answer in before the pages are: none of them shows a server without its identity)
 port = int(sys.argv[1]) if len(sys.argv) > 1 else 8642
 httpd = serve(app, "127.0.0.1", port)
 print(f"demo on http://127.0.0.1:{port}", flush=True)

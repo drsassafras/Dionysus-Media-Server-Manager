@@ -6,6 +6,7 @@
 //  * vines: a wavy line with a leaf now and then round every card, and down the seam between the menu and the page
 //    (held beside the menu as the page scrolls). A card's colour stops at its vine (the vine is the card's border), and
 //    so do the menu's and the page's at the seam;
+//  * grapes: progress bars as a vine whose grapes ripen, and checkboxes as grapes, ripe when ticked;
 //  * film: a reel unspooling a band of film under every page's title, its wave picked from the page's name, so a page
 //    always looks the same and no two pages quite match.
 // Everything is drawn from the cards and titles the shared code makes (app.js: card markup, top()), so every page and
@@ -87,12 +88,20 @@
   }
   let drawn = {};  // vines already worked out, by size and seed: a page draws again every few seconds, the same each time
   function cached(key, make) { if (!drawn[key]) { if (Object.keys(drawn).length > 400) drawn = {}; drawn[key] = make(); } return drawn[key]; }
+  // A page whose policy takes no style="…" from markup (the dev tools' pages: only their own nonce's styles) still gets
+  // what a drawing sets that way: set again by script, which such a policy allows. (Elsewhere it's the same style again.)
+  function styled(el) {
+    Array.prototype.forEach.call(el.querySelectorAll("[style]"), function (n) {
+      const s = n.getAttribute("style");
+      if (s) /** @type {HTMLElement} */ (n).style.cssText = s;
+    });
+  }
   // (``before``: where among el's children it goes, when not at the end)
   function put(el, cls, html, before) {
     const old = el.querySelector(":scope > ." + cls);
     if (!html) { if (old) old.remove(); return; }
     if (old && old.getAttribute("data-k") === html.k) return;
-    const t = document.createElement("div"); t.innerHTML = html.svg;
+    const t = document.createElement("div"); t.innerHTML = html.svg; styled(t);
     const svg = /** @type {Element} */ (t.firstChild); svg.setAttribute("data-k", html.k);
     if (old && !before) old.replaceWith(svg);
     else { if (old) { if (before === old) before = old.nextSibling; old.remove(); } el.insertBefore(svg, before || null); }
@@ -217,6 +226,45 @@
     }) }, across ? null : side.nextSibling);
   }
 
+  // ------------------------------------------------------------------ grapes: checkboxes
+  // every checkbox is a grape squared off into a soft box, on its stem with a leaf: unripe when off, ripe with a tick
+  // when on (a bar when partly on). Each state is a picture in the theme's colours, which app.css shows by the box's state.
+  function rgb(c) {
+    let m = /^#([0-9a-f])([0-9a-f])([0-9a-f])$/i.exec(c);
+    if (m) c = "#" + m[1] + m[1] + m[2] + m[2] + m[3] + m[3];
+    m = /^#([0-9a-f]{6})$/i.exec(c);
+    if (m) return [0, 2, 4].map(function (i) { return parseInt(m[1].substr(i, 2), 16); });
+    const n = c.match(/[\d.]+/g);
+    return n && n.length >= 3 ? n.slice(0, 3).map(Number) : [128, 128, 128];
+  }
+  // a mixed into b, f of it a (0 to 1)
+  function mix(a, b, f) { const x = rgb(a), y = rgb(b); return "rgb(" + x.map(function (v, i) { return Math.round(v * f + y[i] * (1 - f)); }).join(",") + ")"; }
+  function grapeBox(fill, line, stem, mark, ink, shine) {
+    let o = '<path d="M12 5.2C12 3.8 12.8 2.6 14.3 2.2" stroke="' + stem + '" stroke-width="1.4" fill="none" stroke-linecap="round"/>' + leafAt(14, 2.4, -14, 5.8, stem) +
+      '<rect x="3.4" y="5" width="17.2" height="17.2" rx="6.6" fill="' + fill + '" stroke="' + line + '" stroke-width="1.6"/>';
+    if (shine) o += '<ellipse cx="8" cy="9.4" rx="1.9" ry="1.2" transform="rotate(-35 8 9.4)" fill="#fff" fill-opacity=".35"/>';
+    if (mark === "tick") o += '<path d="M7.9 13.7l2.8 2.8 5.4-5.8" fill="none" stroke="' + ink + '" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/>';
+    if (mark === "bar") o += '<path d="M8 13.6H16" stroke="' + ink + '" stroke-width="2.3" stroke-linecap="round"/>';
+    return enc('<svg xmlns="http://www.w3.org/2000/svg" viewBox="1.8 0.8 22.2 22.2">' + o + "</svg>");
+  }
+  const CHECKS = ["off", "hover", "on", "mixed", "dis", "dis-on", "dis-mixed"];
+  function checks() {
+    if (!on("grapes")) { d.removeAttribute("data-checks"); CHECKS.forEach(function (k) { d.style.removeProperty("--check-" + k); }); return; }
+    const wine = css("--wine"), unripe = css("--unripe"), leaf = css("--leaf"), ink = css("--accent-ink"), muted = css("--muted"), panel = css("--panel");
+    const dl = mix(muted, panel, .45), df = mix(muted, panel, .1);
+    const pics = {
+      "off": grapeBox(unripe, leaf, leaf, "", ink, false),
+      "hover": grapeBox(mix(wine, unripe, .28), wine, leaf, "", ink, false),
+      "on": grapeBox(wine, wine, leaf, "tick", ink, true),
+      "mixed": grapeBox(wine, wine, leaf, "bar", ink, true),
+      "dis": grapeBox(df, dl, dl, "", ink, false),
+      "dis-on": grapeBox(dl, dl, dl, "tick", ink, false),
+      "dis-mixed": grapeBox(dl, dl, dl, "bar", ink, false),
+    };
+    CHECKS.forEach(function (k) { d.style.setProperty("--check-" + k, pics[k]); });
+    d.setAttribute("data-checks", "on");
+  }
+
   // ------------------------------------------------------------------ film
   const GLYPH = [-64, -32, 0, 32, 64].map(function (a) { return '<ellipse cx="0" cy="-5" rx="2.3" ry="' + (a === 0 ? 6.2 : 5.4) + '" transform="rotate(' + a + ' 0 6)" fill="var(--film-mark)"/>'; }).join("") +
     '<path d="M-7 9Q0 3 7 9" fill="none" stroke="var(--film-mark)" stroke-width="2" stroke-linecap="round"/>';
@@ -277,7 +325,7 @@
     if (old && old.getAttribute("data-k") === k) return;
     const div = document.createElement("div");
     div.className = "filmline"; div.setAttribute("data-k", k);
-    div.innerHTML = cached("film" + k, function () { return band(name, W); });
+    div.innerHTML = cached("film" + k, function () { return band(name, W); }); styled(div);
     if (old) old.replaceWith(div); else top.insertAdjacentElement("afterend", div);
   }
 
@@ -290,9 +338,10 @@
     busy = true;
     try {
       film(root);
+      // the bars first: a vine bar is taller than a plain one, so a card's size is known only after them
+      if (on("grapes")) meters(root);
       if (on("vines")) { cards(root); boxes(root); }
       else root.querySelectorAll(".card > .vine").forEach(function (v) { v.remove(); });
-      if (on("grapes")) meters(root);
       frame();
     } finally { busy = false; }
     watch(root);
@@ -351,8 +400,8 @@
   document.addEventListener("transitioncancel", function (e) { if (isSide(e)) { easing = false; soon(); } });
   // the menu folded or opened (its width eases): the page beside it is another width, its vines drawn again
   document.addEventListener("transitionend", function (e) { if (isSide(e)) { easing = false; soon(); } });
-  // after the theme changes (theme.js): the spots' colours, and everything drawn again
-  function themed() { drawn = {}; spots(); soon(); }
+  // after the theme changes (theme.js): the spots' and checkboxes' colours, and everything drawn again
+  function themed() { drawn = {}; spots(); checks(); soon(); }
   window.PCDECOR = { paint: paint, themed: themed };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", themed); else themed();
 })();
