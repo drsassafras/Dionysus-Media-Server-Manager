@@ -254,8 +254,11 @@ class PlexClient:
         req.add_header("Accept", "application/xml")
         req.add_header("X-Plex-Product", PRODUCT)
         req.add_header("X-Plex-Version", __version__)
+        if self.token and url.lower().startswith("http://") and not tlspin.on_this_machine(url):
+            # the token is the owner's whole account on this server: a client that holds one talks across the network only on an encrypted connection
+            raise PlexError(M("Plex’s token isn’t sent over plain http across the network: use an https:// address (Plex answers on one), or a localhost address."))
         if self.token and auth:
-            req.add_header("X-Plex-Token", self.token)
+            req.add_unredirected_header("X-Plex-Token", self.token)  # (never carried along by a redirect, to wherever it points)
         for k, v in (headers or {}).items():
             req.add_header(k, v)
         try:
@@ -693,7 +696,7 @@ def _plextv(method: str, path: str, client_id: str, data: bytes | None = None, t
     req = urllib.request.Request(PLEX_TV + path, data=data, method=method)
     req.add_header("Accept", "application/json")
     if token:
-        req.add_header("X-Plex-Token", token)
+        req.add_unredirected_header("X-Plex-Token", token)
     req.add_header("X-Plex-Product", PRODUCT)
     req.add_header("X-Plex-Version", __version__)
     req.add_header("X-Plex-Client-Identifier", client_id)

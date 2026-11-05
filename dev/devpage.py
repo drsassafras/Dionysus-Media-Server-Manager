@@ -131,6 +131,13 @@ def show(session: Session, port: int, open_browser: bool = True) -> str:
     return path
 
 
+def reopen(path: str) -> None:
+    """show's file (its path, as show gave it) opened in the browser again."""
+    import pathlib
+    import webbrowser
+    webbrowser.open(pathlib.Path(path).as_uri())
+
+
 def private(path: str):
     """A log a dev tool's page writes (what it says while it's open), for you alone to read: 0600, made or not."""
     import os

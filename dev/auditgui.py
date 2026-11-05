@@ -39,7 +39,51 @@ from dev.checks import Outcome  # noqa: E402
 from dev.progress import counted  # noqa: E402
 
 PAGE = os.path.join(ROOT, "dev", "auditgui.html")
-GONE = 30.0   # (seconds without a beat from any tab: the page was closed)
+GONE = 180.0   # (seconds without a beat from a tab: it's closed. A tab in the background beats only once a minute or so,
+#   the browser holds its timers back; the time this computer sleeps doesn't count)
+IDLE = 1800.0   # (how long it stays up once its last tab is closed: a tab opened again meanwhile finds it still there)
+KEPT = 12 * 3600   # (how long a stopped page's address is kept for a restart: an open tab reconnects to it by itself)
+
+
+def _kept_path() -> str:
+    """Where the page's address and keys are kept between runs, for this project: yours alone (0600, in a 0700
+    folder), outside both repos so it's never committed."""
+    import hashlib
+    base = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
+    return os.path.join(base, "plexcache-dev", f"audits-{hashlib.sha256(audit.ROOT.encode()).hexdigest()[:12]}.json")
+
+
+def _kept() -> dict | None:
+    try:
+        with open(_kept_path(), encoding="utf-8") as fh:
+            got = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(got, dict) or time.time() - float(got.get("saved", 0)) > KEPT:
+        return None
+    return got if all(isinstance(got.get(k), str) and got[k] for k in ("host", "secret", "token")) and isinstance(got.get("port"), int) else None
+
+
+def _keep_page(kept: dict) -> None:
+    path = _kept_path()
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump({**kept, "saved": time.time()}, fh)
+
+
+def _code() -> tuple:
+    """The page's own code as it is on disk now (each file's name and mtime): once that differs from what the server
+    started with, the server is running old code, and the page says to start it again."""
+    here = os.path.join(ROOT, "dev")
+    out = []
+    for name in sorted(os.listdir(here)):
+        if name.endswith(".py") or name == "auditgui.html":
+            try:
+                out.append((name, os.stat(os.path.join(here, name)).st_mtime_ns))
+            except OSError:
+                pass
+    return tuple(out)
 
 
 # ---------------------------------------------------------------- what the page shows
@@ -137,7 +181,9 @@ class Data:
             try:
                 if p.found(self.private):
                     continue
-                found.append({"id": p.id, "label": p.label, "auditors": p.auditors(self.private), "efforts": p.efforts})
+                auditor, how = p.default(self.private)
+                found.append({"id": p.id, "label": p.label, "auditors": p.auditors(self.private), "efforts": p.efforts,
+                              "default": {"auditor": auditor, "thoroughness": how}})
             except (OSError, ValueError):
                 continue
         return {"targets": audit.TARGETS, "people": auditrun.PEOPLE, "plugins": found, "files": audit.code_files()}
@@ -226,14 +272,38 @@ class Data:
                 out.append({**{k: v for k, v in f.items() if isinstance(v, (str, int, list)) and k != "prints"}, "audit": a.id,
                             "date": a.date.isoformat(), "auditor": a.auditor, "thoroughness": a.thoroughness, "author": a.author,
                             "score": score, "code": audit.code_state(f, a, cache), "now": audit.locate(f, a, cache),
-                            "fix": audit.fix_where(f, a)[0] if f.get("status") == "fixed" else "",
+                            "fix": audit.fix_where(f, a)[0] if f.get("status") in audit.DONE else "",
                             "lost": [t for t in f.get("tests", []) if t not in known], "by_audit": audit.by_audit(f),
                             "waiting": auditfix.waiting(f), "led_to": led.get(str(f.get("id")), []),
-                            "outside": f.get("status") == "fixed" and bool(f.get("reported")) and not f.get("closed_by"),
+                            "worked": f.get("status") == "open" and not f.get("reported") and audit.code_state(f, a, cache) in ("changed", "gone"),
+                            "outside": f.get("status") in audit.DONE and bool(f.get("reported")) and not f.get("closed_by"),
                             "prompt": audit.prompt_label(a, labels),
                             "missed": [who(by_id[m]) for m in f.get("missed_by", []) if m in by_id]})
         return sorted(out, key=lambda f: (f.get("status") != "open", -audit.SEVERITIES.index(f.get("severity", "info"))
                                           if f.get("severity") in audit.SEVERITIES else 0, f.get("id", "")))
+
+    def latest(self, q: dict) -> dict:
+        """Did it get here: the last audit recorded (who, how closely, which prompt, when, how many findings; both halves
+        on disk) and the last one started from this page (its state, and the record it made)."""
+        audits = audit.load(self.private)[0]
+        out: dict = {"audit": None, "run": None}
+        if audits:
+            a = max(audits, key=lambda a: (a.date, a.id))
+            path = os.path.join(self.root(), "audits", f"{a.id}.toml")
+            try:
+                at = os.stat(path).st_mtime
+            except OSError:
+                at = 0.0
+            out["audit"] = {"id": a.id, "auditor": a.auditor, "thoroughness": a.thoroughness, "kind": a.kind, "author": a.author,
+                            "prompt": audit.prompt_label(a, audit.prompt_labels(audits)), "recorded": at, "private": a.private is not None,
+                            "public": os.path.exists(os.path.join(audit.PUBLIC, f"{a.id}.toml")),
+                            "findings": sum(1 for f in a.findings if audit.by_audit(f))}
+        runs = sorted(auditrun.load_runs(self.private), key=lambda r: r.started)
+        if runs:
+            r = runs[-1]
+            out["run"] = {"id": r.id, "state": r.state, "auditor": r.auditor, "thoroughness": r.thoroughness, "audit_id": r.audit_id,
+                          "target_name": audit.TARGETS.get(r.target, r.target), "started": r.started, "ended": r.ended, "error": r.error}
+        return out
 
     def confirm(self, q: dict) -> dict:
         """A person's word that a finding is fixed (Mark as fixed): where the fix is, and its commit, worked out from git."""
@@ -298,7 +368,7 @@ class Data:
                         x for x in rec["finding"] if x.get("id") == fid).update(missed_by=got))
         for a in audit.load(self.private)[0]:
             for f in a.findings:
-                if f.get("status") == "fixed" and not f.get("fixed_in"):
+                if f.get("status") in audit.DONE and not f.get("fixed_in"):
                     at, sha = audit.fix_where(f, a)
                     if sha:
                         self.finding({"audit": a.id, "id": f["id"], "fixed_in": sha})
@@ -441,10 +511,19 @@ def check_rules(text: str) -> list[str]:
 
 
 # ---------------------------------------------------------------- the server
-def serve(data: Data, open_browser: bool = True, port: int = 0, ready=None) -> int:
-    token = secrets.token_urlsafe(24)
+def serve(data: Data, open_browser: bool = True, port: int = 0, ready=None, keep: bool = False) -> int:
+    """The page, for as long as it's open and IDLE after. With ``keep`` (dev/audit.py gui), its address and keys are kept
+    (_kept_path) so that, started again, it comes back on the same ones: a tab still open reconnects by itself, and no
+    new one opens unless none does."""
+    old = _kept() if keep else None
+    if old and port and old["port"] != port:
+        old = None
+    token = old["token"] if old else secrets.token_urlsafe(24)
     session = devpage.Session("audits")
+    if old:
+        session.host, session.secret, session.at = old["host"], old["secret"], str(old.get("at", ""))
     beats: dict[str, float] = {}
+    code = _code()   # (what it started with: a tab's beat hears when that's changed)
     lock = threading.Lock()
     ended = threading.Event()
     with open(PAGE, encoding="utf-8") as fh:
@@ -452,7 +531,8 @@ def serve(data: Data, open_browser: bool = True, port: int = 0, ready=None) -> i
     routes_get = {"/api/overview": lambda q: data.overview(), "/api/options": lambda q: data.options(),
                   "/api/runs": lambda q: data.runs(), "/api/run": lambda q: data.run(str(q.get("id", "")), int(q.get("at", 0) or 0)),
                   "/api/findings": lambda q: data.findings(), "/api/explorer": data.explorer, "/api/file": data.file,
-                  "/api/rules": lambda q: data.rules(), "/api/stamp": data.stamp, "/api/fix-how": data.fix_how}
+                  "/api/rules": lambda q: data.rules(), "/api/stamp": data.stamp, "/api/fix-how": data.fix_how,
+                  "/api/latest": data.latest}
     routes_post = {"/api/plan": data.plan, "/api/start": data.start, "/api/mark": data.mark, "/api/draft": data.draft,
                    "/api/finish": data.finish, "/api/cancel": lambda q: {"ok": data.runner.cancel(str(q.get("id", "")))},
                    "/api/finding": data.finding, "/api/cvss": data.cvss, "/api/confirm": data.confirm,
@@ -481,6 +561,8 @@ def serve(data: Data, open_browser: bool = True, port: int = 0, ready=None) -> i
         def do_GET(self):
             where, _, query = self.path.partition("?")
             if devpage.entry(self, session, server.server_port, where, query):
+                if keep and session.at:
+                    _keep_page({"port": server.server_port, "host": session.host, "secret": session.secret, "token": token, "at": session.at})
                 return None
             if not self._host_ok():
                 return self._send(403, devpage.REFUSED, "text/plain; charset=utf-8")
@@ -500,9 +582,11 @@ def serve(data: Data, open_browser: bool = True, port: int = 0, ready=None) -> i
                     return self._send(403, b"", "text/plain")
                 with lock:
                     if where == "/alive":
-                        beats[tab] = time.time()
+                        beats[tab] = time.monotonic()
                     else:
                         beats.pop(tab, None)
+                if where == "/alive" and _code() != code:   # (its code changed since it started: the page says to start it again)
+                    return self._send(200, b"stale", "text/plain")
                 return self._send(204, b"", "text/plain")
             if not self._host_ok() or not self._token_ok() or where not in routes_post:
                 return self._send(403, b"", "text/plain")
@@ -512,20 +596,41 @@ def serve(data: Data, open_browser: bool = True, port: int = 0, ready=None) -> i
                 return self._send(400, b"", "text/plain")
             self._json(routes_post[where], q if isinstance(q, dict) else {})
 
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    try:
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", old["port"] if old else port), Handler)
+    except OSError:   # (its old port's taken now: a new address, and a new tab)
+        if not old:
+            raise
+        old, token = None, secrets.token_urlsafe(24)
+        session = devpage.Session("audits")
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    if keep:
+        _keep_page({"port": server.server_port, "host": session.host, "secret": session.secret, "token": token, "at": session.at})
     url = session.url(server.server_port)
-    opened = devpage.show(session, server.server_port, open_browser)   # (its code: in that file only, yours to read)
-    print(f"The audits page: {session.address(server.server_port)}  (Ctrl-C to stop; it stops by itself once the page is closed "
-          f"and no audit is running). If no browser opened it: open {opened}")
+    opened = devpage.show(session, server.server_port, open_browser and not old)   # (its code: in that file only, yours to read)
+    print(f"The audits page: {session.address(server.server_port)}  (Ctrl-C to stop; it stops by itself {int(IDLE // 60)} minutes after "
+          f"its page is closed, once no audit is running). " + ("A tab still open reconnects by itself. " if old else "")
+          + f"If no browser opened it: open {opened}")
+
+    def reopen():   # (back on its old address: a tab still open reconnects within seconds; if none does, one is opened)
+        if not ended.wait(10.0):
+            with lock:
+                none = not beats
+            if none:
+                devpage.reopen(opened)
+    if old and open_browser:
+        threading.Thread(target=reopen, daemon=True).start()
 
     def watch():
-        seen = False
+        seen, last = False, time.monotonic()
         while not ended.wait(2.0):
             with lock:
-                open_ = [t for t, beat in beats.items() if time.time() - beat < GONE]
+                open_ = [t for t, beat in beats.items() if time.monotonic() - beat < GONE]
                 seen = seen or bool(beats)
-            if seen and not open_ and not data.runner.live:
-                print("The audits page was closed.")
+            if open_ or data.runner.live:
+                last = time.monotonic()
+            elif seen and time.monotonic() - last > IDLE:
+                print(f"The audits page was closed {int(IDLE // 60)} minutes ago.")
                 break
         server.shutdown()
     threading.Thread(target=watch, daemon=True).start()
@@ -552,7 +657,7 @@ def serve(data: Data, open_browser: bool = True, port: int = 0, ready=None) -> i
 
 def main(args: list[str]) -> int:
     port = next((int(a.split("=", 1)[1]) for a in args if a.startswith("--port=")), 0)
-    return serve(Data(), open_browser="--no-browser" not in args, port=port)
+    return serve(Data(), open_browser="--no-browser" not in args, port=port, keep=True)
 
 
 if __name__ == "__main__":

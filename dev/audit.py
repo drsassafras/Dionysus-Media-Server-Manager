@@ -62,7 +62,8 @@ PUBLIC = os.path.join(ROOT, "security", "audits")
 DAY = 24 * 3600
 KINDS = ("full", "partial")
 SEVERITIES = ("info", "low", "medium", "high", "critical")
-STATUSES = ("open", "fixed", "accepted", "false-positive")
+STATUSES = ("open", "fixed", "mitigated", "accepted", "false-positive")   # (mitigated: lived with for now, kept for a proper fix later)
+DONE = ("fixed", "mitigated")   # (the statuses a fix closes it with: Confirm, Mark as fixed, a re-check)
 MAIN = ("affected", "not-affected", "fixed")
 TYPES = ("vulnerability", "hardening")   # (exploitable, CVSS scored; or hardening, not exploitable: a priority, never a release block)
 PRIORITIES = ("low", "medium", "high")   # (a hardening finding's)
@@ -71,7 +72,7 @@ ID = re.compile(r"^\d{4}-\d{2}-\d{2}-\d+$")
 FINDING_ID = re.compile(r"^F-\d{4}-\d{3,}$")
 CVE = re.compile(r"^CVE-\d{4}-\d{4,}$")   # (a finding's CVE id, once one is assigned)
 TEST = re.compile(r"^[A-Za-z_]\w*\.test\w*$")   # (a test that guards a finding: Class.test_name, in tests/)
-REPORTS = ("fixed", "attempted", "not-real")   # (what whoever fixed a finding says of it)
+REPORTS = ("fixed", "mitigated", "attempted", "not-real")   # (what whoever fixed a finding says of it)
 SOURCES = ("audit", "fix-test")   # (who found a finding: its audit, or a test written for another one's fix)
 PRINT = re.compile(r"^[0-9a-f]{12}$")   # (a line's fingerprint: see fingerprints)
 TOP = 10   # files named on the board when lines wait for an audit
@@ -588,9 +589,13 @@ def findings_check(audits: list[Audit]) -> Outcome:
                 said = " (some of its code has changed)" if code == "changed" else ""
                 found.append(Finding("Audit", rel, n, 0, "warning", f"{f.get('id')} {_rated(f)}: {f.get('title')}{said}", "finding"))
     facts = [counted(len(found), "open finding") if found else "no open findings"]
-    confirm = sum(1 for a in audits for f in a.findings if f.get("status") == "open" and f.get("reported") == "fixed")
-    if confirm:
-        facts.append(f"{confirm} fixed, to confirm")   # (a fixer's word: Confirm on the audits page closes them)
+    for word in DONE:
+        confirm = sum(1 for a in audits for f in a.findings if f.get("status") == "open" and f.get("reported") == word)
+        if confirm:
+            facts.append(f"{confirm} {word}, to confirm")   # (a fixer's word: Confirm on the audits page closes them)
+    mitigated = sum(1 for a in audits for f in a.findings if f.get("status") == "mitigated")
+    if mitigated:
+        facts.append(f"{mitigated} mitigated")   # (lived with for now: kept on record for a proper fix later)
     if gone:
         facts.append(f"{gone} to confirm fixed (their code is gone)")
         found.append(Finding("Audit", "findings", 0, 0, "warning", f"{counted(gone, 'finding')} whose code is gone: confirm they're fixed, "
@@ -603,16 +608,18 @@ def findings_check(audits: list[Audit]) -> Outcome:
                 rel, n = _spot((f.get("lines") or ["?:0"])[0])
                 found.append(Finding("Audit", rel, n, 0, "warning", f"{f.get('id')}'s guarding test{'s' if len(lost) > 1 else ''} "
                                      f"{', '.join(lost)} {'are' if len(lost) > 1 else 'is'} gone from tests/", "finding"))
-            if f.get("status") == "fixed":
+            if f.get("status") in DONE:
                 at, _ = fix_where(f, a)
-                said = {"working copy": "is fixed only in your working copy: commit and push the fix",
-                        "committed": "is fixed in a commit that isn't pushed yet"}.get(at)
+                word = f["status"]
+                said = {"working copy": f"is {word} only in your working copy: commit and push it",
+                        "committed": f"is {word} in a commit that isn't pushed yet"}.get(at)
                 if said:
                     unpushed += 1
                     rel, n = _spot((f.get("lines") or ["?:0"])[0])
                     found.append(Finding("Audit", rel, n, 0, "warning", f"{f.get('id')} {said}", "finding"))
     if unpushed:
-        facts.append(f"{unpushed} fixed, not pushed yet")
+        facts.append(f"{unpushed} fixed or mitigated, not pushed yet" if any(f.get("status") == "mitigated" for a in audits for f in a.findings)
+                     else f"{unpushed} fixed, not pushed yet")
     return Outcome("Findings", "", found, facts=facts)
 
 

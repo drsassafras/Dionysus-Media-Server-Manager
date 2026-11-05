@@ -145,6 +145,13 @@ class ClaudeCode(Auditor):
     def owns(self, auditor: str, private: str | None = None) -> bool:
         return bool(AUDITOR.match(auditor))
 
+    def default(self, private: str | None = None) -> tuple[str, int]:
+        """Opus at medium (or its settings' default, as the model's id), unless you pick another."""
+        got = self.auditors(private)
+        want = str(self.settings(private).get("default", ""))
+        model = want if want in got else next((m for m in got if m.startswith("opus-")), got[0] if got else "")
+        return model, 4
+
     def run(self, r, code: str, main: str, prompt: str, folder: str, started, pushed: str = "") -> tuple[int, str, bool]:
         cmd = self.command()
         if not cmd:

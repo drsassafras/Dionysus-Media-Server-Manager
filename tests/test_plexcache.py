@@ -153,7 +153,7 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(pub["plex"]["token_set"])
         s.update({"plex": {"token": config.SECRET_MASK, "url": "192.168.1.10:32400"}})
         self.assertEqual(s.section("plex")["token"], "secret")
-        self.assertEqual(s.section("plex")["url"], "http://192.168.1.10:32400")
+        self.assertEqual(s.section("plex")["url"], "https://192.168.1.10:32400")
         self.assertEqual(s.export()["plex"]["token"], "")
 
     def test_validation(self):
@@ -178,10 +178,10 @@ class ConfigTests(unittest.TestCase):
     def test_url_defaults(self):
         s = config.Settings(self.dir)
         s.update({"plex": {"url": "192.168.50.222"}, "truenas": {"url": "192.168.50.222"}})
-        self.assertEqual(s.section("plex")["url"], "http://192.168.50.222:32400")
+        self.assertEqual(s.section("plex")["url"], "https://192.168.50.222:32400")
         self.assertEqual(s.section("truenas")["url"], "https://192.168.50.222")
         s.update({"plex": {"url": "192.168.50.222:32401"}})
-        self.assertEqual(s.section("plex")["url"], "http://192.168.50.222:32401")
+        self.assertEqual(s.section("plex")["url"], "https://192.168.50.222:32401")
         s.update({"plex": {"url": "https://plex.example.com"}})  # reverse proxy: no port added
         self.assertEqual(s.section("plex")["url"], "https://plex.example.com")
 
@@ -5660,7 +5660,7 @@ class SmallModuleTests(unittest.TestCase):
             s2 = config.Settings(tempfile.mkdtemp(dir=TMP))
         finally:
             del os.environ["PLEX_URL"]
-        self.assertEqual(s2.section("plex")["url"], "http://10.0.0.9:32400")
+        self.assertEqual(s2.section("plex")["url"], "https://10.0.0.9:32400")
 
     def test_reader_errors_and_pacing(self):
         from plexcache.reader import Pacer, Stopped, benchmark_file, read_head, read_range
@@ -11799,6 +11799,52 @@ class MirrorMigrationTests(unittest.TestCase):
 class OptimizerSetupTests(unittest.TestCase):
     """Setting the optimizer up: as little to edit as possible, and Health → Dionysus says how."""
 
+    def test_no_other_container_gets_the_settings_folder(self):
+        """F-2026-025, for every container the project sets up — the compose files, and the YAML Health hands out: only
+        the app's own container mounts the settings folder (its keys and tokens). Any other container mounts at most a
+        folder inside it, never the folder itself or one that holds it."""
+        from plexcache import checks
+
+        def services(text):
+            """Each service's mounts, as (source, target), from compose-style YAML: short and long forms."""
+            out: dict[str, list] = {}
+            name, src = None, None
+            for line in text.splitlines():
+                bare = line.split(" #")[0].rstrip()
+                if re.match(r"^  [A-Za-z0-9_.-]+:$", bare):
+                    name = bare.strip()[:-1]
+                    out[name] = []
+                elif name and (m := re.match(r"^\s+- ([^\s:]+):([^\s:]+)", bare)):
+                    out[name].append((m[1], m[2]))
+                elif name and (m := re.match(r"^\s+source: (\S+)", bare)):
+                    src = m[1]
+                elif name and src and (m := re.match(r"^\s+target: (\S+)", bare)):
+                    out[name].append((src, m[1]))
+                    src = None
+            return out
+        app = _new_app()
+        sources = {"compose.yaml": _read(os.path.join(ROOT, "compose.yaml"), encoding="utf-8"),
+                   "dev/compose.dev.yaml": _read(os.path.join(ROOT, "dev", "compose.dev.yaml"), encoding="utf-8")}
+        config = "/mnt/tank/apps/plex-cache"  # (what Health's YAML names it, with no TrueNAS mounts to go by)
+        sources["Health's optimizer YAML"] = "services:\n  plex-cache:\n    volumes:\n" \
+                                             f"      - {config}:/config\n" + checks.optimizer_yaml(app)
+        bad, seen = [], 0
+        for where, text in sources.items():
+            svcs = services(text)
+            owners = {"plex-cache", "plex-cache-dev"} & set(svcs)  # (the app itself: its service in each file)
+            homes = {s.rstrip("/") for n in owners for s, t in svcs[n] if t.rstrip("/") == "/config"}
+            self.assertTrue(homes, f"{where}: no settings folder found, so nothing was checked")
+            for n, mounts in svcs.items():
+                if n in owners:
+                    continue
+                for s, t in mounts:
+                    seen += 1
+                    s = s.rstrip("/")
+                    if any(h == s or h.startswith(s + "/") for h in homes):
+                        bad.append(f"{where}: {n} mounts {s} at {t}, which is or holds the settings folder")
+        self.assertGreater(seen, 0)  # (other containers' mounts were looked at)
+        self.assertEqual(bad, [])
+
     def test_optimizer_check(self):
         from plexcache import checks
         from plexcache.optimizing import DEFAULT_URL
@@ -12578,6 +12624,36 @@ class LoginTests(unittest.TestCase):
         self.assertEqual(cm.exception.code, 400)
         cm.exception.close()
 
+    def test_every_password_check_counts_toward_the_lockout(self):
+        """F-2026-031, everywhere in the app: each place a password is checked (Auth.check_password) first asks whether
+        the address is locked out, and then counts the attempt, so no way in lets someone guess faster than the sign-in
+        form. And every request check (Auth.request_ok) is given the address, without which it can't count."""
+        import ast
+        bad, seen = [], 0
+        for dirpath, _dirs, names in os.walk(os.path.join(ROOT, "plexcache")):
+            for n in names:
+                if not n.endswith(".py"):
+                    continue
+                path = os.path.join(dirpath, n)
+                rel = os.path.relpath(path, ROOT)
+                tree = ast.parse(_read(path, encoding="utf-8"))
+                for fn in ast.walk(tree):
+                    if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) or fn.name == "check_password":
+                        continue
+                    calls = sorted((c.lineno, c.func.attr, c) for c in ast.walk(fn) if isinstance(c, ast.Call)
+                                   and isinstance(c.func, ast.Attribute) and c.func.attr in ("check_password", "locked_out", "note_attempt", "request_ok"))
+                    for line, name, call in calls:
+                        if name == "check_password":
+                            seen += 1
+                            before = [nm for ln, nm, _c in calls if ln < line]
+                            after = [nm for ln, nm, _c in calls if ln > line]
+                            if "locked_out" not in before or "note_attempt" not in after:
+                                bad.append(f"{rel}:{line} ({fn.name}): a password checked without the lockout around it")
+                        elif name == "request_ok" and len(call.args) + len(call.keywords) < 2:
+                            bad.append(f"{rel}:{line} ({fn.name}): request_ok without the address, so its guesses aren't counted")
+        self.assertGreaterEqual(seen, 2)  # (the sign-in form and Basic auth, at least)
+        self.assertEqual(bad, [])
+
     def test_basic_auth_for_scripts(self):
         import base64
         auth = self.app.auth
@@ -12772,7 +12848,7 @@ class ValidationTests(unittest.TestCase):
                     "nas name", "http://", 42, "http://nas\n"):
             self.bad({"plex": {"url": url}})
         self.s.update({"plex": {"url": "nas.local"}, "truenas": {"url": "192.168.1.10"}})
-        self.assertEqual(self.s.section("plex")["url"], "http://nas.local:32400")
+        self.assertEqual(self.s.section("plex")["url"], "https://nas.local:32400")
         self.assertEqual(self.s.section("truenas")["url"], "https://192.168.1.10")
         self.s.update({"plex": {"url": "https://plex.example.com/proxy"}})  # a reverse proxy with a path is fine
         for token in ("has space", "x" * 300, "tab\there", 123):
@@ -13833,7 +13909,8 @@ class MQTTTests(unittest.TestCase):
                                                "password": "secret", "tls": True, "verify_tls": False}})
             self.app.ha.start()
             self.assertTrue(wait_for(lambda: self.app.ha.status["steps"]["publish"]["status"] == "ok"), self.app.ha.status)
-            self.assertIn("certificate not checked", self.app.ha.status["steps"]["tls"]["text"])
+            self.assertIn("certificate pinned", self.app.ha.status["steps"]["tls"]["text"])
+            self.assertTrue(self.app.settings.section("tls")["pins"]["mqtt"])  # (and kept: every later connection must show it)
             self.assertTrue(wait_for(lambda: tls_broker.state("plexcache/state") is not None))
             # "Reconnect" while connected starts a fresh connection
             n = len(tls_broker.connects)
@@ -17218,7 +17295,7 @@ class CheckToolTests(unittest.TestCase):
             for arg in sums:
                 self.assertIn(f"ARG {arg}=", df, f"{name}'s hash ARG {arg} isn't in the Dockerfile")
         # every workflow action at a full commit, its tag kept as the comment Dependabot maintains
-        flows = [os.path.join(ROOT, ".github", "workflows", f) for f in os.listdir(os.path.join(ROOT, ".github", "workflows"))]
+        flows = [os.path.join(ROOT, ".github", "workflows", f) for f in os.listdir(os.path.join(ROOT, ".github", "workflows")) if f != ".DS_Store"]  # (macOS's folder file: git ignores it)
         for path in flows:
             for line in _read(path, encoding="utf-8").splitlines():
                 if (m := re.search(r"uses:\s*(\S+)", line)) is not None:
@@ -18344,6 +18421,20 @@ class AuditTests(unittest.TestCase):
             fh.write("def login(user):\n    return user\n\n\ndef other():\n    return 2\n")   # (undone: there again)
         self.assertEqual(state()[0], "there")
 
+    # The fixing rules' fingerprint, approved by the maintainer. Change it only when they've read the new rules and said so.
+    FIXING_RULES_SHA256 = "ac61ccdb2ba8c65c2da197b7b5955c2bcf64941502ff2f9dfdf07accdd33216c"
+
+    def test_the_fixing_rules_are_the_ones_the_maintainer_approved(self):
+        """The rules every fixer follows (dev/auditfix.py's HOW, what dev/audit.py fixes prints) change only with the
+        maintainer's say: any edit, even a word, fails here until they approve the new text."""
+        import hashlib
+
+        from dev import auditfix
+        got = hashlib.sha256(auditfix.HOW.encode("utf-8")).hexdigest()
+        self.assertEqual(got, self.FIXING_RULES_SHA256,
+                         "dev/auditfix.py's fixing rules (HOW) changed. Show the maintainer the change; once they approve "
+                         f"it, set AuditTests.FIXING_RULES_SHA256 to {got}")
+
     @unittest.skipUnless(shutil.which("git"), "no git here")
     def test_a_fixer_reports_each_fix_and_confirm_closes_it(self):
         """Whoever fixes the findings reads them (dev/audit.py fixes) and reports each fix (fixed), with the tests that
@@ -18362,7 +18453,7 @@ class AuditTests(unittest.TestCase):
         cli = lambda *a: self._cli(audit, *a)
         rc, text = cli("fixes")
         self.assertEqual(rc, 0)
-        for want in ("dev/audit.py fixed F-YYYY-NNN", "If that test finds another case, don't fix it. List it in the report as a new finding.",
+        for want in ("dev/audit.py fixed F-YYYY-NNN", "If the check finds another case, don't fix it. Record it as a new finding",
                      "You can't close a finding", "## F-2026-001: Login trusts its input"):
             self.assertIn(want, text)
         self.assertEqual(cli("fixed", "F-2026-001", "--test", "LoginTests.test_nope")[0], 2)   # (only tests the project has)
@@ -18465,6 +18556,265 @@ class AuditTests(unittest.TestCase):
         self.assertEqual((rows["beta-5.1", "v1"]["audits"], rows["beta-5.1", "v1"]["found"], rows["beta-5.1", "v1"]["missed"]),
                          (["2026-11-01-1", "2026-11-01-2"], [], ["F-2026-001", new]))
         self.assertEqual((rows["gamma-5.5", "v2 + re-check"]["found"], rows["gamma-5.5", "v2 + re-check"]["missed"]), (["F-2026-001"], [new]))
+
+    @unittest.skipUnless(shutil.which("git"), "no git here")
+    def test_the_audits_page_says_when_its_server_runs_old_code(self):
+        """A server started before the page's code changed answers with the old code (a fix reported mitigated read as a
+        failed one): a tab's beat hears that, and the page says to start it again."""
+        import http.client
+        import threading
+
+        from dev import auditgui
+        self.project()
+        up, box = threading.Event(), {}
+
+        def ready(server, url, token):
+            box.update(server=server, url=url, token=token)
+            up.set()
+        with mock.patch.dict(os.environ, {"XDG_CACHE_HOME": tempfile.mkdtemp(dir=TMP)}), contextlib.redirect_stdout(io.StringIO()):
+            t = threading.Thread(target=auditgui.serve, args=(auditgui.Data(),), kwargs={"open_browser": False, "ready": ready}, daemon=True)
+            t.start()
+            self.assertTrue(up.wait(10))
+            port = box["server"].server_port
+            host = f"127.0.0.1:{port}"
+
+            def ask(method, path, cookie=""):
+                c = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+                c.request(method, path, headers={"Host": host, "Cookie": cookie})
+                res = c.getresponse()
+                return res.status, dict(res.getheaders()), res.read()
+            try:
+                cookie = ask("GET", "/?" + box["url"].split("?", 1)[1])[1]["Set-Cookie"].split(";")[0]
+                beat = "/alive?tab=a&t=" + urllib.parse.quote(box["token"])
+                self.assertEqual(ask("POST", beat, cookie)[0], 204)
+                with mock.patch.object(auditgui, "_code", return_value=(("audit.py", 1),)):
+                    self.assertEqual(ask("POST", beat, cookie)[:3:2], (200, b"stale"))
+            finally:
+                box["server"].shutdown()
+                t.join(30)
+        with open(auditgui.PAGE, encoding="utf-8") as fh:
+            self.assertIn("This page is out of date.", fh.read())
+
+    def test_the_audits_page_comes_back_where_it_was(self):
+        """Started again (dev/audit.py gui), the page comes back on the address and keys it had, kept for you alone
+        outside both repos: a tab still open carries on with its cookie, and no new code is needed. It says what the last
+        audit was and whether both its halves arrived, and which findings were worked on without a fix reported."""
+        import http.client
+        import stat
+        import threading
+
+        from dev import auditgui
+        repo, private, git = self.project()
+        cache = tempfile.mkdtemp(dir=TMP)
+        self.audit_files(repo, private, "2026-11-01-1", "2026-11-01", git("rev-parse", "HEAD"), "full",
+                         extra='[[finding]]\nid = "F-2026-001"\ntitle = "t"\nseverity = "high"\nlines = ["a.py:1-2"]\ndetail = "d"\n'
+                               'status = "open"\nmain = "affected"\n')
+
+        def run():
+            up, box = threading.Event(), {}
+
+            def ready(server, url, token):
+                box.update(server=server, port=server.server_port, token=token, url=url)
+                up.set()
+            t = threading.Thread(target=auditgui.serve, args=(auditgui.Data(),), kwargs={"open_browser": False, "ready": ready, "keep": True}, daemon=True)
+            t.start()
+            self.assertTrue(up.wait(10))
+            return t, box
+
+        def ask(box, path, cookie, host):
+            c = http.client.HTTPConnection("127.0.0.1", box["port"], timeout=30)
+            c.request("GET", path, headers={"Host": host, "X-Audit-Token": box["token"], "Cookie": cookie})
+            res = c.getresponse()
+            return res.status, dict(res.getheaders()), res.read()
+        with mock.patch.dict(os.environ, {"XDG_CACHE_HOME": cache}), contextlib.redirect_stdout(io.StringIO()):
+            t, first = run()
+            host = f"127.0.0.1:{first['port']}"
+            try:
+                status, headers, _ = ask(first, "/?" + first["url"].split("?", 1)[1], "", host)
+                self.assertEqual(status, 200)
+                cookie = headers["Set-Cookie"].split(";")[0]
+                got = json.loads(ask(first, "/api/latest", cookie, host)[2])
+                self.assertEqual((got["audit"]["id"], got["audit"]["findings"], got["audit"]["private"], got["audit"]["public"]), ("2026-11-01-1", 1, True, True))
+                with open(os.path.join(repo, "a.py"), "w") as fh:   # (worked on: its code changed, no fix reported)
+                    fh.write("def login(user):\n    return user.strip()\n\n\ndef other():\n    return 2\n")
+                self.assertTrue(json.loads(ask(first, "/api/findings", cookie, host)[2])[0]["worked"])
+            finally:
+                first["server"].shutdown()
+                t.join(30)
+            kept = auditgui._kept_path()
+            self.assertTrue(kept.startswith(cache))
+            self.assertEqual((stat.S_IMODE(os.stat(kept).st_mode), stat.S_IMODE(os.stat(os.path.dirname(kept)).st_mode)), (0o600, 0o700))
+            t, again = run()
+            try:
+                self.assertEqual((again["port"], again["token"]), (first["port"], first["token"]))
+                self.assertEqual(ask(again, "/api/overview", cookie, host)[0], 200)   # (the open tab carries on)
+                self.assertEqual(ask(again, "/api/overview", "", host)[0], 403)       # (still not without its cookie)
+            finally:
+                again["server"].shutdown()
+                t.join(30)
+
+    @unittest.skipUnless(shutil.which("git") and shutil.which("node"), "no git or node here")
+    def test_the_audits_page_reads_at_a_glance(self):
+        """The audits page as a browser draws it (Playwright, the real page and its server): the findings as a table
+        (severity, status, how found, ID, title), filtered by buttons, each row opening its card under it; the card's
+        facts read-only, as lists, and every field that changes the records folded away under Manual override (the tests
+        that guard a finding shown read-only too); every setting on Start audit and Findings with its ⓘ; Start audit's
+        buttons beside who audits it; and an AI auditor, here and to check the fixes, Opus at medium unless you pick."""
+        import importlib.util
+        import subprocess
+        import threading
+        import types
+
+        from dev import auditgui, auditrun
+        spec = importlib.util.spec_from_file_location("style_tool_ui", os.path.join(ROOT, "dev", "style.py"))
+        assert spec and spec.loader
+        style = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(style)
+        env = dict(os.environ, NODE_PATH=style._node_path())
+        if subprocess.run(["node", "-e", "require.resolve('playwright')"], env=env, capture_output=True).returncode:
+            self.skipTest("Playwright isn't installed (npm ci --prefix dev && npx --prefix dev playwright install chromium)")
+        repo, private, git = self.project()
+        self.audit_files(repo, private, "2026-11-01-1", "2026-11-01", git("rev-parse", "HEAD"), "full",
+                         extra='[[finding]]\nid = "F-2026-001"\ntitle = "Login trusts its input"\nseverity = "high"\nlines = ["a.py:1-2"]\ndetail = "d"\n'
+                               'status = "open"\nmain = "affected"\ntests = ["LoginTests.test_login_checks"]\n\n[[finding]]\nid = "F-2026-002"\ntitle = "Other"\n'
+                               'type = "hardening"\nseverity = "low"\nlines = ["b.py:1"]\ndetail = "d"\nstatus = "false-positive"\nmain = "affected"\n')
+        self.write(private, "PROMPT.md", "# The prompt\n\n---\nAudit it.\n")
+        ai = types.SimpleNamespace(id="ai", label="An AI auditor", found=lambda private: "", auditors=lambda private: ["haiku-5.5", "opus-5.5"],
+                                   efforts={1: "max", 2: "xhigh", 3: "high", 4: "medium", 5: "low"}, default=lambda private: ("opus-5.5", 4))
+        up, box = threading.Event(), {}
+
+        def ready(server, url, token):
+            box.update(server=server, url=url)
+            up.set()
+        with mock.patch.object(auditrun, "plugins", return_value=[ai]), contextlib.redirect_stdout(io.StringIO()):
+            t = threading.Thread(target=auditgui.serve, args=(auditgui.Data(),), kwargs={"open_browser": False, "ready": ready}, daemon=True)
+            t.start()
+            self.assertTrue(up.wait(10))
+            script = os.path.join(tempfile.mkdtemp(dir=TMP), "ui.js")
+            with open(script, "w", encoding="utf-8") as fh:
+                fh.write(self.UI_JS)
+            try:
+                got = subprocess.run(["node", script, box["url"].replace(urllib.parse.urlsplit(box["url"]).hostname or "", "127.0.0.1", 1)],
+                                     env=env, capture_output=True, text=True, timeout=180)
+            finally:
+                box["server"].shutdown()
+                t.join(30)
+        self.assertEqual(got.returncode, 0, got.stdout + got.stderr)
+        ui = json.loads(got.stdout.strip().splitlines()[-1])
+        self.assertEqual(ui["errors"], [])
+        self.assertEqual(ui["heads"], ["Severity", "Status", "How found", "ID", "Title"])
+        self.assertEqual(ui["rows"], ["F-2026-001", "F-2026-002"])   # (All: the open one first)
+        self.assertEqual(ui["todo"], ["F-2026-001"])                 # (To do, the default: the closed one left out)
+        self.assertTrue(ui["card_under_row"])
+        self.assertEqual(ui["card_controls_outside_override"], [])  # (nothing in the card changes the records but in Manual override)
+        self.assertIn("LoginTests.test_login_checks", ui["card_facts"])   # (its tests, read-only)
+        self.assertNotIn("Score", ui["card_facts"])                 # (its severity is the row's: not said again)
+        self.assertEqual(ui["card_buttons_outside_override"], [])   # (Mark as fixed and the rest: by hand, under Manual override)
+        self.assertTrue(ui["detail_open"])
+        self.assertEqual(ui["steps"], [["1. Audit the code", "Done"], ["2. Fix the findings", "Your turn"], ["3. Report the fixes", "Not yet"],
+                                       ["4. Confirm the fixes", "Not yet"], ["5. Push the fixes", "Not yet"]])
+        self.assertEqual(ui["hardening"], ["low · hardening"])
+        self.assertEqual(ui["kept"], 2)
+        self.assertEqual(ui["without_info"], [])                    # (every setting has its ⓘ)
+        self.assertGreater(ui["settings"], 15)
+        self.assertTrue(ui["pop"])                                  # (an ⓘ shows what it's about)
+        self.assertEqual((ui["check_model"], ui["check_effort"]), ("ai|opus-5.5", "4"))
+        self.assertEqual((ui["start_model"], ui["start_effort"]), ("opus-5.5", "4"))
+        self.assertEqual(ui["buttons_beside"], {"person": ["Start reading", "Already audited it"], "ai": ["Start audit"]})
+        self.assertNotIn("Findings: are they fixed?", ui["start_groups"])
+        from dev import auditor_claude
+        self.assertEqual(auditor_claude.ClaudeCode().default(private), ("opus-5.5", 4))   # (the plugin's own default)
+
+    UI_JS = r"""
+const { chromium } = require("playwright");
+(async () => {
+  const b = await chromium.launch();
+  const p = await b.newPage({ viewport: { width: 1280, height: 900 } });
+  const errors = [];
+  p.on("pageerror", e => errors.push(e.message));
+  const out = { errors };
+  await p.goto(process.argv[2]);
+  await p.waitForSelector("nav button");
+  // every setting (a choice, a box to type in): with its ⓘ, in its field
+  const audit = async () => p.$$eval("select, textarea, input:not([type=radio])", els => els.filter(e => e.offsetParent !== null || e.closest("details"))
+    .map(e => [e.closest(".field") && e.closest(".field").querySelector(".info") ? "" : (e.outerHTML.slice(0, 80)), 1]));
+  let without = [], settings = 0;
+  const add = got => { for (const [w] of got) { settings++; if (w) without.push(w); } };
+  await p.click("nav button:has-text('Findings')");
+  await p.waitForSelector("table.findings");
+  out.heads = await p.$$eval("table.findings th", ths => ths.map(t => t.textContent));
+  out.todo = await p.$$eval("table.findings tr.pick", rs => rs.map(r => r.dataset.key));
+  await p.click(".seg button:has-text('All (')");
+  await p.waitForFunction(() => document.querySelectorAll("table.findings tr.pick").length === 2);
+  out.rows = await p.$$eval("table.findings tr.pick", rs => rs.map(r => r.dataset.key));
+  await p.click("table.findings tr.pick >> nth=0");
+  out.card_under_row = await p.$eval("table.findings tr.pick", r => !r.nextElementSibling.hidden && !!r.nextElementSibling.querySelector(".card"));
+  out.card_controls_outside_override = await p.$$eval("td.more .card select, td.more .card input, td.more .card textarea",
+    els => els.filter(e => !e.closest("details.override")).map(e => e.outerHTML.slice(0, 80)));
+  out.card_facts = await p.$eval("td.more .facts", d => d.textContent);
+  out.card_buttons_outside_override = await p.$$eval("td.more .card button:not(.info)", bs => bs.filter(b => !b.closest("details.override")).map(b => b.textContent));
+  out.detail_open = await p.$eval("td.more .card details:not(.override)", d => d.open);
+  out.steps = await p.$$eval(".steps > li", ls => ls.map(l => [l.querySelector("b").textContent, l.querySelector(".badge").textContent]));
+  out.hardening = await p.$$eval("table.findings .badge.hard", bs => bs.map(b => b.textContent));
+  await p.click("td.more details.override > summary");
+  await p.click("td.more details.override button:has-text('Score it'), td.more details.override button:has-text('Change the CVSS score')");
+  add(await audit());
+  out.check_model = await p.$eval("text=Have an AI check the fixes >> xpath=.. >> select", s => s.value);
+  out.check_effort = await p.$$eval("text=Have an AI check the fixes >> xpath=.. >> select", s => s[1].value);
+  await p.click("[data-pane=findings] .info >> nth=0");
+  out.pop = await p.$eval("#pop", d => d.textContent.length > 10).catch(() => false);
+  await p.click("nav button:has-text('Start audit')");
+  await p.waitForSelector("#go-person");
+  await p.click("#mark").catch(() => {});
+  out.start_groups = await p.$$eval("h3.group", hs => hs.map(x => x.textContent));
+  out.start_model = await p.$eval("#auditor-ai", s => s.value);
+  out.start_effort = await p.$eval("#effort-ai", s => s.value);
+  out.buttons_beside = {person: await p.$eval("#go-person", x => [...x.closest(".card").querySelectorAll("button:not(.info)")].map(y => y.textContent)),
+    ai: await p.$eval("#effort-ai", x => [...x.closest(".card").querySelectorAll("button:not(.info)")].map(y => y.textContent))};
+  await p.check("input[name=target][value=full]");
+  await p.click("nav button:has-text('Findings')");   // (back to a tab drawn before: there at once)
+  out.kept = await p.$$eval("table.findings tr.pick", rs => rs.length);
+  await p.click("nav button:has-text('Start audit')");
+  await p.fill("#name", "Dana");
+  await p.waitForFunction(() => !document.getElementById("mark").disabled);
+  await p.click("#mark");
+  await p.waitForSelector("#marking .card");
+  add(await audit());
+  out.without_info = [...new Set(without)];
+  out.settings = settings;
+  console.log(JSON.stringify(out));
+  await b.close();
+})().catch(e => { console.error(e); process.exit(1); });
+"""
+
+    def test_a_mitigation_is_confirmed_and_kept_on_record(self):
+        """A finding can be mitigated, not fixed: lived with for now, often until something upstream changes. Its fixer
+        reports it (fixed --mitigated), Confirm runs its tests like a fix's, and a pass leaves it mitigated: on record,
+        listed and counted as such, never closed as fixed nor dropped, for a proper fix later."""
+        from dev import audit, auditfix, auditgui
+        repo, private, git = self.project()
+        self.write(os.path.join(repo, "tests"), "test_app.py", "import unittest\n\n\nclass MqttTests(unittest.TestCase):\n"
+                   "    def test_plain_only_when_asked(self):\n        pass\n")
+        self.audit_files(repo, private, "2026-11-01-1", "2026-11-01", git("rev-parse", "HEAD"), "full",
+                         extra='[[finding]]\nid = "F-2026-001"\ntitle = "MQTT password sent unencrypted"\nseverity = "medium"\nlines = ["a.py:1"]\n'
+                               'detail = "d"\nstatus = "open"\nmain = "affected"\n')
+        rc, said = self._cli(audit, "fixed", "F-2026-001", "--mitigated", "--test", "MqttTests.test_plain_only_when_asked",
+                             "--note", "plain MQTT only behind an opt-in setting; TLS needs the broker's support")
+        self.assertEqual(rc, 0, said)
+        self.assertIn("reported mitigated", said)
+        f = next(x for x in auditgui.Data().findings() if x["id"] == "F-2026-001")
+        self.assertEqual((f["status"], f["reported"], f["waiting"]), ("open", "mitigated", True))
+        self.assertIn("1 mitigated, to confirm", audit.findings_check(audit.load()[0]).said())
+        done = auditfix.confirm(private, ["F-2026-001"], tests=lambda names: (True, ""))
+        self.assertEqual((done[0]["ok"], done[0]["status"]), (True, "mitigated"))
+        f = next(x for x in auditgui.Data().findings() if x["id"] == "F-2026-001")
+        self.assertEqual((f["status"], f["closed_by"], f["outside"]), ("mitigated", "confirm", False))
+        self.assertIn("confirmed mitigated: its tests passed", f["checks"][-1])
+        self.assertEqual(audit.problems(audit.load()[0][0].private or {}, "private"), [])
+        said = audit.findings_check(audit.load()[0]).said()
+        self.assertIn("1 mitigated", said)
+        self.assertIn("no open findings", said)   # (not open: it doesn't hold the block, nor a release)
+        self.assertNotIn("F-2026-001", "\n".join(x.message for x in audit.release_check(audit.measure(audit.load()[0]), audit.load()[0], True, {}, time.time(), release=False).findings or []))
 
     def _cli(self, audit, *args):
         out = io.StringIO()
@@ -21197,6 +21547,56 @@ class FileActionTests(unittest.TestCase):
     def setUp(self):
         self.root = tempfile.mkdtemp(dir=TMP)
 
+    # Actions the check finds losing a file's content, each by design: none are real cases.
+    NOT_A_CASE_LOSS = {
+        "copy_from file": "putting a backup's copy back replaces the file there: that's what restoring it asks for",
+    }
+
+    def test_no_file_action_loses_a_files_only_copy(self):
+        """F-2026-027, for every action the optimizer's /api/folder takes (each one in folder_action): asked about a
+        media file whose content exists nowhere else, and another file that differs, no action leaves the media folder
+        without that content — the file there still, or moved somewhere, but never gone."""
+        import inspect
+
+        from plexcache.optimize import server as osrv
+        src = inspect.getsource(osrv.folder_action)
+        actions = set(re.findall(r'action == "([a-z_]+)"', src))
+        for group in re.findall(r"action in \(([^)]*)\)", src):
+            actions |= set(re.findall(r'"([a-z_]+)"', group))
+        actions -= {"pause", "resume", "stop"}  # (the copy's controls: no path at all)
+        self.assertGreater(len(actions), 10)
+        only = b"the only copy of this " * 64
+
+        def survives(root):
+            for d, _dirs, names in os.walk(root):
+                for n in names:
+                    with contextlib.suppress(OSError), open(os.path.join(d, n), "rb") as fh:
+                        if fh.read() == only:
+                            return True
+            return False
+        bad, ran = [], 0
+        for action in sorted(actions):
+            for shape in ("file", "folder"):
+                root = os.path.realpath(tempfile.mkdtemp(dir=TMP))
+                svc = osrv.Service([root], "a-long-test-token-123456")
+                a = os.path.join(root, "Movies", "D", "a.mkv")
+                os.makedirs(os.path.dirname(a))
+                with open(a, "wb") as fh:
+                    fh.write(only)
+                other = os.path.join(root, "Movies", "b.mkv")
+                with open(other, "wb") as fh:
+                    fh.write(b"a different file " * 64)
+                body = {"action": action, "path": a if shape == "file" else os.path.dirname(a), "to": other, "root": root,
+                        "name": "E", "info": {}, "instance": "0123456789abcdef"}
+                status, _got = osrv.folder_action(svc, body)
+                ran += status == 200
+                svc.copy_ctl.stop.set()  # (a copy it started, stopped: only what the action itself did is looked at)
+                svc.copy_ctl.go.set()
+                if not survives(root) and f"{action} {shape}" not in self.NOT_A_CASE_LOSS:
+                    bad.append(f"{action} ({shape}): the file's only copy is gone")
+        self.assertGreater(ran, 3)  # (some actions did act, so their effect was looked at)
+        self.assertEqual(bad, [])
+
     def _file(self, rel, data=b"abc"):
         p = os.path.normpath(os.path.join(self.root, rel))
         os.makedirs(os.path.dirname(p), exist_ok=True)
@@ -22144,6 +22544,46 @@ class PeerLinkEdgeTests(unittest.TestCase):
             link.tick()
             fd.assert_not_called()                                                                    # (tried lately: not again until FIND_EVERY)
 
+    def test_no_peer_request_makes_this_side_fetch_where_it_says(self):
+        """F-2026-026, for every peer command (peerlink.COMMANDS): a request anyone can send, before any pairing, never
+        makes this side connect to an address it names, whatever field it's in; and every fetch to a peer goes through
+        the opener that refuses redirects, so a peer can't send this side on somewhere else either."""
+        import urllib.parse
+        import urllib.request
+
+        from plexcache import peerlink as pl
+        a, _ua = self._side("plexA", "plexB")
+        b, _ub = self._side("plexB", "plexA")
+        canary_host = "192.0.2.99"
+        canary = f"http://{canary_host}:9"
+        went: list[str] = []
+
+        def record(target):
+            went.append(target)  # (the whole address: however it's spelt, the canary's host shows in it)
+            raise OSError("stopped by the test")
+        def fake_open(req, *a, **kw):
+            return record(req.full_url if hasattr(req, "full_url") else str(req))
+
+        def fake_connect(address, *a, **kw):
+            return record(str(address[0]))
+        with mock.patch.object(pl._opener, "open", fake_open), mock.patch.object(urllib.request, "urlopen", fake_open), \
+                mock.patch.object(socket, "create_connection", fake_connect):
+            for cmd in sorted(pl.COMMANDS):
+                body: dict[str, object] = {k: ([canary, canary_host] if k in ("addresses", "urls", "claims", "mirrors") else canary)
+                        for k in pl.API_SHAPES[cmd]["request"]}
+                if cmd == "pair":  # (a pairing ask that gets as far as fetching a hello: the source, and only the source)
+                    body.update(instance="zzz", public=b.mirror_link.public(), port=9, plex="plexB", name="B")
+                went.clear()
+                for method in ("GET", "POST"):
+                    raw = f"/peer/v1/{cmd}" + ("?" + urllib.parse.urlencode({k: canary for k in body}) if method == "GET" else "")
+                    a.peerlinks.handle(method, raw, {}, json.dumps(body).encode(), "10.0.0.7")
+                self.assertFalse([t for t in went if canary_host in t], f"/peer/v1/{cmd} made this side connect where the request said")
+                if cmd == "pair":
+                    self.assertTrue([t for t in went if "10.0.0.7" in t])  # (it did look: back at where the ask came from)
+        # every fetch to a peer refuses redirects: nothing in peerlink opens a URL another way
+        src = _read(os.path.join(ROOT, "plexcache", "peerlink.py"), encoding="utf-8")
+        self.assertEqual(re.findall(r"urllib\.request\.urlopen\(|urlopen\(", src), [])
+
     def test_a_pairing_request_cant_point_probes_or_flood_them(self):
         """A pairing request makes this side fetch a hello back, so what it may make us probe is held down (F-2026-026):
         only where we'd look ourselves and where the request came from — never the body's own list of addresses — the
@@ -22230,14 +22670,21 @@ class PeerLinkEdgeTests(unittest.TestCase):
         settle(a.mirror_link, b.mirror_link)
         self.assertFalse(a.mirror_link.proven() or b.mirror_link.proven())
         self.assertEqual(a.mirror_link.lights()["paired"]["status"], "warn")
-        # read-only until proven: status flows, but carry, update and reach are refused over the wire
+        # read-only until proven: status flows, but every command that changes something, or makes this side act, is
+        # refused over the wire — each command there is (peerlink.COMMANDS), so a new one is held to it too
         self.assertTrue(a.mirror_link.talk())
-        with self.assertRaisesRegex(pl.PeerError, "proven"):
-            a.mirror_link.request("POST", "/peer/v1/reach", {"urls": ["http://127.0.0.1:1"], "machine": ""})
-        with self.assertRaisesRegex(pl.PeerError, "proven"):
-            a.mirror_link.request("POST", "/peer/v1/carry", {"library": "1", "mirrors": "1", "marker": {"at": 1}, "claims": []})
-        with self.assertRaisesRegex(pl.PeerError, "proven"):
-            a.mirror_link.request("POST", "/peer/v1/update", {"channel": "x", "commit": "", "version": "1"})
+        reads = {
+            "hello": "says who this side is, to anyone: how two sides find each other before pairing",
+            "pair": "the pairing itself: what it proves is checked inside it",
+            "status": "reads this side's state, which an unproven pairing may do",
+            "files": "reads a library's file list, which an unproven pairing may do",
+            "unpair": "ends the asking side's own pairing, and nothing else",
+        }
+        self.assertLessEqual(set(reads), set(pl.COMMANDS))
+        for cmd in sorted(set(pl.COMMANDS) - set(reads)):
+            body = dict.fromkeys(pl.API_SHAPES[cmd]["request"], "")
+            with self.assertRaisesRegex(pl.PeerError, "proven", msg=f"/peer/v1/{cmd} answered an unproven pairing"):
+                a.mirror_link.request("POST", f"/peer/v1/{cmd}", body)
         # remote update is off as shipped, even for a proven pairing
         self.assertFalse(config.DEFAULTS["peer"]["remote_update"])
         self.assertIn("off here", b.mirror_link.handle_update({"channel": "x"})["why"])
@@ -24242,6 +24689,199 @@ class TlsPinTests(unittest.TestCase):
         snap = integrations.snapshot(app)
         self.assertEqual((snap["truenas"]["tls"]["verify"], snap["truenas"]["tls"]["pin"]), ("pin", self.fp))
         self.assertIsNone(snap["peer"]["tls"])
+
+    # Sends the check counts as fine, each with why: none are real cases.
+    NOT_A_CASE_TLS = {
+        "optimizer token, default address": "the default is the compose file's own service name, on the private network "
+                                            "between the app's two containers on the same host",
+        "mqtt password, plain by choice": "the user ticked Send the login unencrypted, warned of what it does: living with it for "
+                                          "brokers that can't use TLS (F-2026-033, mitigated), and off unless they do",
+    }
+    # Sends that may be refused outright, as well as the plain-http addresses: a refusal sends nothing.
+    MAY_BE_REFUSED = {"mqtt password, no tls", "optimizer token, other address"}
+
+    def test_no_key_or_token_travels_unverified(self):
+        """F-2026-022/023/024, for every secret the app sends anywhere: each connection that carries one is either to
+        this machine, or encrypted and verified (the pinned certificate, or full verification). Every way the app
+        connects is caught where the connection is made (urlopen, socket.create_connection, wrap_socket), so a new
+        client, or an old one with a new setting, is checked the same way. And every secret setting has a case here."""
+        import ssl
+        import urllib.error
+        import urllib.parse
+        import urllib.request
+
+        from plexcache import config, tlspin
+        sent: list[dict] = []
+
+        def fake_urlopen(req, timeout=None, context=None, **_kw):
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            sent.append({"host": urllib.parse.urlsplit(url).hostname or "", "tls": url.lower().startswith("https://"), "ctx": context})
+            raise urllib.error.URLError("stopped by the test")
+
+        def fake_connect(address, *a, **kw):
+            sent.append({"host": str(address[0]), "tls": False, "ctx": None})
+            mine, theirs = socket.socketpair()
+            theirs.close()
+            return mine
+
+        def fake_wrap(ctx, sock, *a, **kw):
+            sent[-1].update(tls=True, ctx=ctx)
+            sock.close()
+            raise ssl.SSLError("stopped by the test")
+
+        def verified(ctx) -> bool:
+            if ctx is None:
+                return True  # (urllib's own default: full verification)
+            return ctx.verify_mode == ssl.CERT_REQUIRED or (isinstance(ctx, tlspin.Context) and ctx.pinning)
+
+        far = "192.0.2.10"  # (TEST-NET-1: never this machine, never reached — every connection stops before it's made)
+
+        def plex(url):
+            return lambda app: (app.settings.update({"plex": {"url": url, "token": "tok"}}), app.plex(timeout=1).identity())
+
+        def mirror(url):
+            def go(app):
+                app.settings.update({"plex2": {"servers": {"m1": {"name": "M", "url": url, "token": "tok2"}}}})
+                app.mirrors.run("m1", lambda c: c.identity(), timeout=1)
+            return go
+
+        def truenas(url):
+            return lambda app: (app.settings.update({"truenas": {"url": url, "api_key": "key"}}), app.truenas())
+
+        def syncthing(url):
+            return lambda app: (app.settings.update({"syncthing": {"url": url, "api_key": "key"}}), app.syncthing.client(1).status())
+
+        def mqtt(tls, verify, plain=False):
+            def go(app):
+                app.settings.update({"mqtt": {"host": far, "port": 8883 if tls else 1883, "username": "u", "password": "pw",
+                                              "tls": tls, "verify_tls": verify, "allow_plain": plain}})
+                app.ha._run(app.settings.section("mqtt"))
+            return go
+
+        def optimizer(url):
+            from plexcache.optimizing import OptimizerClient
+            return lambda app: OptimizerClient(url, "tok")._call("/api/status")
+
+        from plexcache.optimizing import DEFAULT_URL
+        cases = {
+            # (secret setting, how it's sent): what sends it
+            "plex token, http": (("plex", "token"), plex(f"http://{far}:32400")),
+            "plex token, https": (("plex", "token"), plex(f"https://{far}:32400")),
+            "mirror token, http": (("plex2", "servers"), mirror(f"http://{far}:32400")),
+            "mirror token, https": (("plex2", "servers"), mirror(f"https://{far}:32400")),
+            "truenas key, http": (("truenas", "api_key"), truenas(f"http://{far}")),
+            "truenas key, https": (("truenas", "api_key"), truenas(f"https://{far}")),
+            "syncthing key, http": (("syncthing", "api_key"), syncthing(f"http://{far}:8384")),
+            "syncthing key, https": (("syncthing", "api_key"), syncthing(f"https://{far}:8384")),
+            "mqtt password, no tls": (("mqtt", "password"), mqtt(False, False)),
+            "mqtt password, plain by choice": (("mqtt", "password"), mqtt(False, False, True)),
+            "mqtt password, tls not verified": (("mqtt", "password"), mqtt(True, False)),
+            "mqtt password, tls verified": (("mqtt", "password"), mqtt(True, True)),
+            "optimizer token, default address": (("optimizer", "token"), optimizer(DEFAULT_URL)),
+            "optimizer token, other address": (("optimizer", "token"), optimizer(f"http://{far}:8643")),
+        }
+        # every secret the settings keep has its cases (a new one fails here until it has some)
+        self.assertLessEqual(set(config.SECRET_PATHS), {s for s, _ in cases.values()})
+        bad = []
+        with mock.patch.object(urllib.request, "urlopen", fake_urlopen), mock.patch.object(socket, "create_connection", fake_connect), \
+                mock.patch.object(ssl.SSLContext, "wrap_socket", fake_wrap):
+            for name, (_secret, go) in cases.items():
+                app = _new_app()
+                sent.clear()
+                try:
+                    go(app)
+                except Exception:  # noqa: BLE001 — (every connection is stopped: what matters is how it was made)
+                    pass
+                if not sent and not name.endswith(", http") and name not in self.MAY_BE_REFUSED:
+                    bad.append(f"{name}: never connected, so nothing was checked")  # (only what can't be sent safely may be refused outright)
+                for s in sent:
+                    loopback = s["host"] in ("localhost", "::1") or s["host"].startswith("127.")
+                    how = "fine" if loopback or (s["tls"] and verified(s["ctx"])) else ("unverified" if s["tls"] else "plain")
+                    if how != "fine" and name not in self.NOT_A_CASE_TLS:
+                        bad.append(f"{name}: sent {how} to {s['host']}")
+        self.assertEqual(bad, [], "a key or token travels without a verified connection")
+
+    def test_no_secret_follows_a_redirect(self):
+        """A redirect must not carry a key or token to wherever it points (http://, another host): urllib copies a
+        request's ordinary headers onto the redirected one, so every secret header is an unredirected one, everywhere."""
+        names = "X-Plex-Token|X-API-Key|X-Plexcache-Token"
+        ordinary = re.compile(rf'''add_header\(\s*["']({names})["']|["']({names})["']\s*:''', re.I)
+        bad = []
+        for folder, _dirs, files in os.walk(os.path.join(ROOT, "plexcache")):
+            for name in files:
+                if name.endswith(".py"):
+                    path = os.path.join(folder, name)
+                    bad += [f"{os.path.relpath(path, ROOT)}:{n}" for n, line in enumerate(_read(path, encoding="utf-8").splitlines(), 1) if ordinary.search(line)]
+        self.assertEqual(bad, [], "a secret header a redirect would carry along")
+        # and it does what it says, through a real redirect
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        seen: list = []
+
+        class Redirects(BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen.append((self.path, self.headers.get("X-Plex-Token")))
+                self.send_response(302 if self.path == "/first" else 200)
+                if self.path == "/first":
+                    self.send_header("Location", "/second")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def log_message(self, format, *args):  # noqa: A002 — (http.server's own name for it)
+                pass
+
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), Redirects)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            PlexClient(f"http://127.0.0.1:{srv.server_port}", "tok")._request("/first")
+        finally:
+            srv.shutdown()
+            srv.server_close()
+        self.assertEqual(seen, [("/first", "tok"), ("/second", None)])
+
+    def test_saved_plex_addresses_move_to_https(self):
+        d = tempfile.mkdtemp(dir=TMP)
+        with open(os.path.join(d, "settings.json"), "w", encoding="utf-8") as fh:
+            json.dump({"plex": {"url": "http://10.0.0.9:32400"},
+                       "plex2": {"servers": {"m1": {"url": "http://nas.local", "token": "t"}, "m2": {"url": "http://127.0.0.1:32400", "token": "t"},
+                                             "m3": {"url": "https://10.0.0.8:32401", "token": "t"}}}}, fh)
+        s = config.Settings(d)
+        self.assertEqual(s.section("plex")["url"], "https://10.0.0.9:32400")
+        self.assertEqual({k: v["url"] for k, v in s.section("plex2")["servers"].items()},
+                         {"m1": "https://nas.local:32400", "m2": "http://127.0.0.1:32400", "m3": "https://10.0.0.8:32401"})
+        self.assertEqual(config.plex_https("http://nas:bad"), "http://nas:bad")
+
+    def test_the_token_stays_home_only_to_this_machine(self):
+        from plexcache import tlspin
+        from plexcache.optimizing import OptimizerClient
+        for host in ("localhost", "127.0.0.1", "[::1]"):
+            self.assertTrue(tlspin.on_this_machine(f"http://{host}:1"), host)
+        for host in ("127.evil.example", "localhost.evil.example", "10.0.0.9"):  # (a name only starting like one isn't)
+            self.assertFalse(tlspin.on_this_machine(f"http://{host}:1"), host)
+        with self.assertRaises(PlexError):
+            PlexClient("http://127.evil.example:32400", "tok").identity()
+        c = OptimizerClient("http://renamed:8643", "tok")
+        self.assertFalse(c._token_stays_safe())
+        c.follow_service("renamed")  # (what TrueNAS says the service is called now)
+        self.assertTrue(c._token_stays_safe())
+        self.assertTrue(OptimizerClient("https://far.example:8643", "tok")._token_stays_safe())
+
+    def test_a_changed_broker_certificate_is_refused_and_can_be_trusted(self):
+        from plexcache import mqttclient, tlspin
+        app = _new_app()
+        broker = fakes.FakeMQTTBroker(tls_dir=tempfile.mkdtemp(dir=TMP))
+        try:
+            app.settings.update({"mqtt": {"host": "127.0.0.1", "port": broker.port, "username": "u", "password": "pw", "tls": True},
+                                 "tls": {"pins": {"mqtt": "0" * 64}}})
+            with self.assertRaises(mqttclient.MQTTError) as got:
+                app.ha._run(app.settings.section("mqtt"))
+            self.assertEqual(got.exception.step, "tls")
+            self.assertEqual(app.tls_state("mqtt", app.settings.section("mqtt"))["changed"]["pinned"], "0" * 64)
+            self.assertNotIn(b"pw", b"".join(str(c).encode() for c in broker.connects))  # (nothing was sent to it)
+            fp = app.trust_certificate("mqtt")["pinned"]
+            self.assertEqual(app.settings.section("tls")["pins"]["mqtt"], fp)
+            self.assertEqual(fp, tlspin.fingerprint(f"https://127.0.0.1:{broker.port}"))
+        finally:
+            broker.close()
 
     def test_plex_connections_choose_the_right_verification(self):
         import ssl

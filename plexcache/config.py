@@ -15,6 +15,7 @@ import threading
 import urllib.parse
 import uuid
 
+from . import tlspin
 from .i18n import CODES, M
 
 TOOL_NAMES = ("merge", "versions", "folders", "unlink", "convert", "sync")  # the tools (tools/), as the "tools" section keys them
@@ -175,7 +176,8 @@ DEFAULTS: dict = {
         "username": "",
         "password": "",
         "tls": False,
-        "verify_tls": False,
+        "verify_tls": False,  # off: the broker's certificate pinned on first use instead (tlspin.py)
+        "allow_plain": False,  # the login sent without TLS all the same, by the user's own choice (F-2026-033: off, it's refused)
         "discovery": True,  # Home Assistant MQTT discovery messages
         "discovery_prefix": "homeassistant",
         "base_topic": "plexcache",
@@ -285,16 +287,17 @@ PLEX_DEFAULT_PORT = 32400
 def normalize_url(section: str, value: str) -> str:
     """Fill in what people usually leave out.
 
-    Plex: ``192.168.1.10`` -> ``http://192.168.1.10:32400`` (port added for http only).
+    Plex: ``192.168.1.10`` -> ``https://192.168.1.10:32400`` (its token needs https; port added unless https was typed).
     TrueNAS: ``192.168.1.10`` -> ``https://192.168.1.10`` (API keys need https).
     The other Dionysus (peer): ``192.168.1.20`` -> ``http://192.168.1.20:8642``. Syncthing: ``192.168.1.10`` -> ``http://192.168.1.10:8384``.
     """
     value = value.strip().rstrip("/")
     if not value:
         return ""
-    if not re.match(r"^https?://", value, re.I):
-        value = ("https://" if section == "truenas" else "http://") + value
-    if section in ("plex", "plex2", "peer", "syncthing") and value.lower().startswith("http://"):
+    bare = not re.match(r"^https?://", value, re.I)
+    if bare:
+        value = ("https://" if section in ("truenas", "plex", "plex2") else "http://") + value
+    if (bare and section in ("plex", "plex2")) or (section in ("plex", "plex2", "peer", "syncthing") and value.lower().startswith("http://")):
         # (an https:// address is usually a reverse proxy on 443, so leave it alone)
         scheme, rest = value.split("://", 1)
         hostport = rest.split("/", 1)[0]
@@ -302,6 +305,18 @@ def normalize_url(section: str, value: str) -> str:
         if not has_port:
             value = f"{scheme}://{hostport}:{8642 if section == 'peer' else 8384 if section == 'syncthing' else PLEX_DEFAULT_PORT}" + (rest[len(hostport):] if "/" in rest else "")
     return value
+
+
+def plex_https(url: str) -> str:
+    """A saved Plex address as https, its host and port kept: Plex answers both on the one port, and its token is only
+    sent over https (PlexClient), so an http address from before that would otherwise stop working. This machine's stays."""
+    try:
+        u = urllib.parse.urlsplit(url)
+        if u.scheme.lower() != "http" or not u.hostname or tlspin.on_this_machine(url):
+            return url
+        return urllib.parse.urlunsplit(("https", u.netloc if u.port else f"{u.netloc}:{PLEX_DEFAULT_PORT}", u.path, u.query, u.fragment))
+    except ValueError:
+        return url  # (a bad port: the settings' own check says so)
 
 
 def _text(section: str, key: str, value, max_len: int = 255, spaces: bool = True) -> str:
@@ -692,6 +707,13 @@ class Settings:
                 libs = p2.setdefault("libraries", {}) if isinstance(p2.get("libraries", {}), dict) else {}
                 if choice in ("none", "plex2") and "*" not in libs:
                     libs["*"] = {"state": "none", "server": "", "key": ""} if choice == "none" else {"state": "mirror", "server": "", "key": ""}
+            pl = saved.get("plex") if isinstance(saved, dict) and isinstance(saved.get("plex"), dict) else None
+            if pl is not None and isinstance(pl.get("url"), str):  # (the token goes only over https now: see plex_https)
+                pl["url"] = plex_https(pl["url"])
+            p2 = saved.get("plex2") if isinstance(saved, dict) and isinstance(saved.get("plex2"), dict) else None
+            for sv in ((p2.get("servers") if p2 is not None and isinstance(p2.get("servers"), dict) else None) or {}).values():
+                if isinstance(sv, dict) and isinstance(sv.get("url"), str):
+                    sv["url"] = plex_https(sv["url"])
             o = saved.get("optimizer") if isinstance(saved, dict) and isinstance(saved.get("optimizer"), dict) else None
             if o is not None:  # (converting is the Convert to MKV tool's now: no hold, and no per-library switch)
                 o.pop("convert_hold_days", None)

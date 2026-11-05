@@ -13,6 +13,7 @@ import ssl
 import struct
 import time
 
+from . import tlspin
 from .i18n import M
 
 MAX_PACKET = 1024 * 1024
@@ -97,10 +98,12 @@ def topic_matches(pattern: str, topic: str) -> bool:
 class MQTTClient:
     def __init__(self, host: str, port: int = 1883, client_id: str = "plexcache", username: str = "", password: str = "",
                  tls: bool = False, verify_tls: bool = True, keepalive: int = 60, will: tuple | None = None,
-                 timeout: float = 10):
+                 timeout: float = 10, tls_context: ssl.SSLContext | None = None, allow_plain: bool = False):
         self.host, self.port, self.client_id = host, port, client_id
         self.username, self.password = username, password
         self.tls, self.verify_tls = tls, verify_tls
+        self.tls_context = tls_context  # what start_tls verifies with (App.tls_context: the pin, or full verification)
+        self.allow_plain = allow_plain  # the login may go without TLS: the user's own choice
         self.keepalive, self.will, self.timeout = keepalive, will, timeout
         self.sock: socket.socket | None = None
         self._buf = b""
@@ -115,7 +118,10 @@ class MQTTClient:
         self.login()
 
     def open(self) -> None:
-        """Step 1: reach the broker (a TCP connection)."""
+        """Step 1: reach the broker (a TCP connection). Refused first when the login would then go unencrypted across the
+        network, unless the user chose that (allow_plain)."""
+        if (self.username or self.password) and not self.tls and not self.allow_plain and not tlspin.host_on_this_machine(self.host):
+            raise MQTTError(M("The broker login isn’t sent unencrypted across the network: turn on Use TLS (the broker’s TLS port, usually 8883), or tick “Send the login unencrypted”."), "tls")
         try:
             self.sock = socket.create_connection((self.host, self.port), timeout=self.timeout)
         except socket.gaierror:
@@ -151,15 +157,20 @@ class MQTTClient:
 
     def start_tls(self) -> None:
         """Step 2 (only with TLS): the encrypted connection."""
-        ctx = ssl.create_default_context()
-        if not self.verify_tls:
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
+        ctx = self.tls_context
+        if ctx is None:
+            ctx = ssl.create_default_context()
+            if not self.verify_tls:
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
         sock = self.sock
         if sock is None:
             raise MQTTError(M("not connected"))
         try:
             self.sock = ctx.wrap_socket(sock, server_hostname=self.host)
+        except tlspin.CertChanged as e:
+            self._drop()
+            raise MQTTError(str(e), "tls") from None
         except ssl.SSLCertVerificationError as e:
             self._drop()
             raise MQTTError(M("the broker’s certificate wasn’t accepted ({why}) — untick “Verify”, "

@@ -36,7 +36,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable
 
-from . import zfs
+from . import tlspin, zfs
 from .i18n import M
 
 
@@ -105,14 +105,14 @@ class SyncthingClient:
             self.ctx.verify_mode = ssl.CERT_NONE
 
     def _req(self, method: str, path: str, params: dict | None = None, body=None):
-        host = (urllib.parse.urlsplit(self.url).hostname or "").lower()
-        if self.key and self.url.lower().startswith("http://") and not (host == "localhost" or host == "::1" or host.startswith("127.")):
+        if self.key and self.url.lower().startswith("http://") and not tlspin.on_this_machine(self.url):
             # the key signs every request: over the network it goes only on an encrypted connection
             raise SyncthingError(M("Syncthing’s API key isn’t sent over plain http across the network: use an https:// address (Syncthing answers on one), or a localhost address."), "reach")
         q = ("?" + urllib.parse.urlencode(params)) if params else ""
         data = json.dumps(body).encode() if body is not None else None
         req = urllib.request.Request(self.url + path + q, data=data, method=method,
-                                     headers={"X-API-Key": self.key, "Content-Type": "application/json", "Accept": "application/json"})
+                                     headers={"Content-Type": "application/json", "Accept": "application/json"})
+        req.add_unredirected_header("X-API-Key", self.key)  # (never carried along by a redirect)
         try:
             with urllib.request.urlopen(req, timeout=self.timeout, context=self.ctx) as r:
                 raw = r.read()

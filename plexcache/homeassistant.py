@@ -790,6 +790,9 @@ class HomeAssistantBridge:
                 why = msg(e)
                 # The lights first, then the state that refers to them (the page may read in between)
                 if step in STEPS:
+                    for earlier in STEPS[:STEPS.index(step)]:  # (refused before it got that far: not still being tried)
+                        if self.status["steps"][earlier]["status"] == "testing":
+                            self._step(earlier, "off", "")
                     self._step(step, "fail", why)
                     for later in STEPS[STEPS.index(step) + 1:]:
                         self._step(later, "off", "")
@@ -811,16 +814,22 @@ class HomeAssistantBridge:
     def _run(self, cfg):
         base, avail, state_topic, set_topic = self._topics(cfg)
         node = "plexcache_" + (self.app.settings.section("general")["client_id"] or "x").replace("-", "")[:12]
+        ctx = self.app.tls_context("mqtt", cfg) if cfg["tls"] else None
         c = MQTTClient(cfg["host"], cfg["port"], client_id=mqtt_client_id(node), username=cfg["username"], password=cfg["password"],
-                       tls=cfg["tls"], verify_tls=cfg["verify_tls"], will=(avail, "offline", True))
+                       tls=cfg["tls"], verify_tls=cfg["verify_tls"], will=(avail, "offline", True), tls_context=ctx, allow_plain=cfg["allow_plain"])
         self.status.update(state="connecting", error=None, steps=self._steps("testing"))
         if not cfg["tls"]:
             self._step("tls", "off", M("Not used — the connection isn’t encrypted."))
         c.open()
         self._step("broker", "ok", f"{cfg['host']}:{cfg['port']}")
         if cfg["tls"]:
-            c.start_tls()
-            self._step("tls", "ok", M("Encrypted") if cfg["verify_tls"] else M("Encrypted (certificate not checked)"))
+            try:
+                c.start_tls()
+            except MQTTError:
+                self.app.tls_refused("mqtt", ctx)
+                raise
+            self.app.tls_ok("mqtt", ctx)
+            self._step("tls", "ok", M("Encrypted") if cfg["verify_tls"] else M("Encrypted (certificate pinned)"))
         c.login()
         self._step("login", "ok", M("Signed in as {user}", user=cfg["username"]) if cfg["username"] else M("Connected without a login"))
         self._client = c

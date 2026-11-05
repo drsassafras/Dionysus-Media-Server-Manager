@@ -358,6 +358,9 @@ class App:
                 "plex": self.settings.section("plex").get("url")}
         if name.startswith("plex2:"):
             urls[name] = ((self.settings.section("plex2").get("servers") or {}).get(name.partition(":")[2]) or {}).get("url")
+        mqtt = self.settings.section("mqtt")
+        if name == "mqtt" and mqtt.get("host"):  # (not an address, but read the same way: only the TLS handshake)
+            urls[name] = "https://" + (f"[{mqtt['host']}]" if ":" in mqtt["host"] else mqtt["host"]) + f":{mqtt['port']}"
         url = urls.get(name) or ""
         fp = tlspin.fingerprint(url)
         if not fp:
@@ -986,13 +989,15 @@ class App:
         changed = []
         h = f"[{host}]" if ":" in host else host
         if not s["plex"]["url"]:
-            url = f"http://{h}:{PLEX_DEFAULT_PORT}"
-            try:
-                PlexClient(url, "", timeout=4).identity()
+            # (https: the token goes nowhere else across the network. Plain http only to this machine, where it may)
+            for url in [f"https://{h}:{PLEX_DEFAULT_PORT}"] + ([f"http://{h}:{PLEX_DEFAULT_PORT}"] if tlspin.host_on_this_machine(host) else []):
+                try:
+                    PlexClient(url, "", timeout=4).identity()
+                except PlexError:
+                    continue
                 self.settings.update({"plex": {"url": url}})
                 changed.append(M("Plex at {url}", url=url))
-            except PlexError:
-                pass
+                break
         if not s["truenas"]["url"]:
             url = f"https://{h}" + ("" if TRUENAS_PROBE_PORT == 443 else f":{TRUENAS_PROBE_PORT}")
             if probe_truenas(url, timeout=4):
@@ -1047,7 +1052,7 @@ class App:
         if got is None:
             req = urllib.request.Request("https://metadata.provider.plex.tv/library/metadata/" + m.group(2) + "?includeGuids=1")
             req.add_header("Accept", "application/json")
-            req.add_header("X-Plex-Token", self.settings.section("plex")["token"])
+            req.add_unredirected_header("X-Plex-Token", self.settings.section("plex")["token"])
             with _closing_errors(), urllib.request.urlopen(req, timeout=15) as resp:
                 md = ((json.loads(resp.read() or b"{}").get("MediaContainer") or {}).get("Metadata") or [{}])[0]
             kind = md.get("type") or m.group(1)
@@ -2267,7 +2272,7 @@ class App:
             "playback": {"sessions": self.monitor.snapshot(), "error": self.monitor.last_error, "last_poll": self.monitor.last_poll},
             "activity": self.activity.snapshot(),
             "reports": self.reports(),
-            "mqtt": dict(self.ha.status),
+            "mqtt": dict(self.ha.status, tls=self.tls_state("mqtt", self.settings.section("mqtt"))),
             "updates": self.updates.status(),
             "peers": self.peers_summary,  # the other Dionysus instances sharing library folders, and what fights (peers.py)
             "peer": self.peerlinks.snapshot(),  # the Dionysus at each mirror's site: System → Mirror Dionysus (peerlink.py)

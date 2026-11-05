@@ -408,7 +408,7 @@ The tests check the apostrophes and the Title Case.
 | `PLEXCACHE_CONFIG` | settings folder (default `/config`) |
 | `PLEXCACHE_PORT`, `PLEXCACHE_HOST` | where the web UI listens (default `8642` on all addresses) |
 | `PLEXCACHE_DEBUG` | any value: more detail in the app's log |
-| `PLEXCACHE_OPTIMIZER_URL` | where the optimizer service is (default `http://plex-cache-optimizer:8643`, the second service in the YAML) |
+| `PLEXCACHE_OPTIMIZER_URL` | where the optimizer service is (default `http://plex-cache-optimizer:8643`, the second service in the YAML). Its token only goes to that name, this machine or an `https://` address |
 | `PLEXCACHE_OPTIMIZER_TOKEN` | the secret the app and the optimizer share. Not needed: the app makes one and keeps it in a folder of its own in its settings folder (`optimizer/token`), and the optimizer reads it there (`/config/optimizer/token` — mount just that folder read-only, so the settings and keys beside it stay out of the optimizer's container; a deployment that still mounts the whole settings folder keeps working, from the old `/config/optimizer-token`). Set the same value in both services to use your own |
 | `PLEXCACHE_MEDIA_ROOTS` | optimizer only: the folders it may write. Not needed: by default, the folders mounted into it writable |
 | `PLEXCACHE_OPTIMIZER_PORT` | optimizer only: the port it listens on inside the app (default `8643`) |

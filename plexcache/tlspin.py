@@ -21,7 +21,9 @@ no secret (a hello, an identity probe) isn't held to any of this: there's nothin
 """
 
 import hashlib
+import ipaddress
 import ssl
+import urllib.parse
 
 from .i18n import M
 
@@ -53,6 +55,22 @@ class Context(ssl.SSLContext):
                 raise CertChanged(str(M("The server’s certificate changed: {new} answered where {old} is pinned. If the service really has "
                                         "a new certificate, trust it on the System page.", new=short(got), old=short(self.pin))))
         return s
+
+
+def on_this_machine(url: str) -> bool:
+    """Whether a URL's host is this machine, the only place a secret may go without TLS (host_on_this_machine)."""
+    return host_on_this_machine(urllib.parse.urlsplit(url).hostname or "")
+
+
+def host_on_this_machine(host: str) -> bool:
+    """"localhost" or a loopback address (an address, not a name that merely starts like one)."""
+    host = host.strip("[]").lower()
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def context(verify: bool, pin: str = "", name: str | None = None) -> Context:

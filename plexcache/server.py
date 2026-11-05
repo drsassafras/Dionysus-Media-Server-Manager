@@ -578,7 +578,7 @@ def make_handler(app):
                 return self._json({"started": True})
             if path == "/api/tls/trust":  # Trust New Certificate: the one the service answers with now pinned in the old one's place
                 service = str(body.get("service") or "")
-                if not re.fullmatch(r"(plex|truenas|syncthing|plex2:[A-Za-z0-9_-]{1,64})", service):
+                if not re.fullmatch(r"(plex|truenas|syncthing|mqtt|plex2:[A-Za-z0-9_-]{1,64})", service):
                     raise SettingsError(M("unknown service"))
                 got = app.trust_certificate(service)
                 if "error" not in got:

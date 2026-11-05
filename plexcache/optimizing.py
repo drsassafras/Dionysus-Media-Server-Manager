@@ -32,9 +32,10 @@ import secrets
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
-from . import zfs, zfslog
+from . import tlspin, zfs, zfslog
 from .i18n import M, msg
 from .i18n import join as join_names
 from .jobs import Job
@@ -108,6 +109,18 @@ class OptimizerClient:
         self.url = (url if url is not None else os.environ.get("PLEXCACHE_OPTIMIZER_URL") or DEFAULT_URL).rstrip("/")
         self.token = os.environ.get("PLEXCACHE_OPTIMIZER_TOKEN") or token or ""
         self._status: tuple[float, dict] | None = None
+        self.service = ""  # the service's name when TrueNAS says it was renamed in the YAML (follow_service)
+
+    def follow_service(self, name: str) -> None:
+        """The service renamed in the app's YAML (TrueNAS says so): reached at that name, on the app's private network."""
+        self.service, self.url = name, f"http://{name}:8643"
+
+    def _token_stays_safe(self) -> bool:
+        """Whether the token may go to the address: encrypted (https, fully verified: urllib's default), this machine,
+        or the service on the private network between the app's two containers."""
+        host = (urllib.parse.urlsplit(self.url).hostname or "").lower()
+        return (not self.url.lower().startswith("http://") or tlspin.on_this_machine(self.url)
+                or host in (urllib.parse.urlsplit(DEFAULT_URL).hostname, self.service.lower()))
 
     @property
     def configured(self) -> bool:
@@ -118,8 +131,11 @@ class OptimizerClient:
         return self.configured and not self.status().get("error")
 
     def _call(self, path: str, body: dict | None = None, timeout: float = 5) -> dict:
+        if not self._token_stays_safe():
+            raise urllib.error.URLError(str(M("The optimizer’s token isn’t sent over plain http across the network: use an https:// address in PLEXCACHE_OPTIMIZER_URL, or leave it unset.")))
         req = urllib.request.Request(self.url + path, data=json.dumps(body).encode() if body is not None else None,
-                                     headers={"X-Plexcache-Token": self.token, "Content-Type": "application/json"})
+                                     headers={"Content-Type": "application/json"})
+        req.add_unredirected_header("X-Plexcache-Token", self.token)  # (never carried along by a redirect)
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 return json.loads(r.read() or b"{}")
@@ -324,7 +340,7 @@ class Optimizing:
                 return self._done(steps)
             step("running", True, M("Running"))
             if not os.environ.get("PLEXCACHE_OPTIMIZER_URL") and opt.get("service_name"):
-                self.client.url = f"http://{opt['service_name']}:8643"  # renamed in the YAML: follow it
+                self.client.follow_service(opt["service_name"])  # renamed in the YAML: follow it
         else:
             health = None
         hz = self.client.healthz()

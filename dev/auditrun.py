@@ -76,6 +76,11 @@ class Auditor:
     def owns(self, auditor: str, private: str | None = None) -> bool:
         return auditor in self.auditors(private)
 
+    def default(self, private: str | None = None) -> tuple[str, int]:
+        """What the audits page picks for it until you pick another: an auditor id and a thoroughness."""
+        got = self.auditors(private)
+        return (got[0] if got else "", next((k for k, v in self.efforts.items() if v == "medium"), min(self.efforts, default=0)))
+
     def run(self, r: Run, code: str, main: str, prompt: str, folder: str, started, pushed: str = "") -> tuple[int, str, bool]:
         raise NotImplementedError
 

@@ -4209,7 +4209,7 @@ PCI18N.ready.then(function () {
             "Behind a reverse proxy, the proxy’s address is what counts. Turning this off from outside your network isn’t possible: change it from a device on your network.") }) + "</div></section>";
 
     // ---- Plex
-    const guessPlex = ST.host ? "http://" + ST.host + ":32400" : "http://192.168.1.10:32400";
+    const guessPlex = ST.host ? "https://" + ST.host + ":32400" : "https://192.168.1.10:32400";
     const tokOk = c.plex_token && c.plex_token.status === "ok";
     out += '<section class="card' + (integrationMark("plex", "Plex") ? " hasfp" : "") + '" id="plex">' + integrationMark("plex", "Plex") + "<h2>" + brand("plex") + 'Plex</h2><p class="hint">' + H("Used to list your libraries and see what’s playing.") + "</p>" +
       '<div class="lights">' + integrationLights("plex", testing, { api: info(H("Plex publishes no list of its API, so this light tries every read the app makes — the server, its identity, the libraries, what’s playing, a library’s items and collections, an item, a show’s episodes — and is green when each one answers. The changes the tools make go to the same paths and aren’t tried."), T("API compatibility")) },
@@ -4339,7 +4339,7 @@ PCI18N.ready.then(function () {
   function mqttLights() {
     const m = ST.mqtt || {}, M = S.mqtt, steps = m.steps || {};
     if (!M.enabled) return light("off", T("Off"), T("Tick “Publish over MQTT” below to start."));
-    return MQTT_STEPS.map(function (st) {
+    return (m.tls && m.tls.changed ? certChanged("mqtt", "MQTT", m.tls.changed) : "") + MQTT_STEPS.map(function (st) {
       const r = steps[st[0]] || { status: "off", text: "" }; let detail = msg(r.text);
       if (st[0] === "publish" && r.status === "ok") {
         detail = detail + (m.last_publish ? " · " + T("last update {when}", { when: ago(m.last_publish) }) : "") +
@@ -4391,8 +4391,10 @@ PCI18N.ready.then(function () {
           "Entity IDs stay the same in every language, so automations keep working when you change it. This page follows your browser instead (menu at the top right).") }) + "</div>" +
       '<div class="chk" style="margin-top:12px">' + infoOrGap("", "") + '<label><input type="checkbox" data-check="mqtt.tls"' + (M.tls ? " checked" : "") + ">" + H("Use TLS") + "</label>" + revertBtn("mqtt", "tls", "") +
       (M.tls ? info(H("Leave off for a self-signed certificate, or when connecting by IP to a broker whose certificate names a domain (such as a Let’s Encrypt one). " +
-          "The connection is still encrypted; on, it also proves it’s really your broker."), T("Verify")) +
-        '<label><input type="checkbox" data-check="mqtt.verify_tls"' + (M.verify_tls ? " checked" : "") + ">" + H("Verify the broker’s certificate") + "</label>" + revertBtn("mqtt", "verify_tls", "") : "") +
+          "Off, its certificate is pinned on first use, and must be the same on every connection after that; on, it’s checked against your system’s certificate authorities."), T("Verify")) +
+        '<label><input type="checkbox" data-check="mqtt.verify_tls"' + (M.verify_tls ? " checked" : "") + ">" + H("Verify the broker’s certificate") + "</label>" + revertBtn("mqtt", "verify_tls", "") :
+        '<label><input type="checkbox" data-check="mqtt.allow_plain"' + (M.allow_plain ? " checked" : "") + ">" + H("Send the login unencrypted") +
+        info(H("Without TLS, your broker’s username and password are refused unless you tick this. Ticked, anyone on the network between here and the broker can read them, and use them. Only for a broker that can’t use TLS."), T("Send the login unencrypted")) + "</label>" + revertBtn("mqtt", "allow_plain", "")) +
       '<label><input type="checkbox" data-check="mqtt.discovery"' + (M.discovery ? " checked" : "") + ">" + H("Home Assistant discovery") +
       info(H("Publishes Home Assistant’s discovery messages, so the “Dionysus” device and its entities appear on their own. openHAB and Domoticz can read them too. " +
         "Off: only the state, availability and command topics, for tools that don’t use discovery. Turning it off removes the entities from Home Assistant."), T("Home Assistant discovery")) + "</label>" + revertBtn("mqtt", "discovery", "") +
