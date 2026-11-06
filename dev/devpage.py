@@ -1,5 +1,5 @@
-"""What the dev tools' own pages share (dev/style.py's review page, dev/auditgui.py's audits page): their colours, light
-and dark, so they look like one set of tools. Not the app's look: the app's pages are the style guide's. And how their
+"""What the dev tools' own pages share (dev/style.py's review page, dev/auditgui.py's audits page, dev/devui.py's devtools
+page): their colours, light and dark, and their tab icon (the film reel: icons), so they look like one set of tools. Not the app's look: the app's pages are the style guide's. And how their
 servers answer: to the browser that opened the address they printed only (Session), with the same headers (send)."""
 
 LIGHT = ("--bg:#f4f4f1;--card:#fff;--ink:#1b1f1d;--mute:#5a625d;--line:#dcdcd6;--code:#f6f7f5;--before:#7f4205;"
@@ -11,14 +11,41 @@ THEME = (":root{" + LIGHT + "}@media (prefers-color-scheme:dark){:root:not([data
 BASE = ("*{box-sizing:border-box}[hidden]{display:none!important}body{margin:0;background:var(--bg);color:var(--ink);"
         "font:15px/1.5 system-ui,sans-serif}")
 
+ICONS = (16, 32, 64)   # (the sizes of the tab icon: dev/reel-tab-<px>.svg, drawn by dev/icons.js from decor.js's reel)
+
+
+def icons() -> str:
+    """The tab icon each dev page has: the film reel under the app's page titles (dev/reel-tab-<px>.svg, which
+    dev/icons.js draws from decor.js), one <link> a size so the browser takes the one drawn for the size it shows (the
+    reel simpler the smaller it is). In the page itself (data:, what each page's img-src lets in): nothing more to serve."""
+    import base64
+    import os
+    here = os.path.dirname(os.path.abspath(__file__))
+    out = []
+    for px in ICONS:
+        try:
+            with open(os.path.join(here, f"reel-tab-{px}.svg"), "rb") as fh:
+                svg = base64.b64encode(fh.read()).decode()
+        except OSError:
+            continue
+        out.append(f'<link rel="icon" type="image/svg+xml" sizes="{px}x{px}" href="data:image/svg+xml;base64,{svg}">')
+    return "".join(out)
+
+
+def iconed(page: str) -> str:
+    """A page with the tab icon (icons) at the start of its <head>."""
+    return page.replace("<head>", "<head>" + icons(), 1)
+
 
 # ---------------------------------------------------------------- their servers (127.0.0.1, a port of their own)
 def headers(nonce: str = "", img: str = "data:") -> list[tuple[str, str]]:
     """What every response of a dev tool's page sends: never framed (an Approve or Start button overlaid by another
     site's page), never sniffed, and a Content-Security-Policy that runs only the page's own script and styles (their
-    nonce, this response's: no style="..." in its markup) and loads nothing from anywhere else."""
+    nonce, this response's: no style="..." in its markup) and loads nothing from anywhere else (but data: pictures, as
+    the tab icon is: icons)."""
     script = f"'nonce-{nonce}'" if nonce else "'none'"
     style = script
+    img = img if "data:" in img.split() else f"{img} data:"
     return [("Cache-Control", "no-store"), ("X-Content-Type-Options", "nosniff"), ("X-Frame-Options", "DENY"),
             ("Referrer-Policy", "no-referrer"),
             ("Content-Security-Policy", f"default-src 'none'; script-src {script}; style-src {style}; connect-src 'self'; "
@@ -220,7 +247,7 @@ def serve(name: str, html, routes_get: dict | None = None, routes_post: dict | N
     (Session: its one-time code, its cookie, its own name), until the page is closed, Ctrl-C, or ``ended`` is set.
 
     ``html(token)`` is the page (its own script sends the token in the X-Page-Token header, and beats: beat); each response's
-    nonce is put on its <script> and <style> tags (nonced). ``routes_get`` map a path to a function of the address's
+    nonce is put on its <script> and <style> tags (nonced), and the dev pages' tab icon in its <head> (iconed). ``routes_get`` map a path to a function of the address's
     query (a dict of its first values), ``routes_post`` to one of the request's JSON body; what one returns goes back as
     JSON, and a ValueError or OSError it raises as a 400 with its message. ``files`` map a name to a file served as it
     is (a picture of the sample, say). ``gone`` is how long after a tab's goodbye (a reload comes back sooner) and
@@ -286,7 +313,7 @@ def serve(name: str, html, routes_get: dict | None = None, routes_post: dict | N
                 return self._send(403, REFUSED, "text/plain; charset=utf-8")
             if where == "/":
                 nonce = secrets.token_urlsafe(18)   # (this response's: its own script and style run, nothing else)
-                return self._send(200, nonced(html(token), nonce).encode(), "text/html; charset=utf-8", nonce)
+                return self._send(200, nonced(iconed(html(token)), nonce).encode(), "text/html; charset=utf-8", nonce)
             name = where.lstrip("/")
             if name in files:
                 try:

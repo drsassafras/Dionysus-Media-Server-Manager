@@ -69,6 +69,7 @@ COLORS = {
     "unripe": "unripe grapes",
     "film": "the film under a page's title",
     "film-mark": "the symbols on the film",
+    "film-mark-2": "the symbols on the film, their other colour (each page's film has one or the other)",
     "spots": "the spots round the app",
     "menu-spots": "the spots on the menu",
     "vine": "the vine round each card",
@@ -108,7 +109,7 @@ _CLASSIC_LIGHT_OWN = {
     "guide-bg": "#F1F5F3", "guide-line": "#D6E2DD", "note-bg": "#FDF4E7", "note-line": "#F1D9B4", "note-ink": "#5E3404",
     "code-bg": "#F6F7F5", "c-tv": "#5FA79B", "c-audio": "#B9772A", "c-res": "#9AA39E", "c-idx": "#6E5BA8",
     "track": "#E7EAE6", "chart-a": "#008F7E", "chart-b": "#C2651A",
-    "gold": "#E5A00D", "wine": "#8B3A62", "leaf": "#2E7D5B", "unripe": "#D3E4DA", "film": "#3A423E", "film-mark": "#F0AE1F",
+    "gold": "#E5A00D", "wine": "#8B3A62", "leaf": "#2E7D5B", "unripe": "#D3E4DA", "film": "#3A423E", "film-mark": "#F0AE1F", "film-mark-2": "#D07AA8",
     "spots": "#B07A00", "menu-spots": "#F0AE1F", "vine": "#DDE1DD",
     "menu-vine": "#AAACA7",
 }
@@ -120,7 +121,7 @@ _CLASSIC_DARK_OWN = {
     "guide-bg": "#18231F", "guide-line": "#2A3A34", "note-bg": "#2E2414", "note-line": "#4A3A20", "note-ink": "#F2D3A6",
     "code-bg": "#151A18", "c-tv": "#8CC9BE", "c-audio": "#D9A15A", "c-res": "#6B746F", "c-idx": "#A797D8",
     "track": "#2A302D", "chart-a": "#159C8A", "chart-b": "#CF7A2A",
-    "gold": "#F0AE1F", "wine": "#B5558A", "leaf": "#3FA676", "unripe": "#2B4136", "film": "#3A423E", "film-mark": "#F0AE1F",
+    "gold": "#F0AE1F", "wine": "#B5558A", "leaf": "#3FA676", "unripe": "#2B4136", "film": "#3A423E", "film-mark": "#F0AE1F", "film-mark-2": "#D07AA8",
     "spots": "#F0AE1F", "menu-spots": "#F0AE1F", "vine": "#2C332F",
     "menu-vine": "#555957",
 }

@@ -30,6 +30,11 @@ const STATES = {pass: "b-pass", warn: "b-warn", fail: "b-fail", running: "b-runn
                 skipped: "b-info", notrun: "b-info", info: "b-info"};
 const DOTS = {pass: "ok", warn: "warn", fail: "fail", stopped: "warn", running: "run", waiting: "wait"};
 let VIEW = null, WHERE = "hub", LOGS = {}, DETAILS = {}, TIMER = null;
+// Connected to: the code picked to push (the last run's until one is picked here), how the NAS stands beside each code
+// as devtools status last said (by code; null while it's asked), and whether a run from here was under way at the last poll
+let CODE = "", STATUS = {}, WAS_BUSY = false;
+const CODES = {local: "Local", dev: "Dev", master: "Master", release: "Release", beta: "Beta"};
+/*IDENTICON*/
 
 // ---------------------------------------------------------------- talking to the server
 async function api(path, body) {
@@ -147,10 +152,52 @@ function renderNav() {
   document.getElementById("brandsub").textContent = VIEW.header && VIEW.header[0] ? VIEW.header[0] : "the board, in the browser";
 }
 function actions(extra) {
-  const sync = h("label", {class: "chk"}, h("input", {type: "checkbox", id: "restart"}), "restart the app after the copy");
-  return h("div", {class: "acts"},
-    runBtn("Run the checks again", () => api("/api/scan", {}), true),
-    runBtn("Sync to TrueNAS", () => api("/api/sync", {restart: document.getElementById("restart").checked})), sync, ...(extra || []));
+  return h("div", {class: "acts"}, runBtn("Run the checks again", () => api("/api/scan", {}), true), ...(extra || []));
+}
+// ---------------------------------------------------------------- Connected to: where devtools pushes, and how it stands
+function code() { return CODE || (VIEW && CODES[VIEW.mode] ? VIEW.mode : "local"); }
+function askStatus(force) {   // devtools status for the code picked (once, unless asked again: refresh, a push or restart done)
+  const c = code();
+  if (STATUS[c] !== undefined && !force) return;
+  STATUS[c] = null;
+  api("/api/status?mode=" + encodeURIComponent(c)).then(st => { STATUS[c] = st; render(); }).catch(err => { STATUS[c] = {error: err.message, mode: c}; render(); });
+}
+function connected() {
+  const c = code(), st = STATUS[c];
+  askStatus(false);
+  const head = h("div", {class: "head"}, h("h2", {}, "Connected to"), h("button", {class: "link", onclick: () => { askStatus(true); render(); }}, "refresh"));
+  const picker = h("div", {class: "seg small", role: "tablist", "aria-label": "Code to push"}, ...Object.entries(CODES).map(([v, label]) =>
+    h("button", {role: "tab", "aria-selected": String(c === v), onclick: () => { CODE = v; askStatus(false); render(); }}, label)));
+  const acts = h("div", {class: "acts"}, picker,
+    runBtn("Push", () => api("/api/push", {mode: c, release: VIEW && VIEW.release}), true),
+    runBtn("Restart", () => api("/api/restart", {})));
+  if (!st) return h("section", {class: "card conn", "aria-label": "Connected to"}, head, h("p", {class: "hint"}, st === null ? "Asking the NAS…" : ""), acts);
+  if (st.error && !st.host) return h("section", {class: "card conn", "aria-label": "Connected to"}, head, h("div", {class: "banner bn-" + (st.slow ? "warn" : "fail")}, h("span", {class: "light l-" + (st.slow ? "warn" : "fail")}), st.error), acts);
+  const he = st.hello || {}, id = he.identity || {};
+  const pic = h("span", {class: "connpic"});
+  pic.innerHTML = he.fingerprint || id.id ? stIdenticon(id.id || he.fingerprint) : "";   // (the identity the app's own pages show)
+  const who = h("div", {class: "who"}, pic, h("div", {class: "grow"},
+    h("div", {class: "what"}, h("strong", {}, st.app), " on " + st.host + (st.web_port ? ":" + st.web_port : "")),
+    he.error ? h("div", {class: "det muted"}, "No Dionysus answers at " + (he.url || st.host) + ": " + he.error)
+      : h("div", {class: "det"}, h("span", {class: "mono fp", title: id.id || ""}, he.fingerprint || id.short || ""),
+          id.source && id.source !== "own" && id.short ? h("span", {class: "muted"}, " · " + id.source + " " + id.short) : null,
+          h("span", {class: "muted"}, [he.name, he.version ? "Dionysus " + he.version : ""].filter(Boolean).map(x => " · " + x).join(""))),
+    h("div", {class: "det muted small mono"}, st.user + "@" + st.host + ":" + st.dest)));
+  const ch = st.changes || {}, what = st.label + (st.commit ? " (" + st.commit + ")" : "");
+  let tone, said;
+  if (!st.reachable) { tone = "fail"; said = "Can't reach " + st.host + (st.error ? ": " + st.error : ""); }
+  else if (!ch.known) { tone = "warn"; said = st.host + " can't be compared with " + what + " (is " + st.dest + " there yet?)"; }
+  else if (!ch.total) { tone = st.owed ? "warn" : "ok"; said = "In sync with " + what + (st.owed ? ", but " + st.app + " hasn't been restarted since the copy (" + st.owed + "): it still runs the code from before" : ""); }
+  else {
+    tone = "warn";
+    said = ch.total + (ch.total === 1 ? " file" : " files") + " to push from " + what + ": " +
+      [ch.changed ? ch.changed + " changed" : "", ch.new ? ch.new + " new" : "", ch.deleted ? ch.deleted + " to delete" : ""].filter(Boolean).join(", ");
+  }
+  const last = [st.pushed && st.pushed.at ? "Last push " + ago(st.pushed.at) + " (" + [st.pushed.mode, st.pushed.commit].filter(Boolean).join(", ") + ")" : "No push from devtools yet",
+                st.restarted_at && (!st.pushed || st.restarted_at !== st.pushed.at) ? "restarted " + ago(st.restarted_at) : ""].filter(Boolean).join(" · ");
+  return h("section", {class: "card conn", "aria-label": "Connected to"}, head, who,
+    h("div", {class: "banner bn-" + tone}, h("span", {class: "light l-" + tone}), said),
+    h("div", {class: "muted small"}, last), acts);
 }
 function liveLine() {
   if (busy()) return h("div", {class: "banner bn-testing"}, h("span", {class: "light l-testing"}), "Running " + VIEW.job.what + "…");
@@ -165,15 +212,28 @@ function hub() {
   return h("div", {},
     h("div", {class: "top"}, h("div", {}, h("h1", {}, (VIEW.header || [])[0] || "No run yet"), h("div", {class: "sub"}, sub)), actions()),
     liveLine(),
+    connected(),
     h("div", {class: "blocks"}, ...VIEW.blocks.map(card)),
-    VIEW.blocks.length ? null : h("div", {class: "card"}, h("p", {class: "hint"}, "No record yet: run devtools, or press Run the checks again.")));
+    VIEW.blocks.length ? null : h("div", {class: "card"}, h("p", {class: "hint"}, "No record yet: run devtools, or press Run the checks again.")),
+    failedOutput());
+}
+// At the bottom of the hub: what every failed block printed, one after another (each under its title), with a button that
+// copies it all. Each block's output as the board kept it (/api/log): what went above the board as it came is in it too.
+function failedOutput() {
+  const failed = VIEW.blocks.filter(b => (b.shown || b.state) === "fail");
+  if (!failed.length) return null;
+  failed.forEach(b => { if (LOGS[b.id] === undefined) { LOGS[b.id] = null; api("/api/log?id=" + encodeURIComponent(b.id)).then(l => { LOGS[b.id] = l; if (WHERE === "hub") render(); }).catch(err => { LOGS[b.id] = {error: err.message}; if (WHERE === "hub") render(); }); } });
+  const text = failed.map(b => { const l = LOGS[b.id]; return "== " + b.title + " ==\n" + (l === null ? "Loading…" : l && l.error ? "Couldn't be read: " + l.error : l && l.text ? (l.cut ? "… (cut: the first part only)\n" : "") + l.text.replace(/\s+$/, "") : "Nothing printed."); }).join("\n\n");
+  const copy = h("button", {class: "btn", onclick: () => navigator.clipboard.writeText(text).then(() => { copy.textContent = "Copied"; setTimeout(() => { copy.textContent = "Copy"; }, 1500); }, () => { copy.textContent = "Couldn't copy"; })}, "Copy");
+  return h("section", {class: "card failed", "aria-label": "Output of the failed blocks"},
+    h("div", {class: "head"}, h("h2", {}, "Output of the failed blocks"), copy), h("pre", {class: "log out"}, text));
 }
 function card(b) {
   return h("section", {class: "card block st-" + (b.shown || b.state), "aria-label": b.title},
     h("div", {class: "head"}, h("h2", {}, h("a", {href: "#" + b.id, onclick: (e) => { e.preventDefault(); go(b.id); }}, lettered(b.title, b.page || b.key))), badge(b)),
     meter(b),
     h("div", {class: "det"}, b.last || ""),
-    b.before ? h("div", {class: "before muted"}, "last time: " + (b.before.status || "").toLowerCase() + (b.before.last ? " · " + b.before.last : "") + (b.before.ended ? " · " + ago(b.before.ended) : "")) : null,
+    b.before ? h("div", {class: "before muted"}, "last time: " + (b.before.status || b.before.state || "").toLowerCase()) : null,   // (the result alone: no details)
     h("div", {class: "acts"}, h("button", {class: "btn", onclick: () => go(b.id)}, "Open"), runBtn("Run again", () => api("/api/rerun", {id: b.id})),
       h("span", {class: "muted small"}, b.started ? took(b.started, b.ended) : "")));
 }
@@ -189,7 +249,7 @@ function block(id) {
     b.last ? h("span", {class: "says"}, b.last) : null));
   const bar = meter(b);
   if (bar) page.append(h("div", {class: "card"}, bar));
-  if (b.before) page.append(h("div", {class: "card"}, h("h2", {}, "Last time"), h("div", {class: "det"}, (b.before.status || "").toLowerCase() + (b.before.last ? " · " + b.before.last : "") + (b.before.ended ? " · " + when(b.before.ended) : ""))));
+  if (b.before) page.append(h("div", {class: "card"}, h("h2", {}, "Last time"), h("div", {class: "det"}, (b.before.status || b.before.state || "").toLowerCase())));
   const detail = DETAILS[id];
   if (b.detail && detail === undefined) { DETAILS[id] = null; api("/api/detail?id=" + encodeURIComponent(id)).then(d => { DETAILS[id] = d; if (WHERE === id) render(); }).catch(err => { DETAILS[id] = {error: err.message}; if (WHERE === id) render(); }); }
   if (detail && detail.detail) page.append(...(PAGES[id] || KINDS[detail.detail.kind] || generic)(detail.detail, b));
@@ -255,7 +315,7 @@ const KINDS = {
   sync(d) {   // the copy (devtools's sync step): what went where, each file as rsync listed it
     const ok = !/^failed|couldn't/.test(d.result || ""), out = [];
     out.push(h("div", {class: "banner " + (ok ? "bn-ok" : "bn-fail")}, h("span", {class: "light " + (ok ? "l-ok" : "l-fail")}),
-      (d.result || "").replace(/^./, c => c.toUpperCase()) + " · " + d.changed + (d.changed === 1 ? " file" : " files") + (d.dry_run ? " would change" : " changed") + " · devtools " + d.mode + (d.restart ? " -y" : "")));
+      (d.result || "").replace(/^./, c => c.toUpperCase()) + " · " + d.changed + (d.changed === 1 ? " file" : " files") + (d.dry_run ? " would change" : " changed") + " · devtools " + (d.restart ? "push " : "") + d.mode));
     out.push(h("div", {class: "tiles rtiles"}, tile(d.changed, d.dry_run ? "would be copied" : "copied", d.changed ? "r-ok" : ""), tile((d.paths || []).length, (d.paths || []).length === 1 ? "path" : "paths"),
       tile(d.restarted ? "yes" : "no", "restarted " + d.app, d.restarted ? "r-ok" : d.restart && !d.dry_run ? "r-fail" : "")));
     out.push(h("div", {class: "card"}, h("h2", {}, "Where"), h("div", {class: "row"}, h("div", {class: "grow"}, h("div", {class: "what"}, "From"), h("div", {class: "det mono"}, d.source))),
@@ -368,7 +428,7 @@ function runs() {
     h("div", {class: "card tbl-wrap"}, h("table", {class: "tbl"},
       h("thead", {}, h("tr", {}, h("th", {}, "When"), h("th", {}, "What"), h("th", {}, "Commit"), ...ids.map(i => { const b = VIEW.blocks.find(b => b.id === i); return h("th", {class: "c", title: b.title}, (b.page || b.key || i[0]).toUpperCase()); }), h("th", {}, "Took"))),
       h("tbody", {}, ...VIEW.history.map(r => h("tr", {},
-        h("td", {class: "nw"}, r.live ? "now" : ago(r.started)), h("td", {}, "devtools " + r.mode + (r.kind === "checks" ? " --checks-only" : r.kind === "only" ? " --only " + r.only : r.kind === "sync" ? " --sync-only" : "")),
+        h("td", {class: "nw"}, r.live ? "now" : ago(r.started)), h("td", {}, r.kind === "restart" ? "devtools restart" : "devtools " + (r.kind === "sync" || /· Push\b/.test((r.header || [])[0] || "") ? "push " : "") + r.mode + (r.kind === "checks" ? " --checks-only" : r.kind === "only" ? " --only " + r.only : r.kind === "sync" ? " --sync-only" : "")),
         h("td", {class: "mono"}, r.commit), ...ids.map(i => h("td", {class: "c"}, r.blocks[i] ? h("span", {class: "dot " + (DOTS[r.blocks[i]] || "wait"), title: r.blocks[i]}) : "")),
         h("td", {class: "nw"}, r.started ? took(r.started, r.ended) : ""))))))
   );
@@ -384,6 +444,8 @@ addEventListener("keydown", (e) => {
 async function poll() {
   try {
     VIEW = await api("/api/run");
+    if (WAS_BUSY && !busy()) STATUS = {};   // (a push or restart from here just ended: the NAS asked again)
+    WAS_BUSY = !!busy();
     if (VIEW.wanted) go(VIEW.wanted === "hub" ? "hub" : VIEW.wanted);
     else render();
   } catch (e) { /* (the server's gone: the page stays as it was) */ }

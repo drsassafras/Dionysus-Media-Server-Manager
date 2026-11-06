@@ -34,6 +34,18 @@
 .log.out{white-space:pre-wrap;max-height:60vh;overflow:auto;margin:0;padding:14px 16px;border-radius:8px}
 .small{font-size:13px}
 .top .acts{margin-top:0}
+/* Connected to: the app devtools pushes to, its Dionysus's identicon and fingerprint, how the NAS stands, Push and Restart */
+.conn{display:flex;flex-direction:column;gap:12px;margin-top:20px}
+.conn .head{justify-content:space-between}
+.conn .who{display:flex;gap:14px;align-items:center;min-width:0}
+.conn .who .grow{min-width:0}
+.conn .who .det{overflow-wrap:anywhere}
+.conn .connpic{display:flex;color:var(--ink)}
+.conn .connpic:empty{display:none}
+.conn .fp{font-weight:600;letter-spacing:.04em}
+.conn .banner{margin:0}
+.conn .acts{align-items:center;margin-top:0}
+.conn .acts .seg{margin:0}
 .tbl td.c,.tbl th.c{text-align:center}
 .tbl .dot{display:inline-block}
 @media (max-width:720px){.main{padding:20px 16px 40px}.blocks{grid-template-columns:1fr}}

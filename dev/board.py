@@ -33,7 +33,12 @@ output is kept beside the results (their folder's logs/), and how the board stan
                             # Section's: its last step, once the rest is done, on a terminal)
      "then": {"cmd": "…", "after": ["…"],   # (optional) a second command, once those are done, however they went (after
               "cwd": "…", "doing": "…",     # []: at once), the first's result standing when it passes; its own folder, what
-              "fail_note": "…"}}            # the header says while it runs, and when it fails, the first's result with that
+              "fail_note": "…"},            # the header says while it runs, and when it fails, the first's result with that
+     "go": {"key": "p", "does": "Push and restart", "cmd": "…", "cwd": "…", "env": {…}, "doing": "pushing",
+            "after": ["…"]}}   # (optional) a section that only told (its "info"), done: while the board runs, that key
+                            # runs it again as this command (devtools's push, from a check's Sync block), a section like
+                            # any other from then on — blue while it runs (once "after" have passed), then its result;
+                            # once, and only with the board on a terminal. The board waits for it to end
 
 Each section is a block — blue while it runs (or waits), then green, orange, red or grey (COLOUR) — with the bars its command sends
 (dev/progress.py's, PLEXCACHE_PROGRESS=feed: drawn here with the same code) and the last line it printed. Its full
@@ -133,6 +138,8 @@ class Section:
         self.then: dict = dict(spec.get("then") or {})
         self.key = dict(spec.get("key") or {})   # (its key, while the board runs: {"key", "cmd", "cwd", "does", "opens"})
         self.page = str(spec.get("page") or "")[:1]   # (its letter: the UI at its page, while the board runs)
+        self.go = dict(spec.get("go") or {})   # (its key, once it has told: it runs again as the go command)
+        self.gone = False   # (its go key has been pressed: it's that command now)
         self.helper: subprocess.Popen | None = None   # (what its key started)
         self.live = False   # (the board is running and reads keys: its key works)
         self.why = ""       # (its key's command's errors, a file)
@@ -152,6 +159,7 @@ class Section:
         self.phase = 0                # 1: its "then" command
         self.reported = False         # (what it had to say beyond its block: said)
         self.telling: list[str] = []  # (failures said as they came, not yet put above the board)
+        self.told_above: list[str] = []   # (those already put above it: in its output too, not said again at its end)
         self.live_tell = False        # (the board on a terminal: those go above it at once)
         self.first = ""               # (the dependencies: the first line of the command that counts)
         self.looked = ""              # (the first line of its first step's)
@@ -199,6 +207,23 @@ class Section:
         """Whether its key does something now: while the board runs, however the section stands — still waiting or
         running (the board loading), or done — so its page opens at any time, not only once it has warned."""
         return bool(self.key) and self.live
+
+    @property
+    def goes(self) -> bool:
+        """Whether its go key works now: the board running on a terminal, the section done telling, not pressed yet."""
+        return bool(self.go) and self.live and not self.gone and self.state == "info"
+
+    def go_now(self):
+        """Its go key: it runs again, as the go command (its own block, blue, then green or red), once "after" have passed."""
+        self.gone, self.info, self.cmd = True, None, str(self.go["cmd"])
+        self.cwd = self.go.get("cwd") or self.cwd
+        self.env.update({str(k): str(v) for k, v in (self.go.get("env") or {}).items()})
+        self.after = [str(x) for x in self.go.get("after") or []]
+        self.doing = self.go.get("doing") or self.doing
+        self.state, self.note, self.rc, self.said, self.last, self.bars = "waiting", "", None, None, "", {}
+        self.started = self.ended = None
+        self.reported = False
+        self.out.write(f"\n==> {self.go.get('does') or 'go'}: {self.cmd}\n")
 
     def press(self, tty: int):
         """Its key: its command, on the terminal (the board's stdin and stdout: the review page won't open without
@@ -261,8 +286,9 @@ class Section:
         if rec is not None and isinstance(rec.get("tell"), str):   # (a failure as it comes: above the board now, on a terminal)
             if self.live_tell:
                 self.telling.append(rec["tell"])
-            else:   # (no terminal: with the rest of what it printed, once it's done)
-                self.out.write(rec["tell"] + "\n")
+                self.told_above.append(rec["tell"])
+            # (and in its output as it came, the log the devtools UI shows: the same text, what's above the board is what's there)
+            self.out.write(rec["tell"] + "\n")
             return
         if rec is not None and isinstance(rec.get("then"), int):   # (what its second step has to do: 0, nothing)
             self.then_work = rec["then"]
@@ -600,7 +626,9 @@ class Board:
                 self.open_ui("")
                 continue
             for s in self.sections:
-                if s.keyed and s.key.get("key") == ch:
+                if s.goes and s.go.get("key") == ch:
+                    s.go_now()
+                elif s.keyed and s.key.get("key") == ch:
                     s.press(sys.stdin.fileno())
                     self.pressed = True
                 elif self.ui and s.page and s.page == ch and s.live:
@@ -711,7 +739,7 @@ class Board:
         for b in (b for s in self.sections for b in s.bars.values()):   # (no space kept for what no bar has counted)
             self.widths = wider(self.widths, fields(b.done, b.total, b.bad, b.warned))
         header = list(self.header) or [""]
-        keys = list(self.offered) + ([s.key for s in self.sections if s.keyed] if not self.pressed else [])
+        keys = [s.go for s in self.sections if s.goes] + list(self.offered) + ([s.key for s in self.sections if s.keyed] if not self.pressed else [])
         if self.ui and self.stdin_tty and not self.pressed:
             keys.append({"key": "u", "does": "Open the devtools UI"})
         last = [s for s in self.sections if s.final_phase in (1, 2) and not s.done]
@@ -814,12 +842,17 @@ class Board:
             return ""
         s.out.flush()
         with open(s.log, encoding="utf-8", errors="replace") as fh:
-            text = fh.read().rstrip()
+            text = fh.read()
+        for t in s.told_above:   # (above the board already, as it came: not said twice)
+            text = text.replace(t + "\n", "", 1)
+        text = re.sub(r"\n{3,}", "\n\n", text).strip("\n").rstrip()
         if s.upkeep:   # (its first line is the word devtools reads; the rest, the box)
             text = "\n".join(line for line in text.split("\n")[1:] if record(line) is None).strip("\n")
         lines = text.split("\n")
         if lines and plain(lines[-1]) == s.last and s.said is None:   # (its last line is in its block already: not said twice)
             text = "\n".join(lines[:-1]).rstrip()
+        if not text and s.state == "fail" and not s.told_above:   # (a failure is never silent: one that printed nothing says so)
+            return f"\n{s.title} failed and printed nothing but its result: {s.last or 'none'} (exit {s.rc}; its command: {s.cmd})\n"
         if not text:
             return ""
         return f"\n{text}\n"   # (just what it printed: whose it is, its block says)

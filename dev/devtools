@@ -1,20 +1,27 @@
 #!/usr/bin/env bash
 #
-# devtools — copy a project's code to a TrueNAS app and (optionally) restart it.
+# devtools — check a project's code, and push it to a TrueNAS app (copied, and the app restarted).
 #
-#   devtools local     the files in your folder right now, uncommitted changes included
-#   devtools master    the latest code on GitHub's default branch (main or master)
-#   devtools dev       the latest code on GitHub's dev branch
-#   devtools release   the newest release tag, e.g. v1.2.0
-#   devtools beta      the newest tag including pre-releases, e.g. v1.3.0-beta.1
-#   devtools init      set up devtools for the project you're in
-#   devtools ui        the devtools UI in your browser: the last run's board, each block's page, Sync and Run again
+#   devtools [<code>]         check that code: the tests and checks, and how the NAS stands beside it (in sync, or how
+#                             many files are out). Nothing is copied: p on the board pushes it while the checks run
+#   devtools push <code>      push that code: copy it to the NAS and restart the app (always: a push that leaves the app
+#                             running the code from before is no push), the checks running alongside
+#   devtools restart          restart the app, copying nothing
+#   devtools status [<code>]  how the NAS stands beside that code, as JSON (the devtools UI's Connected to): nothing run
+#   devtools init             set up devtools for the project you're in
+#   devtools ui               the devtools UI in your browser: the last run's board, each block's page, Push, Restart
+#                             and Run again
+#
+# <code> is one of (local when it's left out):
+#   local      the files in your folder right now, uncommitted changes included
+#   master     the latest code on GitHub's default branch (main or master)
+#   dev        the latest code on GitHub's dev branch
+#   release    the newest release tag, e.g. v1.2.0
+#   beta       the newest tag including pre-releases, e.g. v1.3.0-beta.1
 #
 # Options:
-#   -n, --dry-run    show what would be copied and run the tests; change nothing
-#   -y, --yes        restart the app once the files are copied (without it, it isn't)
-#   -N, --no-restart don't restart (the default)
-#   --tests-first    copy nothing until the checks have passed
+#   -n, --dry-run    show what a push would copy and run the tests; change nothing
+#   --tests-first    push nothing until the checks have passed (with push, or p on the board)
 #   --skip-tests     don't run the project's tests and checks at all (nor install the packages they use)
 #   --skip-future    run the current tests only, not the future ones (TN_FUTURE)
 #   --release        the release checks too (TN_RELEASE), and the tests as for a release: for dev before it's released
@@ -23,12 +30,12 @@
 #   --checks-only    the checks alone: nothing copied, no NAS asked (the UI's Run again)
 #   --only <id>      one block alone (current, future, validate, types, build, coverage, audit, i18n, release, upkeep,
 #                    style), nothing copied (the UI's Run again on a block)
-#   --sync-only      the copy alone: no checks, no dependencies (the UI's Sync button)
+#   --sync-only      with push: the push alone, no checks, no dependencies (the UI's Push button)
 #   -h, --help       this help
 #
 # Everything runs at once, on a board of sections redrawn as they go (dev/board.py):
-# the copy to TrueNAS and the restart, and each of these that .devtools sets, in the
-# code being copied — TN_TEST (the current tests), TN_FUTURE (the suite on the
+# the Sync block (a push: the copy to TrueNAS and the restart; a check: how the NAS stands, and p to push), and each of
+# these that .devtools sets, in the code being checked — TN_TEST (the current tests), TN_FUTURE (the suite on the
 # next Python, say: stopped if the current tests fail), TN_VALIDATE (the HTML,
 # scripts and CSS checked), TN_TYPES (the Python validation: the type check),
 # TN_BUILD (the build validation: the shell script, the workflows, the Dockerfile),
@@ -64,13 +71,13 @@
 # act on) or anything else (not checked); when it isn't
 # current, the rest of what it said goes above the board.
 #
-# If the NAS already has exactly these files, nothing is copied or restarted.
+# If the NAS already has exactly these files, nothing is copied (a push still restarts the app).
 # When the last tests devtools ran there passed, it just says so (green banner);
 # otherwise it runs the tests again (yellow banner first).
 #
 # Settings come from two files (KEY=value lines):
 #   ~/.config/devtools/config   shared:      TN_HOST, TN_USER, TN_PORT
-#   <project>/.devtools         per project: TN_APP, TN_DEST, TN_PATHS, TN_EXCLUDE, TN_TEST, TN_VALIDATE, TN_TYPES,
+#   <project>/.devtools         per project: TN_APP, TN_WEB_PORT (the app's web port, 8642 if not set), TN_DEST, TN_PATHS, TN_EXCLUDE, TN_TEST, TN_VALIDATE, TN_TYPES,
 #                              TN_BUILD, TN_COVERAGE, TN_AUDIT, TN_FUTURE, TN_STYLE, TN_RELEASE, TN_UPKEEP (and may override any shared setting)
 #
 # Written for the bash 3.2 that ships with macOS.
@@ -130,8 +137,9 @@ fail() { red_banner "$@"; exit 1; }   # a red block, then stop
 # ----------------------------------------------------------------- args
 ORIG_ARGS=("$@")   # (the copy's own section runs devtools again with them: DEVTOOLS_STEP=sync)
 MODE=""
+ACTION="check"   # check | push | restart | status — what's done with the code (the mode: which code)
 DRY_RUN=0
-RESTART="no"   # yes (-y) | no
+RESTART="no"   # yes: a push (it always restarts the app) | no
 SKIP_TESTS=0
 SKIP_FUTURE=0
 TESTS_FIRST=0
@@ -142,18 +150,19 @@ SYNC_ONLY=0
 ONLY=""
 UI_ARGS=()      # (devtools ui: what follows goes to dev/devui.py)
 if [ "${1:-}" = "ui" ]; then MODE="ui"; shift; UI_ARGS=("$@"); set --; fi
+case "${1:-}" in push|restart|status) ACTION="$1"; shift ;; check) shift ;; esac
 while [ $# -gt 0 ]; do
     case "$1" in
         -n|--dry-run)    DRY_RUN=1 ;;
-        -y|--yes)        RESTART="yes" ;;
-        -N|--no-restart) RESTART="no" ;;
+        -y|--yes|-N|--no-restart)
+            die "$1 is gone: a push always restarts the app (devtools push <code>), and devtools <code> only checks it (p on the board pushes)" ;;
         --skip-tests)    SKIP_TESTS=1 ;;
         --skip-future)   SKIP_FUTURE=1 ;;
         --tests-first)   TESTS_FIRST=1 ;;
         --release)       RELEASE=1 ;;
         --no-sample)     NO_SAMPLE=1 ;;
         --checks-only)   CHECKS_ONLY=1 ;;
-        --sync-only)     SYNC_ONLY=1; SKIP_TESTS=1 ;;
+        --sync-only)     SYNC_ONLY=1; SKIP_TESTS=1; [ "$ACTION" = "push" ] || die "--sync-only goes with push: devtools push <code> --sync-only" ;;
         --only)          [ -n "${2:-}" ] || die "--only takes a block's id (see devtools --help)"; ONLY="$2"; CHECKS_ONLY=1; shift ;;
         -h|--help)       usage 0 ;;
         --version)       say "devtools $DEVTOOLS_VERSION"; exit 0 ;;
@@ -165,17 +174,22 @@ while [ $# -gt 0 ]; do
     shift
 done
 case "$MODE" in
-    local|master|main|dev|release|beta|init|ui) ;;
-    "") usage 1 ;;
-    *)  die "unknown command: $MODE (use local, master, dev, release, beta, init or ui)" ;;
+    local|master|main|dev|release|beta) [ "$ACTION" != "restart" ] || die "devtools restart restarts the app as it is: it takes no code" ;;
+    init|ui) [ "$ACTION" = "check" ] || die "devtools $ACTION $MODE: $MODE isn't code (use local, master, dev, release or beta)" ;;
+    "") [ "$ACTION" = "restart" ] || MODE="local" ;;   # (the code left out: your folder as it is)
+    *)  die "unknown command: $MODE (use local, master, dev, release, beta, push, restart, status, init or ui)" ;;
 esac
+[ "$ACTION" != "push" ] || RESTART="yes"
+# devtools status: its JSON the only thing on stdout (what it says as it goes, git's fetch say, to stderr)
+if [ "$ACTION" = "status" ] && [ -z "${DEVTOOLS_STEP:-}" ]; then exec 3>&1 1>&2; fi
+if [ "$ACTION" = "restart" ] || [ "$ACTION" = "status" ]; then SKIP_TESTS=1; SYNC_ONLY=1; fi   # (no checks, no dependencies)
 case "$ONLY" in ""|current|future|validate|types|build|coverage|audit|i18n|release|upkeep|style) ;;
     *) die "--only $ONLY: not a block (current, future, validate, types, build, coverage, audit, i18n, release, upkeep, style)" ;; esac
 [ "$CHECKS_ONLY$SYNC_ONLY" != 11 ] || die "--sync-only and --checks-only (or --only) can't go together"
 
 # ----------------------------------------------------------------- config
 TN_HOST=""; TN_USER="truenas_admin"; TN_PORT="22"
-TN_APP=""; TN_DEST=""; TN_PATHS="."; TN_EXCLUDE=".git .DS_Store __pycache__ *.pyc"; TN_TEST=""; TN_VALIDATE=""; TN_TYPES=""; TN_BUILD=""; TN_COVERAGE=""; TN_I18N=""; TN_AUDIT=""; TN_FUTURE=""; TN_STYLE=""; TN_RELEASE=""; TN_UPKEEP=""
+TN_APP=""; TN_WEB_PORT="8642"; TN_DEST=""; TN_PATHS="."; TN_EXCLUDE=".git .DS_Store __pycache__ *.pyc"; TN_TEST=""; TN_VALIDATE=""; TN_TYPES=""; TN_BUILD=""; TN_COVERAGE=""; TN_I18N=""; TN_AUDIT=""; TN_FUTURE=""; TN_STYLE=""; TN_RELEASE=""; TN_UPKEEP=""
 
 # Read KEY=value lines. The file is parsed, never executed.
 load_conf() {
@@ -196,7 +210,7 @@ load_conf() {
             \'*\') val="${val#\'}"; val="${val%\'}" ;;
         esac
         case "$key" in
-            TN_HOST|TN_USER|TN_PORT|TN_APP|TN_DEST|TN_PATHS|TN_EXCLUDE|TN_TEST|TN_VALIDATE|TN_TYPES|TN_BUILD|TN_COVERAGE|TN_I18N|TN_AUDIT|TN_FUTURE|TN_STYLE|TN_RELEASE|TN_UPKEEP) printf -v "$key" '%s' "$val" ;;
+            TN_HOST|TN_USER|TN_PORT|TN_APP|TN_WEB_PORT|TN_DEST|TN_PATHS|TN_EXCLUDE|TN_TEST|TN_VALIDATE|TN_TYPES|TN_BUILD|TN_COVERAGE|TN_I18N|TN_AUDIT|TN_FUTURE|TN_STYLE|TN_RELEASE|TN_UPKEEP) printf -v "$key" '%s' "$val" ;;
             *) warn "$file line $n: unknown setting $key" ;;
         esac
     done < "$file"
@@ -257,6 +271,8 @@ do_init() {
     cat > "$root/.devtools" <<EOF
 # devtools settings for this project. See: devtools --help
 TN_APP=$app
+# The app's web port on the NAS (the devtools UI asks the Dionysus there who it is).
+TN_WEB_PORT=8642
 TN_DEST=$dest
 # Folders/files in this project to copy, separated by spaces ("." = everything).
 TN_PATHS=$paths
@@ -343,6 +359,7 @@ set -f
 for p in $TN_PATHS; do check_path "${p%/}"; done
 set +f
 [[ "$TN_PORT" =~ ^[0-9]+$ ]] || die "TN_PORT must be a number"
+[[ "$TN_WEB_PORT" =~ ^[0-9]+$ ]] || die "TN_WEB_PORT must be a number (the app's web port)"
 
 # ----------------------------------------------------------------- packages
 # The packages the tests use, the dev tools' (dev/package-lock.json): npm ci when there are none yet or the lock has
@@ -407,7 +424,7 @@ cleanup() {
     [ -z "${DEVTOOLS_STEP:-}" ] || return 0   # (the copy's section: the connection is the run's that started it)
     if [ "$rc" -lt 128 ]; then upkeep_banner || true; fi
     if [ -n "$TMP" ]; then rm -rf "$TMP"; fi
-    [ "$CHECKS_ONLY" = 1 ] || ssh -o ControlPath="$SSH_CTL" -O exit -p "$TN_PORT" -- "$TN_USER@$TN_HOST" >/dev/null 2>&1 || true
+    [ "$CHECKS_ONLY" = 1 ] || [ "$ACTION" = "status" ] || ssh -o ControlPath="$SSH_CTL" -O exit -p "$TN_PORT" -- "$TN_USER@$TN_HOST" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -442,6 +459,10 @@ if [ -n "${DEVTOOLS_STEP:-}" ]; then
     SRC="$DEVTOOLS_SRC"   # (the copy's section: the code the run that started it chose)
 else
 case "$MODE" in
+    "")   # (devtools restart: no code, the app as it is)
+        SRC="$ROOT"
+        SRC_LABEL="Restart"
+        ;;
     local)
         SRC="$ROOT"
         SRC_LABEL="Local Copy"
@@ -492,13 +513,18 @@ fi
 
 # ----------------------------------------------------------------- copy
 REMOTE="$TN_USER@$TN_HOST"
-SSH_ARGS=(-o ControlMaster=auto -o "ControlPath=$SSH_CTL" -o ControlPersist=120 -p "$TN_PORT")
+# (ConnectTimeout: a NAS that doesn't answer is said so in seconds, not after the system's own minutes-long wait. devtools
+# status — the UI asks it while a run is under way — keeps to the run's connection when there is one and never starts one
+# of its own: a connection left open would hold its JSON's pipe, and closing the shared one would cut the run's.)
+SSH_MASTER=auto
+[ "$ACTION" != "status" ] || SSH_MASTER=no
+SSH_ARGS=(-o "ControlMaster=$SSH_MASTER" -o "ControlPath=$SSH_CTL" -o ControlPersist=120 -o ConnectTimeout=10 -p "$TN_PORT")
 SSH_OPTS="${SSH_ARGS[*]}"   # (the same, as one string: rsync's -e)
 # shellcheck disable=SC2029 # (the commands are put together here on purpose: each is run as written on the NAS)
 ssh_run() { ssh "${SSH_ARGS[@]}" -- "$REMOTE" "$@"; }
 
-if [ -z "${DEVTOOLS_STEP:-}" ]; then
-    UPKEEP_READY=1   # (from here on a run ends with the dependencies' box)
+if [ -z "${DEVTOOLS_STEP:-}" ] && [ "$ACTION" != "status" ]; then
+    UPKEEP_READY=1   # (from here on a run ends with the dependencies' box: not devtools status, which only tells how the NAS stands)
     say ""   # (what this run is, and how to stop it: the board's header)
 fi
 
@@ -508,6 +534,26 @@ fi
 STATE_FILE="$STATE_DIR/$(printf '%s' "$TN_HOST:$TN_DEST" | tr -c 'A-Za-z0-9._-' '_')"
 state_get() { [ -f "$STATE_FILE" ] && sed -n "s/^$1=//p" "$STATE_FILE" | head -n 1; true; }
 state_clear() { rm -f "$STATE_FILE"; }
+# A copy the app hasn't been restarted on since (its restart failed): the app still runs the code it started with — its
+# Python as it was, beside the new pages and scripts, which it reads from disk — so the NAS has these files but doesn't
+# show them. Kept beside the test result, but not cleared with it: it goes only when devtools restarts the app, so a run
+# that finds the NAS already in sync still says so (and p, or a push, restarts it). Holds when that copy was ("2026-11-05 11:53").
+OWED_FILE="$STATE_FILE.restart"
+owed_restart() { [ -f "$OWED_FILE" ] && head -n 1 "$OWED_FILE"; true; }
+owe_restart() { mkdir -p "$STATE_DIR" 2>/dev/null && date '+%Y-%m-%d %H:%M' > "$OWED_FILE" 2>/dev/null || true; }
+paid_restart() { rm -f "$OWED_FILE"; }
+# What devtools last did to the NAS, for the UI's Connected to (devtools status): the last push (when, which code) and the
+# last restart. KEY=value lines, read, never run.
+NAS_FILE="$STATE_FILE.nas"
+nas_get() { [ -f "$NAS_FILE" ] && sed -n "s/^$1=//p" "$NAS_FILE" | head -n 1; true; }
+nas_note() {   # nas_note pushed|restarted — now, with the code pushed (a push is a restart too)
+    local at; at="$(date +%s)"
+    local pushed_at pushed_mode pushed_commit
+    pushed_at="$(nas_get pushed_at)"; pushed_mode="$(nas_get pushed_mode)"; pushed_commit="$(nas_get pushed_commit)"
+    if [ "$1" = "pushed" ]; then pushed_at="$at"; pushed_mode="$MODE"; pushed_commit="${DEVTOOLS_LABEL:-$SRC_COMMIT}"; fi
+    mkdir -p "$STATE_DIR" 2>/dev/null || return 0
+    printf 'pushed_at=%s\npushed_mode=%s\npushed_commit=%s\nrestarted_at=%s\n' "$pushed_at" "$pushed_mode" "$pushed_commit" "$at" > "$NAS_FILE" 2>/dev/null || true
+}
 record_tests() {   # record_tests pass|fail|aborted — only if the tests actually ran (aborted: stopped with Enter; tested again next time)
     if [ "$TESTS_RAN" != 1 ]; then state_clear; return 0; fi
     mkdir -p "$STATE_DIR" 2>/dev/null || return 0
@@ -662,7 +708,8 @@ sync_step() {
         rc=0
         rsync "${RSYNC_ARGS[@]}" "$from" "$REMOTE:$to" 2>&1 | {
             while IFS= read -r line; do
-                case "$line" in "sending "*|"building "*|"sent "*|"total size"*|"created directory"*|"") continue ;; esac
+                # (rsync's notes, not files: openrsync, macOS's rsync, says "Transfer starting: <n> files" first)
+                case "$line" in "sending "*|"building "*|"sent "*|"total size"*|"created directory"*|"Transfer starting: "*|"") continue ;; esac
                 say "    $line"
                 case "$line" in */) continue ;; esac
                 n=$((n + 1)); changed=$((changed + 1))
@@ -685,27 +732,54 @@ sync_step() {
         feed "$n" "$n" "files · rsync to $TN_APP (dry run)"; say "Dry run · $(files_n "$changed") would be copied"
         sync_detail "dry run" "$list" "$changed" false; rm -f "$list"; return 0
     fi
-    if [ "$changed" = 0 ]; then
+    if [ "$changed" = 0 ] && [ "$RESTART" != "yes" ]; then
         feed "$n" "$n" "files · rsync to $TN_APP"; say "No files changed · $TN_APP not restarted"
         sync_detail "no files changed" "$list" "$changed" false; rm -f "$list"; return 0
     fi
     if [ "$RESTART" != "yes" ]; then
+        owe_restart
         feed "$n" "$n" "files · rsync to $TN_APP"; say "Copied $(files_n "$changed") · $TN_APP not restarted · to restart it too: devtools $MODE -y"
         sync_detail "copied" "$list" "$changed" false; rm -f "$list"; return 0
     fi
     feed "$n" "$((n + 1))" "restarting $TN_APP (TrueNAS redeploys it)" ticking
     say "Restarting $TN_APP…"
     if ssh_run "$REMOTE_RESTART" 2>&1; then
+        paid_restart; nas_note pushed
         feed "$((n + 1))" "$((n + 1))" "steps · rsync to $TN_APP, restart"
         say "Copied $(files_n "$changed") · restarted $TN_APP"
         sync_detail "copied and restarted" "$list" "$changed" true; rm -f "$list"; return 0
     fi
+    owe_restart
     say "Copied $(files_n "$changed") · $TN_APP couldn't be restarted: check the app name, and that $TN_USER may run midclt (see the devtools README)"
     sync_detail "copied, but $TN_APP couldn't be restarted" "$list" "$changed" false; rm -f "$list"
     return 4
 }
+# restart_step — the Sync block of devtools restart, of a push when the NAS already has these files (a push always
+# restarts), and of p on a check's board then (devtools again, DEVTOOLS_STEP=restart): the restart alone. Exit 0 when
+# done, 4 when the app couldn't be restarted.
+restart_step() {
+    local since lead="${DEVTOOLS_LEAD:-Nothing copied · $TN_HOST already has these files}"
+    since="$(owed_restart)"
+    [ "$ACTION" != "restart" ] || lead="Nothing copied"   # (devtools restart: the code wasn't looked at)
+    feed 0 1 "restarting $TN_APP (TrueNAS redeploys it)" ticking
+    [ -z "$since" ] || say "$TN_APP hasn't been restarted since the copy ($since)"
+    say "Restarting $TN_APP…"
+    if ssh_run "$REMOTE_RESTART" 2>&1; then
+        paid_restart
+        if [ "$ACTION" = "restart" ]; then nas_note restarted; else nas_note pushed; fi
+        feed 1 1 "steps · restart"
+        say "$lead · restarted $TN_APP"
+        return 0
+    fi
+    say "$lead · $TN_APP couldn't be restarted: check the app name, and that $TN_USER may run midclt (see the devtools README)"
+    return 4
+}
 if [ "${DEVTOOLS_STEP:-}" = "sync" ]; then
     rc=0; sync_step || rc=$?
+    exit "$rc"
+fi
+if [ "${DEVTOOLS_STEP:-}" = "restart" ]; then
+    rc=0; restart_step || rc=$?
     exit "$rc"
 fi
 
@@ -733,10 +807,17 @@ pending_changes() {
         if [ "$itemize" = 1 ]; then
             out="$(rsync "${RSYNC_BASE[@]}" -n -c -i "$from" "$REMOTE:$to" 2>/dev/null)" || { say "?"; return 0; }
             # < > c h are copies and creations; lines starting "." only touch dates or permissions.
-            printf '%s\n' "$out" | grep -E '^([<>ch]|\*deleting)' || true
+            out="$(printf '%s\n' "$out" | grep -E '^([<>ch]|\*deleting)' | grep -v '^created directory ' || true)"   # (rsync's note of a folder it makes)
+            # A folder the NAS doesn't have yet: rsync says each of its files is new (<f+++++++++), but openrsync (macOS's
+            # rsync) gives them no + when the folder copied into is missing (only its own "./" is new). Every file there is
+            # new, so each is said as rsync says it (its flags all +), asking the NAS only when a file isn't said new already.
+            if printf '%s\n' "$out" | grep -qE '^[<>ch][^d][^+]' && ! ssh_run "[ -d $(printf '%q' "$parent") ]" < /dev/null 2>/dev/null; then
+                out="$(printf '%s\n' "$out" | awk '/^[<>ch]/ { f = $1; s = substr(f, 1, 2); for (i = 3; i <= length(f); i++) s = s "+"; $0 = s substr($0, length(f) + 1) } { print }')"
+            fi
+            [ -z "$out" ] || printf '%s\n' "$out"
         else
             out="$(rsync "${RSYNC_BASE[@]}" -n -c -v "$from" "$REMOTE:$to" 2>/dev/null)" || { say "?"; return 0; }
-            printf '%s\n' "$out" | grep -v -E '^(sending|building|sent |total size|created directory|$)|/$' || true
+            printf '%s\n' "$out" | grep -v -E '^(sending|building|sent |total size|created directory|Transfer starting: |$)|/$' || true
         fi
     done
 }
@@ -787,6 +868,70 @@ told_sync() {
     shift 2
     cmd="$(printf 'printf "%%s\\n" %s; exit %s' "$(printf '%q ' "$@")" "$rc")"
     TOLD_SYNC="{\"id\": \"sync\", \"title\": $(json_str "Sync to $TN_HOST"), \"cmd\": $(json_str "$cmd"), \"cwd\": $(json_str "$ROOT"), \"info\": $(json_str "$head"), \"page\": \"s\"}"
+}
+# p on a check's board: the Sync block's "go" (dev/board.py), pushing this code — devtools push again, the copy and the
+# restart as its own Sync block would run them (DEVTOOLS_STEP sync, or restart when there's nothing to copy). With
+# --tests-first it waits for the checks (__AFTER__: run_board puts them in). go_key <step> <what it does> <doing>
+PUSH_ARGS=()   # (this run's options, for the push: devtools push <code> …)
+for a in "${ORIG_ARGS[@]}"; do case "$a" in check|local|master|main|dev|release|beta) ;; *) PUSH_ARGS+=("$a") ;; esac; done
+go_key() {
+    local cmd
+    cmd="$(printf '%q ' "$SELF" push "$MODE" "${PUSH_ARGS[@]}")"
+    printf ', "go": {"key": "p", "does": %s, "doing": %s, "cmd": %s, "cwd": %s, "after": "__AFTER__", "env": {"DEVTOOLS_STEP": "%s", "DEVTOOLS_SRC": %s, "DEVTOOLS_LABEL": %s, "DEVTOOLS_TOTAL": "%s"}}' \
+        "$(json_str "$2")" "$(json_str "$3")" "$(json_str "$cmd")" "$(json_str "$ROOT")" "$1" "$(json_str "$SRC")" "$(json_str "$SRC_COMMIT")" "${4:-0}"
+}
+# What a check's Sync block ends its line with: p, on a terminal (the board reads keys); the command, without one.
+push_hint() {   # push_hint <what p does>
+    if [ -t 0 ] && [ "$DRY_RUN" != 1 ]; then printf 'press p to %s' "$1"; else printf 'to push it: devtools push %s' "$MODE"; fi
+}
+# The Sync block of a push: the restart alone (a push always restarts, files to copy or not), its line what's known
+# before it ("Nothing copied · nas already has these files", restart_step's lead). restart_block [<lead>]
+restart_block() {
+    local cmd; cmd="$(printf '%q ' "$SELF" "${ORIG_ARGS[@]}")"
+    TOLD_SYNC="{\"id\": \"sync\", \"title\": $(json_str "Sync to $TN_HOST"), \"cmd\": $(json_str "$cmd"), \"cwd\": $(json_str "$ROOT"), \"doing\": \"restarting\", \"page\": \"s\", \"env\": {\"DEVTOOLS_STEP\": \"restart\", \"DEVTOOLS_SRC\": $(json_str "$SRC"), \"DEVTOOLS_LABEL\": $(json_str "$SRC_COMMIT"), \"DEVTOOLS_LEAD\": $(json_str "${1:-}")}}"
+}
+# The Sync block when the NAS already has these files: told_insync <header> <line>. A push restarts the app all the same;
+# a check says so, and whether the app hasn't been restarted since they were copied (owed_restart: a push whose restart
+# failed), p restarting it.
+told_insync() {
+    local head="$1" line="$2" since
+    if [ "$ACTION" = "push" ] && [ "$DRY_RUN" != 1 ]; then restart_block "${line% · "$TN_APP" not restarted}"; return 0; fi
+    since="$(owed_restart)"
+    if [ -n "$since" ]; then
+        head="$head · not restarted"
+        line="$line · $TN_APP not restarted since the copy ($since), so it still runs the code from before it"
+    fi
+    [ "$ACTION" = "push" ] || line="$line · $(push_hint "restart $TN_APP")"
+    told_sync "$head" 0 "$line"
+    [ "$ACTION" = "push" ] || [ "$DRY_RUN" = 1 ] || TOLD_SYNC="${TOLD_SYNC%\}}$(go_key restart "Restart $TN_APP" "restarting")}"
+}
+# How far the NAS is from this code: "12 files to push · 9 changed · 2 new · 1 to delete" (pending_changes' list; its
+# folders left out), in CHANGES_SAID, with the counts in CHANGES_N, _CHANGED, _NEW, _GONE. changes_said <the list>
+changes_said() {
+    local total=0 new=0 gone=0 line
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        case "$line" in */|"created directory "*) continue ;; esac   # (folders, and rsync's note of one it makes)
+        total=$((total + 1))
+        case "$line" in "*deleting"*) gone=$((gone + 1)) ;; [\<\>ch]f+++*) new=$((new + 1)) ;; esac
+    done <<< "$1"
+    CHANGES_N="$total"; CHANGES_NEW="$new"; CHANGES_GONE="$gone"; CHANGES_CHANGED=$((total - new - gone))
+    CHANGES_SAID="$(files_n "$total") to push"
+    [ "$CHANGES_CHANGED" = 0 ] || CHANGES_SAID="$CHANGES_SAID · $CHANGES_CHANGED changed"
+    [ "$new" = 0 ] || CHANGES_SAID="$CHANGES_SAID · $new new"
+    [ "$gone" = 0 ] || CHANGES_SAID="$CHANGES_SAID · $gone to delete"
+}
+CHANGES_SAID=""; CHANGES_N=0; CHANGES_CHANGED=0; CHANGES_NEW=0; CHANGES_GONE=0
+# The Sync block of a check when the NAS hasn't these files: how far out it is, and p to push them. told_out
+told_out() {
+    local said
+    if [ "$CHANGES" = "?" ]; then
+        said="$TN_HOST can't be compared with this code (is $TN_DEST there yet?)"; CHANGES_N=0
+    else
+        changes_said "$CHANGES"; said="$CHANGES_SAID"
+    fi
+    told_sync "out of sync" 0 "$said · $(push_hint "push and restart $TN_APP")"
+    [ "$DRY_RUN" = 1 ] || TOLD_SYNC="${TOLD_SYNC%\}}$(go_key sync "Push and restart" "pushing" "$CHANGES_N")}"
 }
 # A block that only tells, grey: told_section <id> <title> <header> <line>
 told_section() {
@@ -902,9 +1047,10 @@ run_board() {   # run_board copy|insync|passed|nothing|unreachable — sets RES 
         plan_add "{\"id\": \"sync\", \"title\": $(json_str "Sync to $TN_HOST"), \"cmd\": $(json_str "$cmd"), \"cwd\": $(json_str "$ROOT"), \"after\": $after, \"doing\": \"copying\", \"page\": \"s\", \"env\": {\"DEVTOOLS_STEP\": \"sync\", \"DEVTOOLS_SRC\": $(json_str "$SRC"), \"DEVTOOLS_TOTAL\": \"$(printf '%s\n' "$CHANGES" | grep -c . || true)\"}}"
         [ -z "$checks_plan" ] || plan_add "$checks_plan"
     elif [ -n "$TOLD_SYNC" ]; then
-        local checks_plan="$PLAN"
+        local checks_plan="$PLAN" go_after="[]"
+        [ "$TESTS_FIRST" != 1 ] || go_after="$checks"
         PLAN=""
-        plan_add "$TOLD_SYNC"
+        plan_add "${TOLD_SYNC//\"__AFTER__\"/$go_after}"
         [ -z "$checks_plan" ] || plan_add "$checks_plan"
     fi
     if [ -n "$TN_UPKEEP" ] && [ "$SYNC_ONLY" != 1 ]; then
@@ -944,7 +1090,9 @@ run_board() {   # run_board copy|insync|passed|nothing|unreachable — sets RES 
     [ "$NO_SAMPLE" != 1 ] || [ -z "$TN_STYLE" ] || head="$head · No sample"
     if [ -n "$ONLY" ]; then head="$head · One block again"; kind="only"
     elif [ "$CHECKS_ONLY" = 1 ]; then head="$head · Checks only"; kind="checks"
-    elif [ "$SYNC_ONLY" = 1 ]; then head="$head · Sync only"; kind="sync"; fi
+    elif [ "$ACTION" = "restart" ]; then head="Restart $TN_APP"; kind="restart"
+    elif [ "$SYNC_ONLY" = 1 ]; then head="$head · Push only"; kind="sync"
+    elif [ "$ACTION" = "push" ]; then head="$head · Push"; fi
     if [ -t 0 ] && [ "${#CHECK_IDS[@]}" != 0 ]; then keys="{\"key\": \"Enter\", \"does\": \"Cancel\"}"; fi
     # (the plan is the record's first file: what this run is — its mode and kind, for the UI's Run again and Sync — and
     # the UI the board's keys open, dev/devui.py next to this script, in your folder)
@@ -989,6 +1137,34 @@ finish_board() {
     return 1
 }
 
+# ----------------------------------------------------------------- devtools status
+# How the NAS stands beside this code, as JSON on stdout (the devtools UI's Connected to, dev/devui.py): where devtools
+# pushes (the host, its SSH user, the app, its web port, the folder), whether it answered, how many files are out (changed,
+# new, to delete; known false when it can't be compared), whether the app owes a restart since a copy, and devtools's last
+# push and restart there. Nothing is copied or run.
+status_json() {
+    local reach=true err="" known=true since
+    if [ -n "$UNREACHABLE" ]; then
+        reach=false; err="$(printf '%s' "$UNREACHABLE" | tail -n 1)"; known=false
+    else
+        CHANGES="$(pending_changes)" || CHANGES="?"
+        if [ "$CHANGES" = "?" ]; then known=false; else changes_said "$CHANGES"; fi
+    fi
+    since="$(owed_restart)"
+    printf '{"host": %s, "user": %s, "app": %s, "web_port": %s, "dest": %s, "mode": %s, "label": %s, "commit": %s, "reachable": %s, "error": %s, ' \
+        "$(json_str "$TN_HOST")" "$(json_str "$TN_USER")" "$(json_str "$TN_APP")" "$TN_WEB_PORT" "$(json_str "$TN_DEST")" "$(json_str "$MODE")" \
+        "$(json_str "$SRC_LABEL")" "$(json_str "$SRC_COMMIT")" "$reach" "$(json_str "$err")"
+    printf '"changes": {"known": %s, "total": %s, "changed": %s, "new": %s, "deleted": %s}, "owed": %s, ' \
+        "$known" "$CHANGES_N" "$CHANGES_CHANGED" "$CHANGES_NEW" "$CHANGES_GONE" "$(json_str "$since")"
+    printf '"pushed": {"at": %s, "mode": %s, "commit": %s}, "restarted_at": %s}\n' \
+        "$(nas_get pushed_at | grep -E '^[0-9]+$' || printf null)" "$(json_str "$(nas_get pushed_mode)")" "$(json_str "$(nas_get pushed_commit)")" \
+        "$(nas_get restarted_at | grep -E '^[0-9]+$' || printf null)"
+}
+if [ "$ACTION" = "status" ]; then
+    status_json >&3
+    exit 0
+fi
+
 # ----------------------------------------------------------------- run
 if [ "$CHECKS_ONLY" = 1 ]; then   # (the checks alone, in a record of their own: the NAS isn't asked, nothing recorded for it)
     run_board checks
@@ -1003,25 +1179,40 @@ if [ -n "$UNREACHABLE" ]; then
     rc=0; finish_board unreachable || rc=$?
     exit 1
 fi
+if [ "$ACTION" = "restart" ]; then
+    restart_block
+    run_board restart
+    [ "$(res_get sync)" != "fail" ] || exit 4
+    exit 0
+fi
 CHANGES="$(pending_changes)" || exit 1
 if [ -z "$CHANGES" ]; then
     if [ -z "$TN_TEST$TN_VALIDATE$TN_TYPES$TN_BUILD" ] || [ "$SKIP_TESTS" = 1 ]; then
-        told_sync "already in sync" 0 "Nothing copied · $TN_HOST already has these files · $TN_APP not restarted"
+        told_insync "already in sync" "Nothing copied · $TN_HOST already has these files · $TN_APP not restarted"
         run_board nothing
+        [ "$(res_get sync)" != "fail" ] || exit 4
         exit 0
     fi
     why="$(last_tests_not_passed)"
     if [ -z "$why" ]; then
-        told_sync "already in sync" 0 "Nothing copied · $TN_HOST already has these files · $TN_APP not restarted"
+        told_insync "already in sync" "Nothing copied · $TN_HOST already has these files · $TN_APP not restarted"
         run_board passed
+        [ "$(res_get sync)" != "fail" ] || exit 4
         exit 0
     fi
-    told_sync "in sync" 0 "${why%.} · nothing copied · $TN_APP not restarted"
+    told_insync "in sync" "${why%.} · nothing copied · $TN_APP not restarted"
     run_board insync
     rc=0; finish_board insync || rc=$?
+    [ "$rc" != 0 ] || [ "$(res_get sync)" != "fail" ] || rc=4
     exit "$rc"
 fi
 
-run_board copy
+if [ "$ACTION" = "check" ]; then   # (the NAS hasn't this code: said, and p pushes it; the checks run as for a push)
+    told_out
+    run_board check
+else
+    run_board copy
+fi
 rc=0; finish_board copy || rc=$?
+[ "$rc" != 0 ] || [ "$(res_get sync)" != "fail" ] || rc=4
 exit "$rc"

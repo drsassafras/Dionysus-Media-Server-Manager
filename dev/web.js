@@ -154,8 +154,11 @@ function stylelintFound(results, where) {
 async function lintCss(files) {
   const stylelint = need("stylelint");
   // as written: settings.stylelint's checks (its recommended ones; no browser prefixes written by hand)
-  const { results } = await stylelint.lint({ files, config: settings.stylelint, configBasedir: __dirname });
-  const found = stylelintFound(results, (r, w) => `${rel(r.source)}:${w.line}:${w.column}`);
+  // each file by its real path, told by the name it was given: Stylelint's glob (tinyglobby) finds nothing at a path that
+  // goes through a symlink inside a symlinked folder (a Mac's /tmp is /private/tmp)
+  const given = new Map(files.map((f) => [fs.existsSync(f) ? fs.realpathSync(f) : f, f]));
+  const { results } = await stylelint.lint({ files: [...given.keys()], config: settings.stylelint, configBasedir: __dirname });
+  const found = stylelintFound(results, (r, w) => `${rel(given.get(r.source) || r.source)}:${w.line}:${w.column}`);
   // as the targets get it: stylelint-no-unsupported-browser-features (doiuse, caniuse's data): no CSS feature a target
   // lacks, partly or wholly (partly: what's there is what the pages use), but the ones the pages can do without, in what
   // postcss-preset-env makes of it (a feature it rewrites for them isn't there to find); found, it's told by its own line

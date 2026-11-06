@@ -30,10 +30,10 @@ ARG NODE_TAG=26-slim@sha256:5adad64f9a1fca2d51972caa65983634c8a774eb300d72b20f7f
 # or a man in the middle on the build network fails the build instead of reaching the image. Each hash moves with its
 # version's ARG (dev/upkeep.py), and `dev/upkeep.py --hashes` works every one out again from the pins as they stand.
 # FFMPEG_GH_SHA256 is the GitHub mirror's tarball of the same release — another file, so a hash of its own; while it's
-# empty the mirror isn't fallen back to. A snapshot build (FFMPEG_SOURCE) has no release to pin and isn't checked.
+# empty the mirror isn't fallen back to (dev/upkeep.py pins an empty one by itself at its next run on dev or main). A snapshot build (FFMPEG_SOURCE) has no release to pin and isn't checked.
 ARG LIBJPEG_TURBO_SHA256=c27ad72a68da151177929aa969ae773a2da5ac2af9ce946079314fdac8cece7f
 ARG FFMPEG_SHA256=8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e
-ARG FFMPEG_GH_SHA256=""
+ARG FFMPEG_GH_SHA256=6e374ed621e48faa40639307dff48ba6fe574a509977956d2cce9669b7cc27e9
 ARG OXIPNG_SHA256_AMD64=46e3c4beb9aae57290ad809dd3374b07153579d3322a3778c53900633618b7c6
 ARG OXIPNG_SHA256_ARM64=f51bb7c9836202da52a8181549641940662aa87ec2e3ae68115d822d893015b3
 # Moritz Bunkus's repository-signing key, as mkvtoolnix.download/authenticity.html publishes it
@@ -76,7 +76,7 @@ RUN set -eux; \
     if ! fetch "$src"; then \
         test -z "${FFMPEG_SOURCE}"; \
         src="https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n${FFMPEG}.tar.gz"; sum="${FFMPEG_GH_SHA256}"; echo "ffmpeg.org not reached: ffmpeg from $src"; \
-        test -n "$sum" || { echo "no hash pinned for the mirror's tarball (FFMPEG_GH_SHA256: dev/upkeep.py --hashes)"; exit 1; }; \
+        test -n "$sum" || { echo "no hash pinned for the mirror's tarball (FFMPEG_GH_SHA256: pinned by dev/upkeep.py at its next run)"; exit 1; }; \
         fetch "$src"; \
     fi; \
     if [ -z "${FFMPEG_SOURCE}" ]; then echo "$sum  ${src##*/}" | sha256sum -c -; fi; \

@@ -9,7 +9,7 @@
 #   sudo mkdir -p /mnt/ssd/AppConfigs/plex-cache-dev/src /mnt/ssd/AppConfigs/plex-cache-dev/config
 #   sudo chown truenas_admin /mnt/ssd/AppConfigs/plex-cache-dev/src
 #   sudo chown 568:568 /mnt/ssd/AppConfigs/plex-cache-dev/config
-# Then run `devtools local -N` on your Mac BEFORE installing this app, so the code
+# Then run `devtools push local` on your Mac BEFORE installing this app, so the code
 # folder exists (otherwise Docker creates an empty one and the app won't start).
 # Install: Apps → Discover Apps → ⋮ → Install via YAML, name it plex-cache-dev.
 #

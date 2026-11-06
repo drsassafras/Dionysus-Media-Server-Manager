@@ -1,0 +1,6 @@
+# Public security audits (dev/audit.py record).
+id = "2026-11-05-6"
+date = 2026-11-05
+commit = "cd00e1e39c3c449b36bd98d7f8eb0cba07b8a7ec"
+kind = "partial"
+scope = ["plexcache/web/decor.js:band", "plexcache/web/decor.js:ribbon", "plexcache/web/decor.js:title", "plexcache/themes.py:COLORS", "plexcache/themes.py:_CLASSIC_LIGHT_OWN", "plexcache/themes.py:_CLASSIC_DARK_OWN"]

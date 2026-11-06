@@ -7,7 +7,7 @@
 //     NODE_PATH=$(npm root -g) node dev/icons.js          # writes them into plexcache/web/
 //     NODE_PATH=$(npm root -g) node dev/icons.js check    # exit 1 if one isn't what the tab icon draws now (IconTests)
 //
-// Run it after changing either logo, then have the maintainer approve them (python3 dev/style.py review): the icons are
+// Run it after changing either logo or decor.js's reel, then have the maintainer approve them (python3 dev/style.py review): the icons are
 // in the style guide like every image the app ships. Needs Playwright, as dev/screenshots.js does
 // (npm ci --prefix dev && npx --prefix dev playwright install chromium).
 //
@@ -19,6 +19,12 @@
 //                          menu's colour
 //   icon-maskable-512.png  the same for Android's shaped icons (purpose "maskable"): full bleed, the theatre inside the
 //                          middle 80% circle every mask keeps
+//
+// And the dev tools' pages' tab icon (dev/devpage.py puts it on each of them): the film reel under the app's page titles,
+// as decor.js draws it for a tab (PCDECOR.tab: simpler the smaller it's shown), in Dionysus's film colour with light
+// cutouts, at the sizes it's drawn for
+//
+//   dev/reel-tab-16.svg, dev/reel-tab-32.svg, dev/reel-tab-64.svg
 "use strict";
 const fs = require("fs");
 const path = require("path");
@@ -38,6 +44,22 @@ const ICONS = {
   "icon-maskable-512.png": { source: THEATRE, size: 512, mark: 0.56, scheme: "dark", tile: TILE, radius: 0 },
 };
 const ICO = { name: "favicon.ico", source: TAB, sizes: [16, 32, 48], scheme: "light" };
+// the dev pages' tab icon: decor.js's reel, its film Dionysus's (themes.py "film"), its cutouts light so it shows on a dark tab too
+const REEL = { decor: path.join(WEB, "decor.js"), sizes: [16, 32, 64], film: "#3A423E", hole: "#F2F2EE", file: (px) => path.join(__dirname, `reel-tab-${px}.svg`) };
+
+// Each size of the reel, as decor.js draws it for a tab, with its colours: file -> its SVG.
+async function reels(browser) {
+  const page = await browser.newPage();
+  await page.setContent("<html><body></body></html>");
+  await page.addScriptTag({ content: fs.readFileSync(REEL.decor, "utf-8") });
+  const out = {};
+  for (const px of REEL.sizes) {
+    const svg = await page.evaluate((px) => window.PCDECOR.tab(px), px);
+    out[REEL.file(px)] = svg.replace("<svg ", `<svg style="--film:${REEL.film};--hole:${REEL.hole}" `) + "\n";
+  }
+  await page.close();
+  return out;
+}
 
 // The logo drawn at `px` in a size x size square at (x, y), on the tile; with `bounds`, the box of what it drew instead.
 async function render(browser, svg, size, px, x, y, { scheme, tile, radius }, bounds) {
@@ -135,10 +157,17 @@ async function alike(browser, a, b) {
     if (pairs.length !== (name === ICO.name ? frames.length : 1) || !pairs.every((p) => p[1])) { off.push(`${name}: not the sizes it should be`); continue; }
     for (const [a, b] of pairs) if (!(await alike(browser, a, b))) { off.push(`${name}: not what its logo draws now`); break; }
   }
+  const tabs = await reels(browser);
+  for (const [file, svg] of Object.entries(tabs)) {
+    const name = path.relative(path.join(__dirname, ".."), file);
+    if (!checking) fs.writeFileSync(file, svg);
+    else if (!fs.existsSync(file)) off.push(`${name}: missing`);
+    else if (fs.readFileSync(file, "utf-8") !== svg) off.push(`${name}: not what decor.js's reel draws now`);
+  }
   await browser.close();
   if (off.length) {
     process.stdout.write(off.join("\n") + "\nRemake them: NODE_PATH=$(npm root -g) node dev/icons.js\n");
     process.exit(1);
   }
-  if (!checking) process.stdout.write(Object.keys(made).map((n) => "plexcache/web/" + n).join("\n") + "\n");
+  if (!checking) process.stdout.write(Object.keys(made).map((n) => "plexcache/web/" + n).concat(Object.keys(tabs).map((f) => path.relative(path.join(__dirname, ".."), f))).join("\n") + "\n");
 })();

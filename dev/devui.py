@@ -9,8 +9,11 @@ plan devtools wrote, each block's output, and how the board stood as it went —
 those records to a page (dev/devui.html) that polls them, so a run under way moves on the page as on the board. Nothing
 is judged here: a block's state, its line and its bar are the board's, and a block's page shows the detail file its
 tool wrote beside the record (dev/progress.py's detail: DEVTOOLS_DETAIL). The buttons run devtools itself (dev/devtools,
-next to this file: Run again is ``--checks-only``, a block's Run again ``--only <block>``, Sync ``--sync-only``), one at
-a time, and the page shows the record that run writes. Opened with nothing under way, it starts a fresh scan of the checks
+next to this file: Run again is ``--checks-only``, a block's Run again ``--only <block>``, Push ``push <code>
+--sync-only``, Restart ``restart``), one at a time, and the page shows the record that run writes. Its Connected to says
+where devtools pushes and how the NAS stands beside the code picked (``devtools status <code>``), and which Dionysus answers
+there: its fingerprint and identicon, as its own pages show them (its open /peer/v1/hello, at TN_WEB_PORT; the identicon
+drawn by app.js's own stIdenticon, put in the page). Opened with nothing under way, it starts a fresh scan of the checks
 (``--checks-only``, as the last run was: its mode, --release), unless --no-scan.
 
 The board opens it too (u, or a block's letter: --record is that run's, --open the block; --from-board: what it says
@@ -22,10 +25,12 @@ guide: no approval is asked for the dev tools' pages). It closes once the page i
 
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
 import time
+import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
@@ -40,6 +45,7 @@ EXTRA = os.path.join(ROOT, "dev", "devui.css")
 WEB = os.path.join(ROOT, "plexcache", "web")
 FRESH = 6.0     # seconds since the board last wrote (or touched) a record's state: beyond it, the run isn't under way
 KEEP = 2_000_000   # the most of a block's log sent to the page
+MODES = ("local", "master", "main", "dev", "release", "beta")   # (the code devtools checks or pushes)
 
 
 def runs_dir() -> str:
@@ -246,10 +252,10 @@ class Data:
 
     def _mode(self, q: dict) -> list[str]:
         mode = str(q.get("mode") or "")
-        if mode not in ("local", "master", "main", "dev", "release", "beta"):
+        if mode not in MODES:
             runs = self.runs()
             base = next((r for r in runs if r.kind in ("run", "checks")), None) or (runs[0] if runs else None)
-            mode = base.mode if base else "local"
+            mode = base.mode if base and base.mode in MODES else "local"   # (a restart's record has no code)
             release = bool(base.plan.get("release")) if base else False
         else:
             release = bool(q.get("release"))
@@ -264,8 +270,34 @@ class Data:
             raise ValueError("no such block")
         return self.start([*self._mode(q), "--only", sid], f"{sid} again")
 
-    def sync(self, q: dict) -> dict:
-        return self.start([*self._mode(q), "--sync-only", *(["-y"] if q.get("restart") else [])], "the copy")
+    def push(self, q: dict) -> dict:
+        """Push: the code picked, copied to the NAS and the app restarted (devtools push <code> --sync-only)."""
+        return self.start(["push", *self._mode(q), "--sync-only"], "the push")
+
+    def restart(self, q: dict) -> dict:
+        """Restart: the app restarted, nothing copied (devtools restart)."""
+        return self.start(["restart"], "the restart")
+
+    def status(self, q: dict) -> dict:
+        """Connected to: how the NAS stands beside the code picked (devtools status <code>), and the Dionysus that answers
+        at its web port (its open hello: who it is — its fingerprint and identity — and its version), each looked at now."""
+        mode = str(q.get("mode") or "")
+        if mode not in MODES:
+            mode = self._mode({})[0]
+        try:
+            got = subprocess.run([self.script, "status", mode], cwd=ROOT, capture_output=True, text=True, timeout=60,
+                                 stdin=subprocess.DEVNULL, env={k: v for k, v in os.environ.items() if k not in ("PLEXCACHE_PROGRESS", "DEVTOOLS_STEP")})
+            st = json.loads(got.stdout or "null")
+        except subprocess.TimeoutExpired:   # (a NAS slow to answer: not known yet, rather than a failure)
+            return {"error": "The NAS took more than a minute to answer, so how it stands isn't known yet: refresh to ask again",
+                    "slow": True, "mode": mode}
+        except (OSError, ValueError) as e:
+            return {"error": f"devtools status couldn't be run: {e}", "mode": mode}
+        if not isinstance(st, dict):
+            said = (got.stderr or "").strip().splitlines()
+            return {"error": said[-1] if said else f"devtools status said nothing (exit {got.returncode})", "mode": mode}
+        st["hello"] = hello(str(st.get("host") or ""), st.get("web_port"))
+        return st
 
     def stop(self) -> None:
         with self.lock:
@@ -276,14 +308,47 @@ class Data:
                     pass
 
 
+def hello(host: str, port, timeout: float = 4.0) -> dict:
+    """The Dionysus at that address: its open hello (/peer/v1/hello: public facts only), as {"url", "fingerprint",
+    "identity", "name", "version"}, or {"url", "error"} when nothing answers there as Dionysus."""
+    from plexcache import peerlink
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", host) or not isinstance(port, int):
+        return {"url": "", "error": "no address to ask"}
+    url = f"http://{host}:{port}"
+    try:
+        with urllib.request.urlopen(url + "/peer/v1/hello", timeout=timeout) as r:   # (http to the NAS, as the app's own peers ask)
+            got = json.loads(r.read(1 << 20))
+    except (OSError, ValueError) as e:
+        return {"url": url, "error": str(getattr(e, "reason", "") or e)}
+    if not isinstance(got, dict) or got.get("app") != "plexcache":
+        return {"url": url, "error": "what answers there isn't Dionysus"}
+    ident = got.get("identity")
+    ident = ident if isinstance(ident, dict) else {}
+    return {"url": url, "fingerprint": peerlink.fingerprint(str(got.get("public") or "")), "name": str(got.get("name") or ""),
+            "version": str(got.get("version") or ""),
+            "identity": {k: str(ident.get(k) or "") for k in ("id", "short", "source", "name")}}
+
+
+def identicon_js() -> str:
+    """app.js's own stIdenticon (the picture of an identity, as the app draws it everywhere), for the page: the same code,
+    taken from app.js, so the two can't draw one fingerprint two ways."""
+    with open(os.path.join(WEB, "app.js"), encoding="utf-8") as fh:
+        js = fh.read()
+    got = re.search(r"\n( *)function stIdenticon\(id\) \{\n.*?\n\1\}\n", js, re.S)
+    if got is None:
+        raise RuntimeError("app.js has no stIdenticon(id) for the devtools UI's Connected to")
+    return got.group(0).strip()
+
+
 def page() -> str:
-    """dev/devui.html with the app's themes (their CSS and the script that picks one) and the UI's own looks put in."""
+    """dev/devui.html with the app's themes (their CSS and the script that picks one), app.js's identicon and the UI's
+    own looks put in."""
     with open(PAGE, encoding="utf-8") as fh:
         html = fh.read()
     with open(EXTRA, encoding="utf-8") as fh:
         extra = fh.read()
     return (html.replace("/*THEMES*/", themes.css(None), 1).replace("/*EXTRA*/", extra, 1)
-            .replace("/*THEME_JS*/", themes.script(None), 1))
+            .replace("/*THEME_JS*/", themes.script(None), 1).replace("/*IDENTICON*/", identicon_js(), 1))
 
 
 def files() -> dict[str, str]:
@@ -306,8 +371,8 @@ def serve(data: Data, open_browser: bool = True, port: int = 0, ready=None, firs
 
     def served(token: str) -> str:
         return html.replace("__TOKEN__", token, 1).replace("/*BEAT*/", devpage.beat(token, 5), 1)
-    routes_get = {"/api/run": lambda q: data.view(), "/api/log": data.log, "/api/detail": data.detail}
-    routes_post = {"/api/scan": data.scan, "/api/rerun": data.rerun, "/api/sync": data.sync}
+    routes_get = {"/api/run": lambda q: data.view(), "/api/log": data.log, "/api/detail": data.detail, "/api/status": data.status}
+    routes_post = {"/api/scan": data.scan, "/api/rerun": data.rerun, "/api/push": data.push, "/api/restart": data.restart}
     devpage.serve("devtools", served, routes_get, routes_post, files=files(), gone=(3.0, 30.0), busy=data.busy,
                   idle=(idle, "devtools ui"), port=port, open_browser=open_browser, ready=ready,
                   note="Ctrl-C to stop; it stops by itself once the page is closed and nothing is running")

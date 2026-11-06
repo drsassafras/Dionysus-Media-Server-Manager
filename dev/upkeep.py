@@ -294,6 +294,21 @@ def refresh_digests() -> list[str]:
     return out
 
 
+def fill_hashes() -> list[str]:
+    """Each download hash pin that's still empty (SUMS: FFMPEG_GH_SHA256, say, until it's first worked out) set to what
+    its version's file hashes to, at every run that moves pins — so no pin waits on someone running --hashes. A pin
+    that's set is left as it is (its version's bump moves it). What changed, a line each."""
+    out = []
+    for name, sums in SUMS.items():
+        version = _pin(DOCKERFILE, rf"ARG {name}=(\S+)")
+        for arg, url in sums.items():
+            if not _pin(DOCKERFILE, rf'ARG {arg}="?([0-9a-f]*)"?'):
+                got = _sha256_of(url(version))
+                _repin(DOCKERFILE, rf'ARG {arg}=("?[0-9a-f]*"?)', got)
+                out.append(f"{arg}: pinned to {name} {version}'s download ({got[:12]}…)")
+    return out
+
+
 def refresh_hashes() -> list[str]:
     """Every pinned hash worked out again from the versions as they stand (--hashes): the downloads' (SUMS, fetched and
     hashed afresh) and the base images' digests. What changed; nothing means every pin already matches."""
@@ -1099,6 +1114,12 @@ def main() -> int:
                     r.moved.append(line.split(":", 1)[0] + " (digest)")
             except (OSError, ValueError) as e:
                 r.lines.append(f"base image digests: not looked at now ({_why(e)})")
+            try:  # a download hash not pinned yet is pinned now (tried again at the next run when upstream isn't reached)
+                for line in fill_hashes():
+                    r.bumped.append(line)
+                    r.moved.append(line.split(":", 1)[0])
+            except (OSError, ValueError) as e:
+                r.lines.append(f"download hashes: not pinned now ({_why(e)})")
     except Offline as e:
         if bar is not None:
             bar.clear()

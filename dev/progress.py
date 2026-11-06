@@ -154,6 +154,20 @@ def said(text: str, stream=None):
         stream.flush()
 
 
+def tell(text: str, stream=None, feed: bool | None = None) -> bool:
+    """On devtools's board, a failure as it comes, in full (a test's traceback, a check's findings): above the board at
+    once on a terminal, and in the section's output (its log, the devtools UI's Output) the same, so what a section that
+    fails found is never only at the end, nor only in a count. Every tool says its failures this one way. Sent only when
+    feeding (``feed``: whether, for a tool that read it before it changed its environment); returns whether it was, so
+    the tool doesn't print it again at the end."""
+    if not (feeding() if feed is None else feed) or not text.strip():
+        return False
+    stream = stream or sys.stdout
+    stream.write(FEED + json.dumps({"tell": text.rstrip("\n")}) + "\n")
+    stream.flush()
+    return True
+
+
 LEVELS = ("error", "warning", "notice")   # (what an issue a tool finds is, worst first)
 
 

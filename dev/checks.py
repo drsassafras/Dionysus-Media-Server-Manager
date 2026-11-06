@@ -35,7 +35,7 @@ from dataclasses import asdict, dataclass, field
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-from dev.progress import Progress, counted, detail, feeding, result, said  # noqa: E402 — the dev tools' bar and result line
+from dev.progress import Progress, counted, detail, feeding, result, said, tell  # noqa: E402 — the dev tools' bar and result line
 
 TOOLS = os.path.join(ROOT, "dev", "tools.toml")
 CACHE = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "plex-cache", "tools")
@@ -303,7 +303,13 @@ def run(checks: list[Check], bar: str = "main", stream=None, more: dict | None =
         progress.show(", ".join(c.name for c in checks), ticking=True)
         _BAR.append(progress)
     outcomes: list[Outcome | None] = [None] * len(checks)
+    told = [False] * len(checks)   # (what a check found, told as it came: progress.tell)
     lock = threading.Lock()
+
+    def found(o: Outcome) -> str:
+        if o.findings is None:
+            return f"  {o.why}\n"
+        return "".join(say(f) + "\n" + (annotate(f) + "\n" if ON_GITHUB else "") for f in o.findings)
 
     def one(i: int, c: Check):
         try:
@@ -312,6 +318,10 @@ def run(checks: list[Check], bar: str = "main", stream=None, more: dict | None =
             got = Outcome(c.name, "", None, f"{c.name} fell over: {e!r}")
         with lock:
             outcomes[i] = got
+            # a check that failed (or couldn't run) says what it found now, not once the slowest is done: on the board,
+            # above it as it comes, as the tests' failures are
+            if got.bad() or got.findings is None:
+                told[i] = tell(found(got), stream)
             bad = sum(1 for o in outcomes if o and (o.bad() or o.findings is None))
             name = f"{c.name} {got.version}".strip()
             if progress and readers:   # (a file is checked once every check that reads it is done)
@@ -327,14 +337,9 @@ def run(checks: list[Check], bar: str = "main", stream=None, more: dict | None =
     for t in threads:
         t.join()
     done = [o for o in outcomes if o is not None]
-    for o in done:
-        if o.findings is None:
-            stream.write(f"  {o.why}\n")
-            continue
-        for f in o.findings:
-            stream.write(say(f) + "\n")
-            if ON_GITHUB:
-                stream.write(annotate(f) + "\n")
+    for i, o in enumerate(outcomes):
+        if o is not None and not told[i]:
+            stream.write(found(o))
     if progress:
         _BAR.remove(progress)
         progress.finished = " · ".join(f"{o.tool} {o.version}".strip() for o in done)

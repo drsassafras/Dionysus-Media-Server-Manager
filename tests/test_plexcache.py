@@ -4908,6 +4908,16 @@ class TestRunnerTests(unittest.TestCase):
         self.assertEqual(b.telling(s), "")                                     # (said once)
         s.finished(1)
         self.assertNotIn("AssertionError", b.told(s))                          # (not again at its end)
+        self.assertIn("AssertionError: 1 != 2", _read(s.log, encoding="utf-8"))   # (but in its output, as the devtools UI shows it)
+        # a failure is never silent: a failed section that printed nothing says that, and how it was run
+        b = board.Board({"sections": [{"id": "y", "title": "Python Validation", "cmd": "python3 dev/typecheck.py"}]}, folder, True)
+        s = b.sections[0]
+        self.addCleanup(s.out.close)
+        s.state = "running"
+        s.finished(1)
+        said = b.told(s)
+        self.assertIn("Python Validation failed and printed nothing but its result", said)
+        self.assertIn("its command: python3 dev/typecheck.py", said)
         b = board.Board({"sections": [{"id": "x", "title": "Future Tests", "cmd": "true"}]}, folder, False)
         s = b.sections[0]
         self.addCleanup(s.out.close)
@@ -5394,7 +5404,7 @@ class TestRunnerTests(unittest.TestCase):
         env = dict(os.environ, PATH=fake + os.pathsep + os.environ.get("PATH", ""), DEVTOOLS_CONFIG=os.path.join(folder, "config"),
                    XDG_STATE_HOME=state, TMPDIR=folder)
         env.pop("PLEXCACHE_PROGRESS", None)
-        got = subprocess.run([os.path.join(ROOT, "dev", "devtools"), "local", "-y"], cwd=project, env=env, capture_output=True,
+        got = subprocess.run([os.path.join(ROOT, "dev", "devtools"), "push", "local"], cwd=project, env=env, capture_output=True,
                              text=True, timeout=120, stdin=subprocess.DEVNULL)
         out = got.stdout + got.stderr
         self.assertEqual(_read(os.path.join(nas, "app", "code.py"), encoding="utf-8"), "one\n", out)
@@ -5496,21 +5506,24 @@ class TestRunnerTests(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(other, "pwned")))
 
     def test_devtools_runs_its_steps_at_once(self):
-        """devtools local -y: the copy (and restart) and every check .devtools sets run at the same time, each a section of
+        """devtools push local: the copy and restart and every check .devtools sets run at the same time, each a section of
         the board (each passing only while the other two run); nothing is said again after it, the result kept, so
         the next run with nothing changed says the tests already passed. With --tests-first, a check that fails means
-        nothing is copied. Without -y, the app isn't restarted (there's no question asked)."""
+        nothing is copied. devtools local only checks: the NAS is compared, never changed, and how far out it is said.
+        A push always restarts, files to copy or not; devtools restart restarts alone; -y is gone."""
         import subprocess
         folder = tempfile.mkdtemp(dir=TMP)
         project, nas, fake = (os.path.join(folder, d) for d in ("project", "nas", "bin"))
         for d in (os.path.join(project, "app"), nas, fake):
             os.makedirs(d)
         with open(os.path.join(fake, "ssh"), "w", encoding="utf-8") as fh:   # (the NAS: this machine, a folder of it)
-            fh.write('#!/bin/bash\n[ -z "$NAS_DOWN" ] || { echo "ssh: connect to host nas.example: timed out" >&2; exit 255; }\nwhile [ $# -gt 0 ]; do case "$1" in -o|-p|-l) shift 2 ;; -O) exit 0 ;; -*) shift ;; *) break ;; esac; done\n'
+            fh.write('#!/bin/bash\n[ -z "$SSH_LOG" ] || echo "$*" >> "$SSH_LOG"\n[ -z "$NAS_DOWN" ] || { echo "ssh: connect to host nas.example: timed out" >&2; exit 255; }\nwhile [ $# -gt 0 ]; do case "$1" in -o|-p|-l) shift 2 ;; -O) exit 0 ;; -*) shift ;; *) break ;; esac; done\n'
                      'shift; [ $# -eq 0 ] && exit 0; exec bash -c "$*"\n')
-        with open(os.path.join(fake, "midclt"), "w", encoding="utf-8") as fh:
-            fh.write(f'#!/bin/bash\necho "$*" >> {folder}/restarts\n')
-        for name in ("ssh", "midclt"):
+        with open(os.path.join(fake, "midclt"), "w", encoding="utf-8") as fh:   # (MIDCLT_FAIL: the restart refused)
+            fh.write(f'#!/bin/bash\n[ -z "$MIDCLT_FAIL" ] || exit 1\necho "$*" >> {folder}/restarts\n')
+        with open(os.path.join(fake, "sudo"), "w", encoding="utf-8") as fh:   # (no sudo on the NAS: what the first try said stands)
+            fh.write("#!/bin/bash\nexit 1\n")
+        for name in ("ssh", "midclt", "sudo"):
             os.chmod(os.path.join(fake, name), 0o755)
         with open(os.path.join(project, "app", "code.py"), "w", encoding="utf-8") as fh:
             fh.write("one\n")
@@ -5538,15 +5551,25 @@ class TestRunnerTests(unittest.TestCase):
                    XDG_STATE_HOME=os.path.join(folder, "state"), TMPDIR=folder)
         env.pop("PLEXCACHE_PROGRESS", None)
 
-        def devtools(*args, **more):
-            got = subprocess.run([os.path.join(ROOT, "dev", "devtools"), "local", *args], cwd=project, env=dict(env, **more), capture_output=True,
+        def devtools(*args, **more):   # devtools local …, or devtools push local … ("push" first), or devtools restart
+            words = list(args) if args[:1] == ("restart",) else ["push", "local", *args[1:]] if args[:1] == ("push",) else ["local", *args]
+            got = subprocess.run([os.path.join(ROOT, "dev", "devtools"), *words], cwd=project, env=dict(env, **more), capture_output=True,
                                  text=True, timeout=120, stdin=subprocess.DEVNULL)
             return got.returncode, got.stdout + got.stderr
         settings()
-        rc, out = devtools("-y")
+        rc, out = devtools("-y")   # (gone: a push restarts, a check never copies)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("-y is gone: a push always restarts the app (devtools push <code>)", out)
+        # a check: the NAS compared, how far out said, nothing copied
+        rc, out = devtools()
+        self.assertEqual(rc, 0, out)
+        self.assertIn("Sync to nas.example: OUT OF SYNC (1 file to push · 1 new · to push it: devtools push local)", out)
+        self.assertFalse(os.path.exists(os.path.join(nas, "app", "code.py")))
+        self.assertFalse(os.path.exists(os.path.join(folder, "restarts")))
+        rc, out = devtools("push")
         self.assertEqual(rc, 0, out)   # (the four checks at once, each passing only while the others run: not one after the other)
         self.assertEqual(_read(os.path.join(nas, "app", "code.py"), encoding="utf-8"), "one\n")
-        self.assertRegex(out, r"Copied \d+ files? · restarted myapp")   # (rsync's count: openrsync, on a Mac, lists a folder too)
+        self.assertIn("Copied 1 file · restarted myapp", out)   # (the files alone: not a folder, nor openrsync's "Transfer starting" note)
         self.assertEqual(_read(os.path.join(folder, "restarts"), encoding="utf-8"), "call -j app.redeploy myapp\n")
         self.assertNotIn("ALL CHECKS PASSED", out)   # (each section said its own: nothing said again)
         self.assertNotIn("\n  DEPENDENCIES  -  ALL UP TO DATE", out)   # (its box: none when all are current)
@@ -5557,7 +5580,7 @@ class TestRunnerTests(unittest.TestCase):
                      "Security Audit: CODE TO AUDIT (3 lines no audit has seen)"):
             self.assertIn(said, out)
         self.assertNotIn("\n  new: css .a\n", out)   # (the looks waiting: its block says how many and where, the rest not printed; nor a failure: rc 0)
-        rc, out = devtools("-y")
+        rc, out = devtools()   # (a check, in sync: said, nothing restarted)
         self.assertEqual(rc, 0, out)
         self.assertIn("Sync to nas.example: ALREADY IN SYNC (Nothing copied · nas.example already has these files", out)   # (in its block, as each check is)
         self.assertRegex(out, r"Current Tests: ALREADY PASSED \(Passed just now \(\d{4}-\d\d-\d\d \d\d:\d\d\) · 12 tests passed\)")   # (when, and its result from then)
@@ -5569,42 +5592,104 @@ class TestRunnerTests(unittest.TestCase):
         self.assertNotIn("ALREADY IN SYNC  -", out)   # (no box of its own: its block says it)
         if shutil.which("git"):   # a change outside what's copied (the tests, the dev tools) is a change to the code too: tested again
             subprocess.run(["git", "init", "-q", project], check=True)
-            rc, out = devtools("-y")   # (now a checkout: what the tests ran on is known, and this is the first time it is)
+            rc, out = devtools("push")   # (now a checkout: what the tests ran on is known, and this is the first time it is)
             self.assertIn("The code has changed since the last test run", out)
-            rc, out = devtools("-y")
+            rc, out = devtools("push")
             self.assertRegex(out, r"Current Tests: ALREADY PASSED")
             os.makedirs(os.path.join(project, "tests"))
             with open(os.path.join(project, "tests", "test_it.py"), "w", encoding="utf-8") as fh:
                 fh.write("one more\n")
-            rc, out = devtools("-y")
+            rc, out = devtools("push")
             self.assertEqual(rc, 0, out)
-            self.assertIn("Sync to nas.example: IN SYNC (The code has changed since the last test run", out)
+            self.assertIn("Sync to nas.example: PASSED (The code has changed since the last test run (the tests or the dev tools, if not the app) · nothing copied · restarted myapp)", out)
             self.assertIn("Current Tests: PASSED (12 tests passed)", out)
-            rc, out = devtools("-y")
+            rc, out = devtools("push")
             self.assertRegex(out, r"Current Tests: ALREADY PASSED")
         # the NAS out of reach: the Sync block says so, red, with what ssh said; the checks run all the same
-        rc, out = devtools("-y", "--no-sample")   # (Style Approval only checks: said in the header's modes)
+        rc, out = devtools("push", "--no-sample")   # (Style Approval only checks: said in the header's modes)
         self.assertRegex(out, r"\nLocal Copy[^\n]* · No sample")
-        rc, out = devtools("-y", NAS_DOWN="1")
+        rc, out = devtools("push", NAS_DOWN="1")
         self.assertEqual(rc, 1, out)
         self.assertIn("Sync to nas.example: CAN'T CONNECT: NOTHING COPIED (ssh: connect to host nas.example: timed out)", out)
         self.assertIn("Current Tests: PASSED", out)
-        # a failing check with --tests-first: nothing copied; without -y: no restart, and no question
+        # a failing check with --tests-first: nothing copied (nor restarted)
         with open(os.path.join(project, "app", "code.py"), "w", encoding="utf-8") as fh:
             fh.write("two\n")
         settings(failing=True)
-        rc, out = devtools("--tests-first")
+        rc, out = devtools("push", "--tests-first")
         self.assertEqual(rc, 1, out)
         self.assertEqual(_read(os.path.join(nas, "app", "code.py"), encoding="utf-8"), "one\n")
         self.assertIn("Sync to nas.example: NOT RUN: CURRENT TESTS DIDN'T PASS", out)
         self.assertIn("\nthe failure\n", out)
         self.assertIn("\nLocal Copy", out)   # (the board's header)
         settings()
-        rc, out = devtools()
+        restarts = _read(os.path.join(folder, "restarts"), encoding="utf-8").count("\n")
+        rc, out = devtools()   # (a check: one file changed)
+        self.assertIn("OUT OF SYNC (1 file to push · 1 changed · to push it: devtools push local)", out)
+        self.assertEqual(_read(os.path.join(nas, "app", "code.py"), encoding="utf-8"), "one\n")
+        rc, out = devtools("push")
         self.assertEqual(rc, 0, out)
         self.assertEqual(_read(os.path.join(nas, "app", "code.py"), encoding="utf-8"), "two\n")
-        self.assertIn("not restarted · to restart it too: devtools local -y", out)
-        self.assertEqual(_read(os.path.join(folder, "restarts"), encoding="utf-8").count("\n"), 1)
+        self.assertRegex(out, r"Copied \d+ files? · restarted myapp")
+        self.assertEqual(_read(os.path.join(folder, "restarts"), encoding="utf-8").count("\n"), restarts + 1)
+        # a push with nothing to copy restarts all the same: the app runs the code the NAS has
+        rc, out = devtools("push")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("Nothing copied · nas.example already has these files · restarted myapp", out)
+        self.assertEqual(_read(os.path.join(folder, "restarts"), encoding="utf-8").count("\n"), restarts + 2)
+        # a copy whose restart failed: the app still runs the code from before (its Python), so a check says so, and the
+        # next push restarts it
+        with open(os.path.join(project, "app", "code.py"), "w", encoding="utf-8") as fh:
+            fh.write("three\n")
+        rc, out = devtools("push", MIDCLT_FAIL="1")
+        self.assertEqual(rc, 1, out)   # (the Sync block failed: the run did)
+        self.assertIn("myapp couldn't be restarted", out)
+        rc, out = devtools()
+        self.assertEqual(rc, 0, out)
+        self.assertIn("ALREADY IN SYNC · NOT RESTARTED", out)
+        self.assertIn("myapp not restarted since the copy (", out)
+        rc, out = devtools("push")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("restarted myapp", out)
+        self.assertEqual(_read(os.path.join(folder, "restarts"), encoding="utf-8").count("\n"), restarts + 3)
+        rc, out = devtools()
+        self.assertNotIn("NOT RESTARTED", out)
+        # devtools restart: the restart alone, nothing compared or checked
+        rc, out = devtools("restart")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("Nothing copied · restarted myapp", out)
+        self.assertNotIn("Current Tests", out)
+        self.assertEqual(_read(os.path.join(folder, "restarts"), encoding="utf-8").count("\n"), restarts + 4)
+        rc, out = devtools("restart", MIDCLT_FAIL="1")
+        self.assertEqual(rc, 4, out)
+        # devtools status: how the NAS stands, as JSON alone on stdout. Quick, while a run's under way too: not the
+        # dependencies' check a run ends with, and the run's SSH connection kept to (never one of its own left open, which
+        # would hold the JSON's pipe, nor the shared one closed under the run); a NAS that doesn't answer said in seconds
+        log = os.path.join(folder, "ssh.log")
+        got = subprocess.run([os.path.join(ROOT, "dev", "devtools"), "status", "local"], cwd=project, env=dict(env, SSH_LOG=log), capture_output=True,
+                             text=True, timeout=120, stdin=subprocess.DEVNULL)
+        st = json.loads(got.stdout)
+        self.assertNotIn("Checking the dependencies", got.stderr)
+        self.assertNotIn("upkeep:", got.stdout + got.stderr)
+        calls = _read(log, encoding="utf-8").splitlines()
+        self.assertTrue(calls)
+        for call in calls:
+            self.assertIn("ControlMaster=no", call)
+            self.assertIn("ConnectTimeout=10", call)
+            self.assertNotIn("-O exit", call)
+        self.assertEqual((st["host"], st["app"], st["web_port"], st["reachable"], st["changes"]["known"], st["changes"]["total"], st["owed"]),
+                         ("nas.example", "myapp", 8642, True, True, 0, ""))
+        self.assertEqual(st["pushed"]["mode"], "local")
+        self.assertIsInstance(st["pushed"]["at"], int)
+        with open(os.path.join(project, "app", "new.py"), "w", encoding="utf-8") as fh:
+            fh.write("new\n")
+        st = json.loads(subprocess.run([os.path.join(ROOT, "dev", "devtools"), "status"], cwd=project, env=env, capture_output=True,
+                                       text=True, timeout=120, stdin=subprocess.DEVNULL).stdout)
+        self.assertEqual((st["mode"], st["changes"]["total"], st["changes"]["new"], st["changes"]["changed"]), ("local", 1, 1, 0))
+        st = json.loads(subprocess.run([os.path.join(ROOT, "dev", "devtools"), "status"], cwd=project, env=dict(env, NAS_DOWN="1"),
+                                       capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL).stdout)
+        self.assertEqual((st["reachable"], st["changes"]["known"]), (False, False))
+        self.assertIn("timed out", st["error"])
 
 
 class DevToolsUITests(unittest.TestCase):
@@ -5655,7 +5740,7 @@ class DevToolsUITests(unittest.TestCase):
         """Every run of devtools leaves a record (its STATE_DIR's runs/<when>-<n>/, in the order started): the plan it wrote — what the run
         is (mode, kind), the UI the board's keys open, each block's letter — the board's state as it ended (state.json),
         each block's output. --checks-only runs the checks alone (nothing copied, the NAS not asked, no result recorded
-        for it), --only one block alone, --sync-only the copy alone (no dependencies); the oldest records beyond
+        for it), --only one block alone, push --sync-only the push alone (no dependencies); the oldest records beyond
         DEVTOOLS_KEEP_RUNS go. A project's .tnsync, and tnsync's state folder, are read where it still has them."""
         folder, run = self.toy()
         rc, out = run("local", "--checks-only")
@@ -5697,9 +5782,12 @@ class DevToolsUITests(unittest.TestCase):
         with open(os.path.join(folder, "state", "devtools", "runs", self.records(folder)[-1], "plan.json"), encoding="utf-8") as fh:
             plan = json.load(fh)
         self.assertEqual(([s["id"] for s in plan["sections"]], plan["kind"], plan["only"]), (["build"], "only", "build"))
-        rc, out = run("local", "--sync-only")
+        rc, out = run("local", "--sync-only")   # (a push's: devtools local only checks)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("--sync-only goes with push", out)
+        rc, out = run("push", "local", "--sync-only")
         self.assertEqual(rc, 0, out)
-        self.assertIn("Local Copy · Sync only", out)
+        self.assertIn("Local Copy · Push only", out)
         self.assertIn("Sync to nas.example: PASSED", out)
         self.assertNotIn("Dependencies", out)
         self.assertNotIn("Tests and checks", out)
@@ -5711,13 +5799,13 @@ class DevToolsUITests(unittest.TestCase):
         with open(os.path.join(folder, "state", "devtools", "runs", self.records(folder)[-1], "detail", "sync.json"), encoding="utf-8") as fh:
             sync = json.load(fh)   # (the copy's page: what went where, each file as rsync listed it)
         self.assertEqual((sync["kind"], sync["result"], sync["host"], sync["user"], sync["app"], sync["mode"], sync["dry_run"], sync["restart"], sync["restarted"]),
-                         ("sync", "copied", "nas.example", "me", "myapp", "local", False, False, False))
+                         ("sync", "copied and restarted", "nas.example", "me", "myapp", "local", False, True, True))
         self.assertEqual((sync["source"], sync["dest"], sync["paths"], sync["changed"]), (os.path.realpath(os.path.join(folder, "project")), os.path.join(folder, "nas"), ["app"], 1))
         self.assertEqual(sync["files"], ["code.py"])   # (as rsync lists them: within the path)
         rc, out = run("local", "--only", "nope")
         self.assertEqual(rc, 1)
         self.assertIn("--only nope: not a block", out)
-        rc, out = run("local", "--sync-only", "--checks-only")
+        rc, out = run("push", "local", "--sync-only", "--checks-only")
         self.assertEqual(rc, 1)
         # the oldest records go
         self.assertEqual(len(self.records(folder)), 3)
@@ -5803,6 +5891,48 @@ class DevToolsUITests(unittest.TestCase):
         self.assertEqual(cmd, f"echo ui --record {shlex.quote(folder)} --from-board --open build")
         self.assertTrue(popen.call_args[1]["start_new_session"])
         self.assertNotIn("PLEXCACHE_PROGRESS", popen.call_args[1]["env"])
+
+    def test_the_board_pushes_on_p_while_the_checks_run(self):
+        """A section that only told, with a "go" (a check's Sync block: how the NAS stands): once it has told, its key runs
+        it again as the go command (devtools push), a section like any other from then on — once, and only while the board
+        reads keys. The board then waits for it to end."""
+        from dev import board
+        folder = tempfile.mkdtemp(dir=TMP)
+        logs = os.path.join(folder, "logs")
+        os.makedirs(logs)
+        pushed = os.path.join(folder, "pushed")
+        plan = {"sections": [
+            {"id": "current", "title": "Current Tests", "cmd": "sleep 0.5; echo 3 tests passed"},
+            {"id": "sync", "title": "Sync to nas", "cmd": "echo 1 file to push", "info": "out of sync",
+             "go": {"key": "p", "does": "Push and restart", "doing": "pushing", "cmd": f"echo $WHAT >> {pushed}; echo Copied 1 file · restarted myapp",
+                    "env": {"WHAT": "local"}, "after": []}}]}
+        b = board.Board(plan, logs, tty=False)
+        sync = b.by_id["sync"]
+        with contextlib.redirect_stdout(io.StringIO()):
+            b.keys("p")   # (not reading keys: nothing)
+            for x in b.sections:
+                x.live = True
+            b.keys("p")   # (still telling: nothing yet)
+            self.assertFalse(sync.gone)
+            end = time.time() + 10
+            while not sync.done and time.time() < end:
+                b.step()
+                b.read(0.05)
+            self.assertEqual((sync.state, sync.note, sync.last), ("info", "out of sync", "1 file to push"))
+            self.assertTrue(sync.goes)
+            b.keys("p")
+            self.assertEqual((sync.state, sync.goes), ("waiting", False))
+            b.keys("p")   # (once)
+            while not all(x.done for x in b.sections) and time.time() < end:
+                b.step()
+                b.read(0.05)
+        for x in b.sections:
+            x.out.close()
+        self.assertEqual((sync.state, sync.last), ("pass", "Copied 1 file · restarted myapp"))
+        self.assertEqual(_read(pushed, encoding="utf-8"), "local\n")
+        self.assertEqual(b.by_id["current"].state, "pass")
+        self.assertIn("pushing", board.status(sync.go["doing"]).lower())
+        self.assertIn("==> Push and restart:", _read(sync.log, encoding="utf-8"))
 
     def test_the_tools_write_their_detail_for_their_pages(self):
         """dev/progress.py's detail: a tool's own account of what it found, as JSON in the file the board names
@@ -5996,11 +6126,50 @@ class DevToolsUITests(unittest.TestCase):
         self.assertEqual([(b["id"], b["state"]) for b in view["blocks"]], [("current", "running"), ("build", "waiting")])
         self.assertEqual(view["blocks"][1]["run"], "20260101-150000-1")
 
+    def test_connected_to_asks_the_dionysus_there_who_it_is(self):
+        """The devtools UI's Connected to: the Dionysus at the NAS's web port, by its open hello — its fingerprint (of its
+        key, as its own pages show it) and identity; anything else there, or nothing, said as such. The identicon is
+        app.js's own stIdenticon, put in the page."""
+        import http.server
+        import threading
+
+        from dev import devui
+        from plexcache import peerlink
+        answer: dict = {"app": "plexcache", "public": "ab" * 32, "name": "Home", "version": "0.1.2",
+                        "identity": {"id": "XYZ", "short": "XYZ", "source": "own", "name": "Home"}}
+
+        class Hello(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = json.dumps(answer if self.path == "/peer/v1/hello" else {}).encode()
+                self.send_response(200 if self.path == "/peer/v1/hello" else 404)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format, *args):  # noqa: A002 — (http.server's own name for it)
+                pass
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Hello)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.shutdown)
+        port = srv.server_address[1]
+        got = devui.hello("127.0.0.1", port)
+        self.assertEqual(got, {"url": f"http://127.0.0.1:{port}", "fingerprint": peerlink.fingerprint("ab" * 32), "name": "Home", "version": "0.1.2",
+                               "identity": {"id": "XYZ", "short": "XYZ", "source": "own", "name": "Home"}})
+        answer["app"] = "something else"
+        self.assertEqual(devui.hello("127.0.0.1", port)["error"], "what answers there isn't Dionysus")
+        srv.shutdown()
+        srv.server_close()
+        self.assertIn("error", devui.hello("127.0.0.1", port, timeout=1))
+        self.assertEqual(devui.hello("-oProxy", 80), {"url": "", "error": "no address to ask"})
+        js = devui.identicon_js()
+        self.assertTrue(js.startswith("function stIdenticon(id) {") and js.endswith("}"))
+        self.assertIn(js, _read(os.path.join(ROOT, "plexcache", "web", "app.js"), encoding="utf-8"))
+
     def test_the_devtools_page_runs_devtools_and_is_this_computers_alone(self):
         """The devtools page (dev/devui.py): served as the dev tools' pages are (the browser that opened its address, its
-        token), in the app's stylesheet and themes; its buttons run devtools itself (the checks again, one block, the
-        copy), one at a time, and the page shows the record that run writes; a block's output and detail; the board's
-        word on which block to show (wanted)."""
+        token), in the app's stylesheet and themes; its buttons run devtools itself (the checks again, one block, Push,
+        Restart), one at a time, and the page shows the record that run writes; a block's output and detail; the board's
+        word on which block to show (wanted); Connected to (devtools status, and the Dionysus that answers there)."""
         import http.client
         import threading
 
@@ -6009,9 +6178,12 @@ class DevToolsUITests(unittest.TestCase):
         runs = os.path.join(folder, "runs")
         script = os.path.join(folder, "devtools")
         with open(script, "w", encoding="utf-8") as fh:   # (a devtools that only writes a record of what it was asked)
-            fh.write(f'#!/bin/bash\nd="{runs}/$(date +%Y%m%d-%H%M%S)-$$"; mkdir -p "$d/logs"\n'
-                     'k=checks; case "$*" in *--only*) k=only ;; *--sync-only*) k=sync ;; esac\n'
-                     'printf \'{"kind": "%s", "mode": "%s", "args": "%s", "sections": [{"id": "current", "title": "Current Tests", "page": "c"}]}\' "$k" "$1" "$*" > "$d/plan.json"\n'
+            fh.write('#!/bin/bash\n[ "$1" != status ] || { printf \'{"host": "nas.example", "user": "me", "app": "myapp", "web_port": 8643, "mode": "%s", "changes": {"known": true, "total": 2}}\' "$2"; exit 0; }\n'
+                     f'mkdir -p "{runs}"; n=1; s="$(date +%Y%m%d-%H%M%S)"\n'   # (named as devtools names them: two in one second in order)
+                     f'until d="{runs}/$s-$(printf %02d $n)" && mkdir "$d" 2>/dev/null; do n=$((n + 1)); done; mkdir -p "$d/logs"\n'
+                     'k=checks; case "$*" in *--only*) k=only ;; *--sync-only*) k=sync ;; restart*) k=restart ;; esac\n'
+                     'm="$1"; [ "$1" != push ] || m="$2"\n'
+                     'printf \'{"kind": "%s", "mode": "%s", "args": "%s", "sections": [{"id": "current", "title": "Current Tests", "page": "c"}]}\' "$k" "$m" "$*" > "$d/plan.json"\n'
                      'sleep 0.5\nprintf \'{"done": true, "started": 1, "ended": 2, "header": ["Local Copy"], "sections": [{"id": "current", "title": "Current Tests", "page": "c", "state": "pass", "status": "PASSED", "last": "ran: %s", "log": "", "issues": []}]}\' "$*" > "$d/state.json"\n')
         os.chmod(script, 0o755)
         record = self.record(runs, "20260101-100000-1", {"kind": "run", "mode": "dev", "header": ["Committed Copy on Dev"], "sections": []},
@@ -6055,6 +6227,19 @@ class DevToolsUITests(unittest.TestCase):
                 self.assertNotIn("/*EXTRA*/", page_text)
                 self.assertNotIn("__TOKEN__", page_text)
                 self.assertIn("font-src 'self'", csp)
+                # the dev pages' tab icon, the film reel (dev/devpage.py icons): each size in the page, as img-src lets in
+                for px in (16, 32, 64):
+                    self.assertIn(f'<link rel="icon" type="image/svg+xml" sizes="{px}x{px}" href="data:image/svg+xml;base64,', page_text)
+                self.assertIn("img-src data:", csp)
+                # a block's last time is its result alone (no versions, counts or ages); the hub ends with what every
+                # failed block printed (its log: what went above the board too), with a button that copies it all
+                self.assertIn('"last time: " + (b.before.status || b.before.state || "").toLowerCase())', page_text)
+                self.assertNotIn("b.before.last", page_text)
+                self.assertNotIn("b.before.ended", page_text)
+                self.assertIn("failedOutput());", page_text)
+                self.assertIn('filter(b => (b.shown || b.state) === "fail")', page_text)
+                self.assertIn('api("/api/log?id=" + encodeURIComponent(b.id))', page_text)
+                self.assertIn("navigator.clipboard.writeText(text)", page_text)
                 self.assertEqual(ask("GET", "/static/app.css")[0], 200)
                 self.assertEqual(box["headers"]["Content-Type"], "text/css; charset=utf-8")
                 self.assertEqual(ask("GET", "/static/fonts/cinzel-latin.woff2")[0], 200)
@@ -6089,13 +6274,27 @@ class DevToolsUITests(unittest.TestCase):
                 self.assertEqual((view["job"]["running"], view["job"]["rc"]), (False, 0))
                 self.assertEqual(view["blocks"][0]["last"], "ran: dev --only build")   # (the record the run wrote: the newest word)
                 self.assertEqual(view["blocks"][1]["last"], "2 findings")
-                status, body = ask("POST", "/api/sync", {"restart": True, "mode": "local"})
+                status, body = ask("POST", "/api/push", {"mode": "local"})
                 self.assertEqual(status, 200)
                 for _ in range(100):
                     if not json.loads(ask("GET", "/api/run")[1])["job"]["running"]:
                         break
                     time.sleep(0.05)
-                self.assertEqual(json.loads(ask("GET", "/api/run")[1])["blocks"][0]["last"], "ran: local --sync-only -y")
+                self.assertEqual(json.loads(ask("GET", "/api/run")[1])["blocks"][0]["last"], "ran: push local --sync-only")
+                status, body = ask("POST", "/api/restart", {})
+                self.assertEqual(status, 200)
+                for _ in range(100):
+                    if not json.loads(ask("GET", "/api/run")[1])["job"]["running"]:
+                        break
+                    time.sleep(0.05)
+                self.assertEqual(json.loads(ask("GET", "/api/run")[1])["blocks"][0]["last"], "ran: restart")
+                self.assertNotEqual(ask("POST", "/api/sync", {})[0], 200)   # (gone: Push and Restart)
+                # Connected to: devtools status for the code asked, and who answers there (asked of the NAS: here, a stand-in)
+                with mock.patch.object(devui, "hello", lambda host, port: {"url": f"http://{host}:{port}", "fingerprint": "ABCD-EF01-2345"}):
+                    st = json.loads(ask("GET", "/api/status?mode=dev")[1])
+                self.assertEqual((st["mode"], st["app"], st["changes"]["total"], st["hello"]), ("dev", "myapp", 2, {"url": "http://nas.example:8643", "fingerprint": "ABCD-EF01-2345"}))
+                self.assertIn("function stIdenticon(id) {", page_text)   # (app.js's own, put in)
+                self.assertNotIn("/*IDENTICON*/", page_text)
                 status, body = ask("POST", "/api/scan", {})
                 self.assertEqual(status, 200)
                 for _ in range(100):
@@ -17091,6 +17290,21 @@ class StyleGuideTests(unittest.TestCase):
 class UpkeepTests(unittest.TestCase):
     """The dependencies kept current (dev/upkeep.py): looked up when the suite runs by hand, never on GitHub."""
 
+    def test_an_empty_download_hash_is_pinned_by_itself(self):
+        """A download hash the Dockerfile leaves empty (FFMPEG_GH_SHA256, the mirror's) is pinned at upkeep's run, from its
+        version's file, so nobody has to run --hashes; one that's set isn't downloaded again."""
+        from dev import upkeep
+        with tempfile.TemporaryDirectory() as d:
+            df = os.path.join(d, "Dockerfile")
+            with open(df, "w", encoding="utf-8") as fh:
+                fh.write('ARG FFMPEG=9.0.2\nARG LIBJPEG_TURBO=3.2.1\nARG OXIPNG=10.2.1\nARG FFMPEG_SHA256=' + "a" * 64 + '\nARG FFMPEG_GH_SHA256=""\n'
+                         'ARG LIBJPEG_TURBO_SHA256=' + "b" * 64 + '\nARG OXIPNG_SHA256_AMD64=' + "c" * 64 + '\nARG OXIPNG_SHA256_ARM64=' + "d" * 64 + '\n')
+            with mock.patch.object(upkeep, "DOCKERFILE", df), mock.patch.object(upkeep, "_sha256_of", return_value="e" * 64) as got:
+                self.assertEqual(len(upkeep.fill_hashes()), 1)
+                self.assertEqual(upkeep.fill_hashes(), [])   # (pinned now: nothing fetched again)
+            got.assert_called_once_with("https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n9.0.2.tar.gz")
+            self.assertIn("ARG FFMPEG_GH_SHA256=" + "e" * 64 + "\n", _read(df, encoding="utf-8"))
+
     def test_moves_only_on_dev_and_tells_devtools(self):
         """Pins are moved only in a checkout of dev, or of main (its minor and patch releases; a copy isn't a checkout), and
         --devtools is the box devtools shows at the end of a run (TN_UPKEEP): its first line current (green), behind
@@ -18043,6 +18257,45 @@ class CheckToolTests(unittest.TestCase):
         notes = Check("D", lambda: Outcome("D", "4.0", [Finding("D", "y.py", 1, 1, "information", "n")], facts=["0 errors"], failed=False))
         self.assertEqual(run(notes), (0, ["  y.py:1:1 - information: n (D)", "0 errors"]))
 
+    def test_a_check_that_fails_says_what_it_found_as_it_comes(self):
+        """On devtools's board every check tool's findings go above the board as they come, as the tests' failures do
+        (progress.tell, the one way every tool says a failure): a check that's done and failed says them at once, not
+        once the slowest check is done too (Python Validation's Ruff, while pyright still runs), and not again at the end;
+        what's told is in the section's output (the UI's) as well. Without the board, as they always were, at the end."""
+        import threading
+
+        from dev import checks
+        from dev.checks import Check, Finding, Outcome
+        from dev.progress import FEED, record
+        out, seen, ruff_done = io.StringIO(), [], threading.Event()
+        found = Outcome("Ruff", "0.17", [Finding("Ruff", "dev/x.py", 3, 1, "error", "unused noqa", "RUF100")])
+
+        def ruff():
+            ruff_done.set()
+            return found
+
+        def pyright():   # (the slow one: done only after Ruff, and what was said by then kept)
+            ruff_done.wait(10)
+            time.sleep(0.3)
+            seen.append(out.getvalue())
+            return Outcome("pyright", "1.1", [], facts=["0 errors"])
+        with mock.patch.dict(os.environ, {"PLEXCACHE_PROGRESS": "feed"}), mock.patch("dev.progress.Progress._feed", lambda self: None):
+            self.assertEqual(checks.run([Check("pyright", pyright), Check("Ruff", ruff)], stream=out), 1)
+        lines = out.getvalue().split("\n")   # (not splitlines: the board's mark, \x1e, is a line end to it)
+        told = [r["tell"] for r in map(record, lines) if r and "tell" in r]
+        self.assertEqual(told, ["  dev/x.py:3:1 - error: unused noqa (Ruff RUF100)"])
+        self.assertIn(FEED + '{"tell"', seen[0])                                    # (said while pyright was still running)
+        self.assertEqual(out.getvalue().count("unused noqa"), 1)                     # (not again at the end)
+        self.assertIn("0 errors · 1 Ruff finding", lines)
+        fast = Check("Ruff", lambda: found)
+        out = io.StringIO()   # (no board: what it found at the end, as it always was)
+        with mock.patch.dict(os.environ, {"PLEXCACHE_PROGRESS": ""}):
+            self.assertEqual(checks.run([fast], stream=out), 1)
+        self.assertEqual(out.getvalue().splitlines(), ["  dev/x.py:3:1 - error: unused noqa (Ruff RUF100)", "1 Ruff finding"])
+        # and the tests' failures by the same call (tests/run.py), so no tool says a failure another way
+        self.assertIn("tell(text, feed=True)", _read(os.path.join(ROOT, "tests", "run.py"), encoding="utf-8"))
+        self.assertNotIn('json.dumps({"tell"', _read(os.path.join(ROOT, "tests", "run.py"), encoding="utf-8"))
+
     def test_two_checks_wanting_one_tool_fetch_it_once(self):
         """Build Validation's ShellCheck and actionlint (which hands ShellCheck each step's script) both want ShellCheck, in
         threads of one run: the first fetches it, the second waits and finds it there; neither's download is the other's."""
@@ -18333,7 +18586,10 @@ class ReleaseTests(unittest.TestCase):
         with open(os.path.join(fake, "ssh"), "w", encoding="utf-8") as fh:   # (the NAS: this machine, a folder of it)
             fh.write('#!/bin/bash\nwhile [ $# -gt 0 ]; do case "$1" in -o|-p|-l) shift 2 ;; -O) exit 0 ;; -*) shift ;; *) break ;; esac; done\n'
                      'shift; [ $# -eq 0 ] && exit 0; exec bash -c "$*"\n')
-        os.chmod(os.path.join(fake, "ssh"), 0o755)
+        with open(os.path.join(fake, "midclt"), "w", encoding="utf-8") as fh:   # (the restart a push makes)
+            fh.write("#!/bin/bash\nexit 0\n")
+        for name in ("ssh", "midclt"):
+            os.chmod(os.path.join(fake, name), 0o755)
         with open(os.path.join(project, "app", "code.py"), "w", encoding="utf-8") as fh:
             fh.write("one\n")
         with open(os.path.join(folder, "config"), "w", encoding="utf-8") as fh:
@@ -18350,12 +18606,13 @@ class ReleaseTests(unittest.TestCase):
                    XDG_STATE_HOME=os.path.join(folder, "state"), TMPDIR=folder)
         env.pop("PLEXCACHE_PROGRESS", None)
 
-        def devtools(*args):
-            got = subprocess.run([os.path.join(ROOT, "dev", "devtools"), "local", *args], cwd=project, env=env, capture_output=True,
+        def devtools(*args):   # (devtools push local …: "push" first; else devtools local …)
+            words = ["push", "local", *args[1:]] if args[:1] == ("push",) else ["local", *args]
+            got = subprocess.run([os.path.join(ROOT, "dev", "devtools"), *words], cwd=project, env=env, capture_output=True,
                                  text=True, timeout=120, stdin=subprocess.DEVNULL)
             return got.returncode, got.stdout + got.stderr
         settings(1)
-        rc, out = devtools()   # (between releases: both blocks only tell, grey, and the run passes)
+        rc, out = devtools("push")   # (between releases: both blocks only tell, grey, and the run passes)
         self.assertEqual(rc, 0, out)
         self.assertIn("Release checks: IN PROGRESS", out)
         self.assertIn("Translations: IN PROGRESS", out)
@@ -18908,6 +19165,35 @@ class AuditTests(unittest.TestCase):
                 auditrun.snapshot(code)
                 self.assertNotIn("hosts", os.listdir(code))
 
+    def test_the_dev_pages_wear_the_film_reel_on_their_tab(self):
+        """Each dev page's tab icon (dev/devpage.py icons) is the film reel under the app's page titles, at 16, 32 and
+        64px, as dev/icons.js draws it from decor.js (PCDECOR.tab: five round holes at 16px, plain columns in the cut ring
+        at 32px, the reel itself from 64px; IconTests holds the files to what it draws now), each in the page as data:
+        so every page's img-src lets it in, the review page's ('self') too."""
+        import base64
+        sys.path.insert(0, os.path.join(ROOT, "dev"))
+        try:
+            import devpage  # pyright: ignore[reportMissingImports] — dev/ on the path just above, as dev/auditgui.py has it
+        finally:
+            sys.path.remove(os.path.join(ROOT, "dev"))
+        links = re.findall(r'<link rel="icon" type="image/svg\+xml" sizes="(\d+)x\1" href="data:image/svg\+xml;base64,([^"]+)">', devpage.icons())
+        self.assertEqual([int(px) for px, _ in links], [16, 32, 64])
+        decor = _read(os.path.join(ROOT, "plexcache", "web", "decor.js"), encoding="utf-8")
+        self.assertIn("tab: tab", decor)
+        for px, b64 in links:
+            svg = base64.b64decode(b64).decode()
+            self.assertEqual(svg, _read(os.path.join(ROOT, "dev", f"reel-tab-{px}.svg"), encoding="utf-8"))
+            self.assertIn(f'width="{px}" height="{px}"', svg)
+            self.assertIn("--film:#3A423E", svg)   # (Dionysus's film: plexcache/themes.py)
+            self.assertNotIn("<script", svg)
+        columns = some(re.search(r'd="(M-9-7H9[^"]*)"', decor)).group(1)
+        self.assertIn(columns, base64.b64decode(links[2][1]).decode())   # (64px: the reel's own columns)
+        self.assertNotIn(columns, base64.b64decode(links[0][1]).decode())   # (16px: simpler)
+        self.assertEqual(devpage.iconed("<html><head><title>x</title></head>"), "<html><head>" + devpage.icons() + "<title>x</title></head>")
+        self.assertIn("img-src 'self' data:;", dict(devpage.headers("n", "'self'"))["Content-Security-Policy"])
+        self.assertIn("img-src data:;", dict(devpage.headers("n"))["Content-Security-Policy"])
+        self.assertIn("iconed(html(token))", _read(os.path.join(ROOT, "dev", "devpage.py"), encoding="utf-8"))   # (every page devpage.serve serves)
+
     def test_a_dev_page_keeps_to_a_name_of_its_own(self):
         """A dev tool's page (dev/devpage.py's Session: the review page, the audits page) is on a name of its own,
         <tool>-<random>.localhost: cookies don't keep to a port, so on 127.0.0.1 its cookie would go to every other server
@@ -19009,6 +19295,7 @@ class AuditTests(unittest.TestCase):
                 self.assertIn(f'<script nonce="{nonce}">'.encode(), page)
                 self.assertIn(f'<style nonce="{nonce}">'.encode(), page)
                 self.assertNotIn(b"<script>", page)
+                self.assertIn(b'<head><link rel="icon" type="image/svg+xml" sizes="16x16" href="data:image/svg+xml;base64,', page)   # (the dev pages' tab icon)
                 self.assertIn("frame-ancestors 'none'", csp)
                 self.assertEqual((box["headers"]["X-Frame-Options"], box["headers"]["X-Content-Type-Options"]), ("DENY", "nosniff"))
                 self.assertEqual(ask("GET", "/api/overview", cookie="")[0], 403)   # (the token alone isn't enough)
@@ -23900,9 +24187,14 @@ class EvaluatorEdgeTests(unittest.TestCase):
                 ev.bring("health", "1", timeout=0)
             ft.assert_called_once()
             d = app.libdata.data("1")
+            # the records' last read failed: bring has them read again (in the background), and Plex says no again — said
+            # once that read is done (while it runs, the data is only waiting: a Plex that answers now would bring the data)
             d.errors["records"] = "Plex said no"
-            with mock.patch.object(app.libdata, "busy", return_value={}), self.assertRaisesRegex(ValueError, "couldn’t be read: Plex said no"):
-                ev.bring("health", "1", timeout=0.5)
+            plex = mock.Mock()
+            plex.return_value.library_items.side_effect = RuntimeError("Plex said no")
+            with mock.patch.object(app, "plex", plex), self.assertRaisesRegex(ValueError, "couldn’t be read: Plex said no"):
+                ev.bring("health", "1", timeout=10)
+            plex.return_value.library_items.assert_called()   # (read again: not only the old failure said)
             d.errors.clear()
 
 

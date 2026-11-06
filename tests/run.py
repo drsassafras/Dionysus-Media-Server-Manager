@@ -56,7 +56,7 @@ os.chdir(ROOT)
 
 from dev import coverage  # noqa: E402 — (--coverage: what the tests ran, for dev/coverage.py)
 from dev.progress import FEED as FEED_MARK  # noqa: E402 — (a record's mark: run's FEED says whether there's a board)
-from dev.progress import OFF, RED, Progress, detail, drawn, feeding, short_version, tested, timed  # noqa: E402 — the bar the dev tools share (dev/upkeep.py's too)
+from dev.progress import OFF, RED, Progress, detail, drawn, feeding, short_version, tell, tested, timed  # noqa: E402 — the bar the dev tools share (dev/upkeep.py's too)
 from dev.progress import result as result_line  # noqa: E402 — (``result`` is run's: the result line every dev tool says)
 
 FEED = feeding()  # (read before main() takes PLEXCACHE_PROGRESS out of the tests' environment)
@@ -355,7 +355,8 @@ def run_parallel(module: str, units: list, total: int, jobs: int, tty: bool, sta
             kind, name = failure_name(text)
             issue = {"level": "error", "text": f"{kind}: {name}" if kind else "a test failed",
                      "fix": f"python3 -m unittest {name}" if name.startswith("tests.") else ""}
-            sys.stdout.write(FEED_MARK + json.dumps({"tell": text}) + "\n" + FEED_MARK + json.dumps({"issue": issue}) + "\n")
+            tell(text, feed=True)
+            sys.stdout.write(FEED_MARK + json.dumps({"issue": issue}) + "\n")
             sys.stdout.flush()
     workers: list[Worker] = []
     sel = selectors.DefaultSelector()

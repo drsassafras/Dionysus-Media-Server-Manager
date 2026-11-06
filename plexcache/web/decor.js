@@ -7,8 +7,9 @@
 //    (held beside the menu as the page scrolls). A card's colour stops at its vine (the vine is the card's border), and
 //    so do the menu's and the page's at the seam;
 //  * grapes: progress bars as a vine whose grapes ripen, and checkboxes as grapes, ripe when ticked;
-//  * film: a reel unspooling a band of film under every page's title, its wave picked from the page's name, so a page
-//    always looks the same and no two pages quite match.
+//  * film: a reel unspooling a band of film under every page's title, its wave (some ending folded back over
+//    themselves), its symbol (a flower or a column) and their colour picked from the page's name, so a page always looks
+//    the same and no two pages quite match.
 // Everything is drawn from the cards and titles the shared code makes (app.js: card markup, top()), so every page and
 // tool gets the same, with nothing to add page by page. app.js calls PCDECOR.paint() after it draws a page; changes
 // made inside a page later are caught by watching it.
@@ -268,32 +269,89 @@
   // ------------------------------------------------------------------ film
   const GLYPH = [-64, -32, 0, 32, 64].map(function (a) { return '<ellipse cx="0" cy="-5" rx="2.3" ry="' + (a === 0 ? 6.2 : 5.4) + '" transform="rotate(' + a + ' 0 6)" fill="var(--film-mark)"/>'; }).join("") +
     '<path d="M-7 9Q0 3 7 9" fill="none" stroke="var(--film-mark)" stroke-width="2" stroke-linecap="round"/>';
+  // the same symbol as outlines in its own units (x along the film, y across it), to draw it bent with the film round a fold
+  const GLYPH_OUT = (function () {
+    const out = [];
+    [-64, -32, 0, 32, 64].forEach(function (a) {
+      const ry = a === 0 ? 6.2 : 5.4, c = Math.cos(a * Math.PI / 180), s = Math.sin(a * Math.PI / 180), ring = [];
+      for (let i = 0; i < 16; i++) { const t = i / 16 * Math.PI * 2, x = 2.3 * Math.cos(t), y = -5 + ry * Math.sin(t) - 6; ring.push([x * c - y * s, x * s + y * c + 6]); }
+      out.push(ring);
+    });
+    const arc = function (t) { return [-7 + 14 * t, 9 - 12 * t * (1 - t)]; }, top = [], bot = [];
+    for (let i = 0; i <= 8; i++) { const t = i / 8, p = arc(t), dv = [14, -12 + 24 * t], l = Math.hypot(dv[0], dv[1]); top.push([p[0] - dv[1] / l, p[1] + dv[0] / l]); bot.unshift([p[0] + dv[1] / l, p[1] - dv[0] / l]); }
+    out.push(top.concat(bot));
+    return out;
+  })();
+  // the film's other symbol, the reel's Ionic column: outlines in its own units (x along the film, y across it)
+  const PILLAR_OUT = (function () {
+    const out = [], rect = function (x0, y0, x1, y1) { out.push([[x0, y0], [x1, y0], [x1, y1], [x0, y1]]); };
+    rect(-9, -8, 9, -6); rect(-5, -5, -3, 6); rect(-1, -5, 1, 6); rect(3, -5, 5, 6); rect(-7, 7.5, 7, 9.5);
+    [-8, 8].forEach(function (cx) { const ring = []; for (let i = 0; i < 14; i++) { const t = i / 14 * Math.PI * 2; ring.push([cx + 3 * Math.cos(t), -4 + 3 * Math.sin(t)]); } out.push(ring); const hole = []; for (let i = 13; i >= 0; i--) { const t = i / 14 * Math.PI * 2; hole.push([cx + 1.4 * Math.cos(t), -4 + 1.4 * Math.sin(t)]); } out.push(hole); });
+    return out;
+  })();
+  const PILLAR = '<path fill-rule="evenodd" fill="var(--film-mark)" d="' + PILLAR_OUT.map(function (r) { return "M" + r.map(function (g) { return r1(g[0]) + " " + r1(g[1]); }).join("L") + "z"; }).join("") + '"/>';
+  // the symbols a film can carry: stamped on (or, bent with the film, its outlines: whole, one shape with holes in it)
+  const FLOWER = { stamp: GLYPH, out: GLYPH_OUT }, COLUMN = { stamp: PILLAR, out: PILLAR_OUT, whole: true };
   const IONIC = '<path d="M-9-7H9M-4-5V6M0-5V6M4-5V6M-7 8.5H7" fill="none" stroke="var(--hole)" stroke-width="2" stroke-linecap="round"/><circle cx="-8" cy="-4" r="2.2" fill="none" stroke="var(--hole)" stroke-width="1.6"/><circle cx="8" cy="-4" r="2.2" fill="none" stroke="var(--hole)" stroke-width="1.6"/>';
-  const WAVES = [[.5, 1.25, .25], [.28, 1.25, .25], [.5, .75, .2], [.36, 2, .25]];
-  // a band of film seen in 3D: centreline c(t), width w, tilt k(t) (0: edge on); its sprocket holes and symbols foreshortened
-  function ribbon(c, w, tw, n, pitch) {
+  // the waves a film can take: [height, waves across 600px, how far it turns edge on, how often (times a wave; 2), and for
+  // one that ends folded back over itself: that end's length (px), its loop's height (px), how loop-like (0: a flat fold)]
+  const WAVES = [[.5, .75, .2], [.36, 2, .25], [.22, 3, .15], [.4, 1, .3, 3], [.33, 2.5, .3, 1], [.55, 1, .25, 4], [.28, 1.25, .25], [.36, 2, .35, 2, 70, 7, 0], [.36, 2, .35, 2, 45, 5, .25], [.5, 1.25, .25, 2, 60, 6.5, 0], [.3, 1.5, .25, 2, 40, 5, .25], [.22, 3, .15, 2, 55, 6, 0], [.28, 1.25, .25, 2, 50, 6, .25], [.5, .75, .2, 2, 55, 6, 0], [.4, 1, .3, 3, 60, 6.5, .25]];
+  // a band of film seen in 3D: centreline c(t), width w, tilt k(t) (0: edge on); its sprocket holes and symbols foreshortened.
+  // c(t) may also give the width's direction and how foreshortened its length is there ([x, y, nx, ny, f]: where the film
+  // bends away into depth). With cut, the film from t = cut on lies over the rest: drawn after it (its holes and symbols too),
+  // with a see-through hairline along its edges once clear of the bend, its symbols drawn bent with it, and spaced to end just short of its free end.
+  function ribbon(c, w, tw, n, pitch, cut, mark) {
+    mark = mark || FLOWER;
     const P = [], TH = 1.4; let i, o = "";
     for (i = 0; i <= n; i++) {
       const t = i / n, a = c(Math.max(0, t - .002)), b = c(Math.min(1, t + .002)), p = c(t); let tx = b[0] - a[0], ty = b[1] - a[1]; const L = Math.hypot(tx, ty) || 1;
-      tx /= L; ty /= L; P.push({ p: p, T: [tx, ty], N: [-ty, tx], w: w, k: tw(t) });
+      tx /= L; ty /= L;
+      const q = { p: p, T: [tx, ty], N: p.length > 2 ? [p[2], p[3]] : [-ty, tx], w: w, k: tw(t), f: 1 };
+      if (p.length > 2) { q.f = p[4]; q.T = [p[3] * p[4], -p[2] * p[4]]; }
+      // round a fold the width's direction is given, not the bend's: kept pointing the same way as its neighbour's (its
+      // tilt turned with it), or the strip there would cross over itself
+      const pr = P[P.length - 1];
+      if (cut && pr && q.N[0] * pr.N[0] + q.N[1] * pr.N[1] < 0) { q.N = [-q.N[0], -q.N[1]]; q.k = -q.k; }
+      P.push(q);
     }
     const pt = function (q, u, v) { return [q.p[0] + q.N[0] * u + q.T[0] * v, q.p[1] + q.N[1] * u + q.T[1] * v]; };
     const poly = function (arr, fill, extra) { return '<path d="M' + arr.map(function (a) { return r1(a[0]) + " " + r1(a[1]); }).join("L") + 'z" fill="' + fill + '" ' + (extra || "") + "/>"; };
     const hh = function (q) { return Math.max(q.w / 2 * Math.abs(q.k), TH); };
-    for (i = 0; i < n; i++) { const A = P[i], B = P[i + 1]; o += poly([pt(A, hh(A), 0), pt(B, hh(B), 0), pt(B, -hh(B), 0), pt(A, -hh(A), 0)], "var(--film)", 'stroke="var(--film)" stroke-width=".6" stroke-linejoin="round"'); }
-    let len = 0; const marks = [];
+    let len = 0; const marks = [0];
     for (i = 1; i <= n; i++) { len += Math.hypot(P[i].p[0] - P[i - 1].p[0], P[i].p[1] - P[i - 1].p[1]); marks.push(len); }
-    const atD = function (dd) { let j = 0; while (j < marks.length && marks[j] < dd) j++; return j < marks.length ? P[j + 1] : null; };
-    const hstep = pitch / 4; let dd, Q;
-    for (dd = hstep / 2; dd < len; dd += hstep) {
-      Q = atD(dd); if (!Q) break; const ak = Math.abs(Q.k); if (ak < .2) continue;
-      const hl = Q.w * .05, hw = Math.max(.5, Q.w * .045 * ak);
-      [1, -1].forEach(function (sd) { const u = sd * Q.w / 2 * ak * .8; o += poly([pt(Q, u - hw, -hl), pt(Q, u + hw, -hl), pt(Q, u + hw, hl), pt(Q, u - hw, hl)], "var(--hole)"); });
-    }
-    for (dd = pitch * .5; dd < len - pitch * .3; dd += pitch) {
-      Q = atD(dd); if (!Q) break; if (Math.abs(Q.k) < .06) continue; const sc = Q.w / 26;
-      o += '<g transform="matrix(' + r1(Q.T[0] * sc) + " " + r1(Q.T[1] * sc) + " " + r1(Q.N[0] * sc * Q.k) + " " + r1(Q.N[1] * sc * Q.k) + " " + r1(Q.p[0]) + " " + r1(Q.p[1]) + ')">' + GLYPH + "</g>";
-    }
+    const atD = function (dd) { let j = 1; while (j < marks.length && marks[j] < dd) j++; return j < marks.length ? P[j] : null; };
+    // the film's frame at a distance along it, between its points (for a symbol bent with it)
+    const at = function (dd) {
+      let j = 1; while (j < n && marks[j] < dd) j++;
+      const A = P[j - 1], B = P[j], f = Math.max(0, Math.min(1, (dd - marks[j - 1]) / ((marks[j] - marks[j - 1]) || 1))), m = function (x, y) { return x + (y - x) * f; };
+      const nx = m(A.N[0], B.N[0]), ny = m(A.N[1], B.N[1]); const nl = Math.hypot(nx, ny) || 1;
+      return { p: [m(A.p[0], B.p[0]), m(A.p[1], B.p[1])], N: [nx / nl, ny / nl], k: m(A.k, B.k) };
+    };
+    const bent = function (dd, sc) {
+      const one = function (ring) { return "M" + ring.map(function (g) { const F = at(dd + g[0] * sc), u = g[1] * sc * F.k; return r1(F.p[0] + F.N[0] * u) + " " + r1(F.p[1] + F.N[1] * u); }).join("L") + "z"; };
+      if (mark.whole) return '<path fill-rule="evenodd" d="' + mark.out.map(one).join("") + '" fill="var(--film-mark)"/>';
+      return mark.out.map(function (ring) { return '<path d="' + one(ring) + '" fill="var(--film-mark)"/>'; }).join("");
+    };
+    const hstep = pitch / 4, g0 = cut ? (len - pitch * .5) % pitch : pitch * .5, gEnd = cut ? len : len - pitch * .3;
+    // one stretch: [from, to] of P, its symbols on the one spacing the whole film keeps
+    const piece = function (from, to, edged) {
+      const d0 = marks[from], d1 = to === n ? len + 1 : marks[to]; let dd, Q;
+      if (edged) [1, -1].forEach(function (sd) { o += '<path d="M' + P.slice(from, to + 1).filter(function (q, j, all) { return q.p.length < 3 && (j > 0 && all[j - 1].p.length < 3) && P[from].p[0] - q.p[0] > 5; }).map(function (q) { const e = pt(q, sd * (hh(q) + .25), 0); return r1(e[0]) + " " + r1(e[1]); }).join("L") + '" fill="none" stroke="var(--hole)" stroke-width=".9" stroke-linejoin="round"/>'; });
+      for (i = from; i < to; i++) { const A = P[i], B = P[i + 1]; o += poly([pt(A, hh(A), 0), pt(B, hh(B), 0), pt(B, -hh(B), 0), pt(A, -hh(A), 0)], "var(--film)", 'stroke="var(--film)" stroke-width=".6" stroke-linejoin="round"'); }
+      for (dd = hstep / 2 + Math.max(0, Math.ceil((d0 - hstep / 2) / hstep)) * hstep; dd < Math.min(d1, len); dd += hstep) {
+        // every one along both edges, however the film turns: nearer edge on, closer together and smaller, inside the edge
+        Q = atD(dd); if (!Q) break; const ak = Math.abs(Q.k), e = hh(Q);
+        const hl = Q.w * .05 * Math.max(.3, Math.abs(Q.f)), hw = Math.max(.3, Math.min(Q.w * .045 * ak, e * .2));
+        [1, -1].forEach(function (sd) { const u = sd * e * .78; o += poly([pt(Q, u - hw, -hl), pt(Q, u + hw, -hl), pt(Q, u + hw, hl), pt(Q, u - hw, hl)], "var(--hole)"); });
+      }
+      const reach = cut ? w / 26 * 9 : 0, e0 = from ? d0 - reach : d0, e1 = to === n ? d1 : d1 - reach;
+      for (dd = g0 + Math.max(0, Math.ceil((e0 - g0) / pitch)) * pitch; dd < Math.min(e1, gEnd); dd += pitch) {
+        Q = atD(dd); if (!Q) break; if (Math.abs(Q.k) < .06) continue; const sc = Q.w / 26;
+        if (cut) { o += bent(dd, sc); continue; }
+        o += '<g transform="matrix(' + r1(Q.T[0] * sc) + " " + r1(Q.T[1] * sc) + " " + r1(Q.N[0] * sc * Q.k) + " " + r1(Q.N[1] * sc * Q.k) + " " + r1(Q.p[0]) + " " + r1(Q.p[1]) + ')">' + mark.stamp + "</g>";
+      }
+    };
+    if (cut) { const ic = Math.round(cut * n); piece(0, ic, false); piece(ic, n, true); } else piece(0, n, false);
     return o;
   }
   // the reel: its face in the film's colour, five column cutouts, a cut ring, the hub ring and the peg hole
@@ -303,19 +361,75 @@
     const ring = function (r) { return '<circle cx="39" cy="39" r="' + r + '" fill="none" stroke="var(--hole)" stroke-width="1.6"/>'; };
     return o + ring(33.5) + '<circle cx="39" cy="39" r="4.5" fill="var(--hole)"/>' + ring(8) + "</g>";
   }
+  // the reel as a browser tab's icon (the dev tools' pages: dev/icons.js draws them), simpler the smaller it's shown, as an
+  // <svg> its colours are set on (--film, --hole): at 16px five round holes and the peg hole; at 32px plain columns (no
+  // scrolls), the peg hole and the cut ring; from 64px the reel itself
+  function tab(px) {
+    const round = function (c, r, f) { let o = ""; for (let i = 0; i < 5; i++) { const ang = -90 + i * 72; o += f(r1(c + r * Math.cos(ang * Math.PI / 180)), r1(c + r * Math.sin(ang * Math.PI / 180)), ang + 90); } return o; };
+    const svg = function (n, inner) { return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + n + " " + n + '" width="' + px + '" height="' + px + '">' + inner + "</svg>"; };
+    if (px >= 64) return svg(80, reel(40, 40, 38));
+    if (px <= 16) {
+      return svg(16, '<circle cx="8" cy="8" r="7.75" fill="var(--film)"/>' + round(8, 4.6, function (x, y) { return '<circle cx="' + x + '" cy="' + y + '" r="1.55" fill="var(--hole)"/>'; }) +
+        '<circle cx="8" cy="8" r="1.1" fill="var(--hole)"/>');
+    }
+    return svg(32, '<circle cx="16" cy="16" r="15.5" fill="var(--film)"/>' + round(16, 9.4, function (x, y, a) {
+      return '<g transform="translate(' + x + " " + y + ") rotate(" + a + ') scale(.82)"><path d="M-3.6-3.2H3.6M-1.7-1.6V2.2M1.7-1.6V2.2M-3 3.6H3" fill="none" stroke="var(--hole)" stroke-width="1.8" stroke-linecap="round"/></g>';
+    }) + '<circle cx="16" cy="16" r="2.4" fill="var(--hole)"/><circle cx="16" cy="16" r="14.1" fill="none" stroke="var(--hole)" stroke-width=".9"/>');
+  }
   let maskN = 0;
   function band(name, W) {
     const r = 20, cy = r + 4, x0 = r + 4, L = W - x0 - 2, q = (600 - x0 - 2) / L, D = 2 * r, tr = r / L, y0 = cy - r + .8 * D, bw = .2 * D, pitch = 22 * r / 34;
     const R = rng(hs(name)), wv = WAVES[Math.floor(R() * WAVES.length)], j = function () { return .9 + R() * .2; };
-    const amp = Math.min(.55, wv[0] * j()), cyc = wv[1] * j() / q, kd = wv[2] * j();
+    const amp = Math.min(.55, wv[0] * j()), cyc0 = wv[1] * j() / q, kd = wv[2] * j();
+    // a film that loops back at its end comes up out of a trough into the loop (its wave timed to be just past one there), so
+    // the loop has the room above it and its tail comes over and down, as if presented
+    let cyc = cyc0;
+    if (wv[4]) { const span = 1 - 10 / L - tr, ph = span * cyc0; cyc = (Math.max(1, Math.round(ph - .1)) + .1) / span; }
     const X = function (t) { return x0 + t * L; }, open = function (t) { return ease(tr * .5, tr + .1 * q, t); };
-    const c = function (t) { return [X(t), y0 - (D * amp) * (.5 - .5 * Math.cos((t - tr) * Math.PI * 2 * cyc)) * ease(tr, tr + .15 * q, t)]; };
-    const k = function (t) { return open(t) * (1 - kd + kd * Math.cos((t - tr) * Math.PI * 4 * cyc)); };
-    const inner = ribbon(c, bw, k, Math.round(W / 2.3), pitch) + reel(x0, cy, r), H = 2 * r + 8, id = "pcfilm" + (++maskN);
+    let c = function (t) { return [X(t), y0 - (D * amp) * (.5 - .5 * Math.cos((t - tr) * Math.PI * 2 * cyc)) * ease(tr, tr + .15 * q, t)]; };
+    const k = function (t) { return open(t) * (1 - kd + kd * Math.cos((t - tr) * Math.PI * 2 * (wv[3] || 2) * cyc)); };
+    let kk = k, fold = 0;
+    if (wv[4]) {
+      // the end turns back over itself: past a dip the film runs on into a loop and comes back down across itself, its back
+      // showing (its symbols the right way up), for wv[4]px in all. How loop-like (wv[6], 0 to 1): at 0 a flat fold, the film
+      // bent over at full width into a loop no taller than the film is wide, coming back nearly along itself; at 1 a long
+      // narrow teardrop wv[5]px across, the film twisting edge on round its end, its tail crossing back steeply. Squeezed to
+      // fit the reel's height
+      const base = c, be = wv[6] || 0, v0 = Math.max(.35, Math.abs(k(1 - 10 / L)));
+      const rad = (bw * v0 * .55) + (wv[5] - bw * v0 * .55) * be, te = 1 - (rad + 4) / L, p1 = base(te), pa = base(te - .002), th0 = Math.atan2(p1[1] - pa[1], p1[0] - pa[0]);
+      const tot = Math.max(wv[4], rad * (Math.PI + .3) + 10), bl = te * L, top = cy - r + bw / 2 + 1, bot = cy + r - bw / 2 - 1, cross = .85 + (.5 - .85) * be;
+      let a = .35, Lr = rad * (Math.PI + a);
+      for (let it = 0; it < 4; it++) { a = Math.atan(2 * rad / Math.max(4, cross * (tot - Lr))); Lr = rad * (Math.PI + a); }
+      const TAILN = 80, tail = [[p1[0], p1[1]]]; let hx = p1[0], hy = p1[1], hi = hy, lo = hy;
+      for (let i = 1; i <= TAILN; i++) {
+        const sm = (i - .5) / TAILN * tot, th = th0 - Math.min(sm, Lr) / rad;
+        hx += Math.cos(th) * tot / TAILN; hy += Math.sin(th) * tot / TAILN; tail.push([hx, hy]); hi = Math.min(hi, hy); lo = Math.max(lo, hy);
+      }
+      const up = hi < top ? (p1[1] - top) / (p1[1] - hi) : 1, dn = lo > bot ? (bot - p1[1]) / (lo - p1[1]) : 1;
+      tail.forEach(function (z) { z[1] = p1[1] + (z[1] - p1[1]) * (z[1] < p1[1] ? up : dn); });
+      const t1 = bl / (bl + tot), tr2 = Lr / tot;
+      c = function (t) {
+        if (t <= t1) return base(t / t1 * te);
+        const u = (t - t1) / (1 - t1), m = u * TAILN, i = Math.min(TAILN - 1, Math.floor(m)), f = m - i;
+        return [tail[i][0] + (tail[i + 1][0] - tail[i][0]) * f, tail[i][1] + (tail[i + 1][1] - tail[i][1]) * f];
+      };
+      fold = t1 + (1 - t1) * tr2 * .5;
+      // round the loop the tilt turns over: at once at full width (a fold), or through edge on (a twist)
+      const v = Math.max(.35, Math.abs(k(te))) * (k(te) < 0 ? -1 : 1), gam = Math.max(.08, be);
+      kk = function (t) {
+        if (t <= t1) return k(t / t1 * te);
+        const u = (t - t1) / (1 - t1); if (u >= tr2) return -v;
+        const cc = Math.cos(Math.PI * u / tr2); return v * (cc < 0 ? -1 : 1) * Math.pow(Math.abs(cc), gam);
+      };
+    }
+    // and the page's name picks the film's symbol and the symbols' colour (the theme's film-mark or film-mark-2)
+    const mark = R() < .5 ? FLOWER : COLUMN, second = R() < .5;
+    const strip = ribbon(c, bw, kk, Math.round(W / 2.3), pitch, fold, mark);
+    const inner = strip + reel(x0, cy, r), H = 2 * r + 8, id = "pcfilm" + (++maskN);
     // the sprocket holes and the reel's cutouts are see-through: a mask with them black
     return '<svg class="filmband" viewBox="0 0 ' + W + " " + H + '" width="' + W + '" height="' + H + '" aria-hidden="true" focusable="false">' +
       '<mask id="' + id + '" maskUnits="userSpaceOnUse" x="-50" y="-50" width="' + (W + 100) + '" height="' + (H + 100) + '"><g style="--film:#fff;--film-mark:#fff;--hole:#000">' + inner + "</g></mask>" +
-      '<g mask="url(#' + id + ')" style="--hole:var(--film)">' + inner + "</g></svg>";
+      '<g mask="url(#' + id + ')" style="--hole:var(--film)' + (second ? ";--film-mark:var(--film-mark-2)" : "") + '">' + inner + "</g></svg>";
   }
   function film(root) {
     const top = root.querySelector(":scope > .top"), old = root.querySelector(":scope > .filmline");
@@ -402,6 +516,6 @@
   document.addEventListener("transitionend", function (e) { if (isSide(e)) { easing = false; soon(); } });
   // after the theme changes (theme.js): the spots' and checkboxes' colours, and everything drawn again
   function themed() { drawn = {}; spots(); checks(); soon(); }
-  window.PCDECOR = { paint: paint, themed: themed };
+  window.PCDECOR = { paint: paint, themed: themed, tab: tab };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", themed); else themed();
 })();

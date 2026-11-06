@@ -7,7 +7,7 @@ This folder holds what you need to try changes on a real TrueNAS before pushing 
 | `compose.dev.yaml` | A **test copy** of the app (`plex-cache-dev`, port 8643) that runs the published image but with its code replaced by whatever you last copied to the NAS. It has its own settings, so it never touches the real `plex-cache` app. |
 | `devtools` | A small script that **copies your code to the NAS, restarts the test app and runs the tests and checks** — in one command, from your computer, all at once on a live board (`board.py`). Each run leaves a record that the devtools UI shows (below). |
 | `devui.py`, `devui.html`, `devui.css` | **The devtools UI** (`devtools ui`): the board in your browser, a page behind each block with what its tool found, and buttons that run devtools again. See **The devtools UI** below. |
-| `devpage.py` | What the dev tools' pages share (the UI's, the audits', the style review's): served to this computer only, to the browser that opened the printed address only, closed when the page is. |
+| `devpage.py` | What the dev tools' pages share (the UI's, the audits', the style review's): served to this computer only, to the browser that opened the printed address only, closed when the page is; and their tab icon, the film reel (`reel-tab-16.svg`, `-32.svg`, `-64.svg`: one link a size, so the browser takes the one drawn for the size it shows). |
 | `progress.py` | The progress bar the dev tools share, the result line, and `detail`: a tool's own account of what it found, written as JSON for its page in the UI when the board asks (`DEVTOOLS_DETAIL`). |
 | `future.py` | Builds the image on the **next** Python's prerelease (3.16 while the image runs 3.15) and each tool's newest pre-release where one is ahead of its stable release (Node's nightlies, ffmpeg's git snapshot, libjpeg-turbo's and oxipng's pre-releases, the web's npm packages' `next`/`beta`/`rc` tags; MKVToolNix has releases only), and runs the suite inside it, every warning an error and the web's checks a year ahead (four years of browsers); `--stable` keeps the tools at their pins, `--local` uses an interpreter on your computer instead. The "future" track, local only (below). |
 | `upkeep.py` | The dependency check: everything the app depends on against upstream's newest release, pins a minor behind moved (only with `dev` checked out), a major behind a prompt. devtools runs it on every run (below), with a progress bar for each look-up and npm install; the suite's test reads its last answers, never upstream or npm. |
@@ -20,34 +20,39 @@ This folder holds what you need to try changes on a real TrueNAS before pushing 
 | `codecs.py` | Codec names as MKVToolNix shows them, for Library Health (`plexcache/codec_names.py`). The image build runs it for the MKVToolNix release it installs; run it by hand to refresh the committed copy. |
 | `web.js`, `package.json`, `jsconfig.json`, `web.d.ts` | What checks and builds the web app's CSS, scripts and pages: **Stylelint**, **ESLint** and **html-validate** on the source (each with a check that no feature it uses is missing from a target browser), **TypeScript** on the scripts (checkJs), **axe-core** on every page as the demos draw it (through **Playwright**), then **postcss-preset-env** (the newer CSS its targets lack, rewritten as CSS they read), **Autoprefixer** (the browser prefixes they need), **cssnano**, **Terser** and **html-minifier-terser** (minified) for the image. The settings, the browser floor and the pinned packages are in `package.json`; see below. |
 | `screenshots.js` | Makes the README screenshots from the demo (see below). |
-| `icons.js` | Draws the app's icons in Chromium, as a browser draws them, each from the logo the app shows at that size and centred on what it draws: `favicon.ico` from the tab icon (`plexcache/web/theatre-tab.svg`: Joined D at 16px, Wide bar at 32 and 48px; for browsers without SVG favicons), and from the full theatre playing (`theatre-playing.svg`, the menu's logo with its arrow lit) on the menu's colour the iPhone's `apple-touch-icon.png` and the installed app's `icon-192.png`, `icon-512.png` and `icon-maskable-512.png` (`manifest.webmanifest`). Run `NODE_PATH=$(npm root -g) node dev/icons.js` after changing either logo, then the style sample; `IconTests` fails when one is out of date (`node dev/icons.js check`). Needs Playwright, like the screenshots. |
+| `icons.js` | Draws the app's icons in Chromium, as a browser draws them, each from the logo the app shows at that size and centred on what it draws: `favicon.ico` from the tab icon (`plexcache/web/theatre-tab.svg`: Joined D at 16px, Wide bar at 32 and 48px; for browsers without SVG favicons), and from the full theatre playing (`theatre-playing.svg`, the menu's logo with its arrow lit) on the menu's colour the iPhone's `apple-touch-icon.png` and the installed app's `icon-192.png`, `icon-512.png` and `icon-maskable-512.png` (`manifest.webmanifest`); and the dev pages' tab icon, the film reel as `decor.js` draws it for a tab (`PCDECOR.tab`: five round holes at 16px, plain columns in the cut ring at 32px, the reel itself from 64px) in Dionysus's film colour with light cutouts, as `dev/reel-tab-*.svg`. Run `NODE_PATH=$(npm root -g) node dev/icons.js` after changing either logo or the reel, then the style sample; `IconTests` fails when one is out of date (`node dev/icons.js check`). Needs Playwright, like the screenshots. |
 | `style.py`, `style-guide.json`, `style-sample.js`, `decor-draws.js` | **The style guide**: every look the app may wear, each approved by the maintainer from a sample. `style.py check` lists what's new, changed or gone (the suite fails on it), `sample` photographs those in each theme and mode, `approve` (the maintainer only, at a terminal) adds them. See below. |
 | `make_fixtures.py` | Makes the optimizer's test files (`tests/fixtures/*.mkv`: many real-world features, a few hundred KB) and the snapshot of what optimizing them gives. Run it with `--snapshot` after checking a change the tests caught (needs ffmpeg and MKVToolNix). |
 
-The loop is: edit on your computer → `devtools local -y` → refresh `http://<nas-ip>:8643`. Nothing reaches GitHub (or the real app) until you commit and push.
+The loop is: edit on your computer → `devtools push local` → refresh `http://<nas-ip>:8643`. Nothing reaches GitHub (or the real app) until you commit and push.
 
 ## What devtools does
 
 ```
-devtools local      your folder as it is now (uncommitted changes included)
-devtools master     the latest code on GitHub's default branch (main or master)
-devtools dev        the latest code on GitHub's dev branch
-devtools release    the newest release tag, e.g. v1.2.0
-devtools beta       the newest tag including pre-releases, e.g. v1.3.0-beta.1
-devtools init       set up devtools for a project
-devtools ui         the devtools UI: the last run in your browser, and a fresh scan of the checks
+devtools [<code>]         check that code: the tests and checks, and how the NAS stands beside it (in sync, or how
+                          many files are out). Nothing is copied; p on the board pushes it while the checks run
+devtools push <code>      push it: copy it to the NAS and restart the app (always, files to copy or not), the checks alongside
+devtools restart          restart the app, copying nothing
+devtools status [<code>]  how the NAS stands beside that code, as JSON (what the UI's Connected to shows)
+devtools init             set up devtools for a project
+devtools ui               the devtools UI: the last run in your browser, a fresh scan of the checks, Push and Restart
 
-  -n  dry run: list what would be copied and run the checks, change nothing
-  -y  restart the app once the files are copied (without it, it isn't: nothing is asked)
-  -N  don't restart (the default)
-  --tests-first  copy nothing until the checks have passed
+<code> (local when it's left out):
+  local      your folder as it is now (uncommitted changes included)
+  master     the latest code on GitHub's default branch (main or master)
+  dev        the latest code on GitHub's dev branch
+  release    the newest release tag, e.g. v1.2.0
+  beta       the newest tag including pre-releases, e.g. v1.3.0-beta.1
+
+  -n  dry run: list what a push would copy and run the checks, change nothing
+  --tests-first  push nothing until the checks have passed (with push, or p on the board)
   --skip-tests   don't run the tests and checks
   --skip-future  run the current tests only, not the future ones
   --release      the release checks too, and the tests as for a release (before dev is released)
   --no-sample    Style Approval only checks: no sample of the looks waiting is made (r makes it first then)
   --checks-only  the checks alone, nothing copied (what the UI's "Run the checks again" runs)
   --only <id>    one block alone: current, future, validate, types, build, coverage, audit, i18n, release, upkeep, style
-  --sync-only    the copy alone, no checks (the UI's "Sync to TrueNAS"; with -y the restart too)
+  --sync-only    with push: the push alone, no checks (the UI's Push)
 ```
 
 Everything runs **at the same time**, each step in a section of its own on a board about half a screen tall (`dev/board.py`), redrawn as it goes: a block that's blue while the step is under way, then green (passed), orange (a warning: stopped with Enter, dependencies behind or CVEs to act on), red (failed) or grey (for the record: skipped, not run, already in sync): a header, its progress bar (the one it moved last) (`dev/progress.py`'s, the same bar each tool draws on its own, sent to the board: `PLEXCACHE_PROGRESS=feed`) and the last line it printed. 
@@ -56,7 +61,7 @@ On top, the board's header: what's checked (`Local Copy on Dev`; `Committed Copy
 
 Every block reads the same way: its title, its status in capitals and its time; its bar (`done/total` and the item under way or what it did, with how many workers do it on the right, under the time); and one result line (`dev/progress.py`'s `result`: facts joined with ` · `, no time, no workers and no count the bar already shows, so a passing suite's says what it ran on — `Python 3.15.2 · Node 26.12.0 · …`, a nightly's build stamp left off — and a failing one `3 failed · …`).
 
-1. **Sync to the NAS** — copies only what changed with rsync over SSH (a bar of the files as they go), and deletes files on the NAS that you deleted locally. Installed packages (`node_modules`, from `npm ci`) never go: the NAS runs the source as it is. With `-y`, it then **restarts the test app** with TrueNAS's own `midclt call app.redeploy plex-cache-dev`, and waits until TrueNAS says it's done: you can refresh the page and try your change while the checks run.
+1. **Sync to the NAS** — on a push, copies only what changed with rsync over SSH (a bar of the files as they go), and deletes files on the NAS that you deleted locally. Installed packages (`node_modules`, from `npm ci`) never go: the NAS runs the source as it is. It then **restarts the test app** with TrueNAS's own `midclt call app.redeploy plex-cache-dev`, and waits until TrueNAS says it's done: you can refresh the page and try your change while the checks run. A push always restarts, even with nothing to copy: the app reads its pages and scripts from disk as they're asked for, but its Python only when it starts, so a copy without a restart leaves it running half old code (a new page, yesterday's `/theme.js`). On a check (`devtools local`), the block only says how the NAS stands — `already in sync`, or `out of sync: 12 files to push · 9 changed · 2 new · 1 to delete` — and `[p] Push and restart` on the board's header pushes this code there and then, the block running the push while the checks go on (with `--tests-first`, once they've passed). When a push's restart failed, a check says the app hasn't been restarted since the copy, and p (or the next push) restarts it.
 2. **Current Tests** (`TN_TEST=python3 tests/run.py --coverage --exclude WebBuildTests --exclude StyleGuideTests`: `--coverage` saves what of the code they ran, every worker's, for the Coverage block), on exactly the code it copies (for `master`, `dev` and the rest, a copy from git, with your folder's installed packages linked in for the web tests; it installs those itself first, `npm ci --prefix dev`, when they're missing or `dev/package-lock.json` has changed).
 3. **Future Tests** (`TN_FUTURE=python3 dev/future.py --exclude StyleGuideTests`: the same suite on the next Python, see below: a bar for the image build, then one for the tests), stopped as soon as a current test fails (the current tests run on to their end, so every failure is still listed). `--skip-future` leaves them out when you're in a hurry.
 4. **HTML/JS/CSS Validation** (`TN_VALIDATE`: `WebBuildTests`, Stylelint, ESLint, TypeScript, html-validate, axe-core and the build), the web's checks from the suite, in a section of their own.
@@ -99,9 +104,9 @@ Behind each block is a **page** of what its tool found, opened by its letter (on
 | Translations | `dev/i18n.py`: how far each language is, what's wrong in each catalog, the English in `app.js` that doesn't go through `T()`, and **Export** per language: the file `python3 dev/i18n.py missing <code>` prints (translate the values, then `merge`). The page is read-only: the catalogs change by `sync` and `merge` only. |
 | Release checks | `dev/release.py`: each check as it came, what to do for one that isn't met, how many are ready. |
 | Dependencies | `dev/upkeep.py`: each dependency pinned and newest, what moved here, what's new upstream and whose it is to move, the CVEs as judged, the box as the board shows it. |
-| Sync | the copy: what went where, each file rsync listed, whether the app was restarted. |
+| Sync | the push: what went where, each file rsync listed, whether the app was restarted. |
 
-The hub's buttons run devtools itself, one at a time, in the project: **Run the checks again** (`--checks-only`) and **Sync to TrueNAS** (`--sync-only`, the copy alone, nothing else; tick *restart the app* for `-y`). The run they start writes a record like any other, and the page follows it. Its **Runs** page lists the records.
+The hub's buttons run devtools itself, one at a time, in the project: **Run the checks again** (`--checks-only`). Its **Connected to** card says where devtools pushes — the app, the NAS and its folder, and the Dionysus that answers at the app's web port (`TN_WEB_PORT` in `.devtools`, 8642 if not set): its fingerprint and identicon, as its own pages show them, from its open hello — and how the NAS stands beside the code picked there (Local, Dev, Master, Release, Beta: `devtools status <code>`): in sync, or how many files are out (changed, new, to delete), with the last push and restart. **Push** pushes the code picked (`devtools push <code> --sync-only`: copied and restarted, nothing else) and **Restart** restarts the app (`devtools restart`). The run they start writes a record like any other, and the page follows it; the card asks the NAS again once it ends (or on refresh). Its **Runs** page lists the records.
 
 The page is served to this computer only, to the browser that opened the printed address only (`dev/devpage.py`), and the UI closes when the page is: `devtools ui --no-browser` prints the address instead of opening it, `--no-scan` skips the fresh scan, `--port <n>` picks the port.
 
@@ -156,11 +161,11 @@ The page is served to this computer only, to the browser that opened the printed
 
 ### 3. The test app
 
-1. Run `devtools local` once **before** installing the test app, so its code folder exists (otherwise Docker creates an empty one and the app won't start).
+1. Run `devtools push local` once **before** installing the test app (its restart fails then: the app isn't there yet), so its code folder exists (otherwise Docker creates an empty one and the app won't start).
 2. Open `compose.dev.yaml`, make the media lines match your real `plex-cache` app (and Plex), and set your NAS's IP in `x-portals`.
 3. TrueNAS: Apps → Discover Apps → ⋮ → **Install via YAML**, name it `plex-cache-dev`, paste the file.
 
-After that, `devtools local -y` is all you need.
+After that, `devtools push local` is all you need (or `devtools local`, and p on the board when you want it on the NAS).
 
 ## Working without a NAS
 
@@ -282,5 +287,5 @@ The code needs Python 3.15 or later. The image is built on `python:3.15-slim-tri
 
 - **"can't SSH to …"** — SSH isn't running on TrueNAS, or your key isn't on `truenas_admin` (step 1.2).
 - **Copied, but the restart failed** — `/usr/bin/midclt` isn't in the user's no-password sudo commands (step 1.3).
-- **The test app won't start after installing** — the code folder was empty: run `devtools local -y`.
+- **The test app won't start after installing** — the code folder was empty: run `devtools push local`.
 - **Tests fail only on your computer** — the suite has to pass on your own Python as well as the 3.15 in the image (the code needs 3.15 or later; `dev/future.py` tries the next Python's prerelease), and a system other than Linux (macOS, say) has no `/proc` and lacks some Linux-only calls (such as `os.posix_fadvise`): tests that touch those need to fake them or work without them.
