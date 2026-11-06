@@ -3,7 +3,7 @@
 
     python3 dev/i18n.py check              # translations match their English (catalogs may lag the code)
     python3 dev/i18n.py --devtools           # devtools's Translations block: how far the catalogs are, overall; between
-                                           # releases it only tells, on master or a --release run every text must be there
+                                           # releases it only tells; at release (devtools.toml: the release role) every text must be there
     python3 dev/i18n.py check --release    # ...and catalogs in step with the code: nothing missing or unused
     python3 dev/i18n.py check --complete   # ...and every text translated
     python3 dev/i18n.py status             # how much of each language is translated
@@ -36,6 +36,7 @@ import ast
 import json
 import os
 import re
+import subprocess
 import sys
 from html.parser import HTMLParser
 
@@ -44,6 +45,7 @@ PKG = os.path.join(ROOT, "plexcache")
 WEB = os.path.join(PKG, "web")
 CATALOGS = os.path.join(WEB, "i18n")
 sys.path.insert(0, ROOT)
+from dev import policy  # noqa: E402 — the rules (devtools.toml)
 from plexcache.i18n import CODES  # noqa: E402
 
 TRANSLATED = [c for c in CODES if c not in ("en", "en-US", "en-GB")]
@@ -57,14 +59,43 @@ _PLACE = re.compile(r"\{(\w+)\}")
 _TAG = re.compile(r"</?([a-zA-Z][a-zA-Z0-9]*)")
 
 
+# The rules (devtools.toml's [i18n], read through dev/policy.py): what the catalogs are held to for the code's role.
+SCHEMA = policy.Schema("i18n", "Translations", {
+    "targets": policy.Setting("targets", "each language's share of the texts translated (a code, a group, or \"*\" for the rest)", unit="%"),
+    "unused": policy.Setting("level", "catalog entries the code no longer uses, and texts the catalogs haven't got yet (what sync fixes)"),
+    "present": policy.Setting("level", "a text added since the gate's base not translated in every catalog (diff mode)"),
+}, "How far the translation catalogs are, and whether they're in step with the code.")
+GROUPS: dict[str, list[str]] = {}   # (named groups of languages a target may name: none yet)
+
+
+def rules_now() -> policy.Rules | None:
+    """[i18n]'s rules for the code's role (DEVTOOLS_ROLE, or this checkout's branch); None without a devtools.toml."""
+    from dev import checks
+    return checks.levels("i18n")
+
+
+def targets_now() -> dict[str, float]:
+    """Each language's target (the share translated it must reach), from ``targets``: {} when none applies."""
+    r = rules_now()
+    if r is None:
+        return {}
+    out = {}
+    for code in TRANSLATED:
+        t = r.target_for("targets", code, GROUPS)
+        if t is not None:
+            out[code] = t
+    return out
+
+
 def strict_now() -> bool:
-    """Where the catalogs gate — complete, every text translated — decided here once, for devtools's Translations block
-    and the suite's TranslationTests alike: a release run (DEVTOOLS_RELEASE; PLEXCACHE_I18N_RELEASE, which CI sets for
-    main and version tags), the release-tag syncs (devtools release / beta), and master — main must ship complete, hot
-    releases included. Everywhere else the catalogs may lag the code."""
-    return (os.environ.get("PLEXCACHE_I18N_RELEASE", "").lower() in ("1", "true", "yes")
-            or os.environ.get("DEVTOOLS_RELEASE") == "1"
-            or os.environ.get("DEVTOOLS_MODE", "").lower() in ("master", "main", "release", "beta"))
+    """Where the catalogs gate — complete, every text translated — decided once, for devtools's Translations block and
+    the suite's TranslationTests alike: every language's target is 100%, held as a failure (devtools.toml's [i18n] for
+    the code's role: main must ship complete, hot releases included). Everywhere else the catalogs may lag the code."""
+    r = rules_now()
+    if r is None:
+        return False
+    t = targets_now()
+    return bool(t) and all(t.get(code, 0) >= 100 for code in TRANSLATED) and r.targets_level("targets") == "fail"
 
 
 # ------------------------------------------------------------------ JavaScript
@@ -386,6 +417,31 @@ def page(keys: dict, problems: list[str], strict: bool) -> dict:
             "problems": list(problems), "leftovers": leftovers()}
 
 
+def catalog(code: str) -> str:
+    """A language's catalog, from the project's root: what a finding of it names."""
+    return os.path.join("plexcache", "web", "i18n", f"{code}.json")
+
+
+def present_check(keys: dict, base: str, level: str) -> list:
+    """Diff mode: the texts added since ``base`` (keys no catalog at ``base`` had) that a catalog hasn't translated."""
+    from dev.checks import Finding
+    found = []
+    for code in TRANSLATED:
+        rel = os.path.join("plexcache", "web", "i18n", f"{code}.json")
+        try:
+            got = subprocess.run(["git", "-C", ROOT, "show", f"{base}:{rel}"], capture_output=True, text=True, timeout=30)
+            before = json.loads(got.stdout) if got.returncode == 0 else {}
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            before = {}
+        cat = load(code)
+        new = [k for k in keys if k not in before and not cat.get(k)]
+        if new:
+            found.append(Finding("Translations", rel, 0, 0, "warning",
+                                 f"{len(new)} texts added since {base} not translated: " + ", ".join(repr(k)[:40] for k in new[:5]) + ("…" if len(new) > 5 else ""),
+                                 "present", level=level))
+    return found
+
+
 def save(code: str, cat: dict) -> None:
     with open(os.path.join(CATALOGS, code + ".json"), "w", encoding="utf-8") as fh:
         json.dump(cat, fh, ensure_ascii=False, indent=1, sort_keys=True)
@@ -416,34 +472,57 @@ def main(argv: list[str]) -> int:
     problems: list[str] = []
     keys = all_keys(problems)
     if cmd == "--devtools":
-        # devtools's Translations block (TN_I18N): the overall share translated — every language's texts as one number.
-        # Between releases the catalogs may lag (exit 3: the board only tells, grey); on master, and on a --release run,
-        # main must ship complete, so anything untranslated is a finding, red, and the copy waits (the same common
-        # checks code and result line as the other check tools).
+        # devtools's Translations block: the overall share translated, and each language against its target (devtools.toml's
+        # [i18n] targets for the code's role: 0 between releases, where the catalogs may lag — the block only tells, grey;
+        # 100 on main, which must ship complete — a language short is a finding, held as the rule says). The same common
+        # checks code and result line as the other check tools.
         from dev import checks
         from dev.checks import Check, Finding, Outcome
-        from dev.progress import counted, detail, result, said
+        from dev.progress import counted
+        r = rules_now()
+        targets = targets_now()
         strict = strict_now()
         shown = page(keys, problems, strict)   # (its page in the devtools UI: the one account, the numbers below from it)
+        shown["targets"] = targets
         left = {lang["code"]: lang["total"] - lang["done"] for lang in shown["languages"] if lang["done"] < lang["total"]}
         facts = [f"{shown['pct']:.1f}% translated", counted(len(TRANSLATED), "language"), counted(len(keys), "text")]
-        if strict:
-            found = [Finding("Translations", os.path.join("plexcache", "web", "i18n", f"{code}.json"), 0, 0, "error",
-                             f"{n} of {counted(len(keys), 'text')} untranslated")
-                     for code, n in sorted(left.items(), key=lambda kv: (-kv[1], kv[0]))]
-            if found:
-                print("  every text must be translated before this lands on main: python3 dev/i18n.py sync, then fill"
-                      " what's null (python3 dev/i18n.py missing <code> says what a language still needs)")
-            outcome = Outcome("Translations", "", found, facts=facts)
-            return checks.run([Check("Translations", lambda: outcome)], bar="i18n", more=shown)
-        detail(shown)
-        if left:
+        found = []
+        level = r.targets_level("targets") if r else "off"
+        short = [(lang["code"], lang["pct"], targets[lang["code"]]) for lang in shown["languages"]
+                 if lang["code"] in targets and lang["pct"] < targets[lang["code"]]]
+        for code, pct, target in sorted(short, key=lambda t: (t[1] - t[2], t[0])):
+            found.append(Finding("Translations", catalog(code), 0, 0, "error",
+                                 f"{pct:.1f}% translated, under its target of {target:g}% ({left.get(code, 0)} of {counted(len(keys), 'text')} to do)",
+                                 "targets", level=level))
+        if short and all(t >= 100 for _, _, t in short):
+            print("  every text must be translated before this lands on main: python3 dev/i18n.py sync, then fill"
+                  " what's null (python3 dev/i18n.py missing <code> says what a language still needs)")
+        elif left and not short:
             print(f"  {counted(sum(left.values()), 'translation')} still to do in {counted(len(left), 'language')}"
                   " (the catalogs may lag between releases; a release completes them)")
-        line = result(*facts)
-        print(line)
-        said(line)
-        return 0 if not left else 3
+        if r and r.level("unused") != "off":
+            for code in TRANSLATED + list(VARIANTS):
+                for problem in check_catalog(code, keys, load(code), release=True):
+                    found.append(Finding("Translations", catalog(code), 0, 0, "warning",
+                                         problem, "unused", level=r.level("unused")))
+        if r and r.level("present") != "off" and r.ctx.base:
+            found += present_check(keys, r.ctx.base, r.level("present"))
+        notes = {"info": "in progress", "warn": "behind target", "fail": "under target"}
+        if level != "off" and not strict:   # (a language with no target here, not complete: told, grey — not met, not failed)
+            for lang in shown["languages"]:
+                code = lang["code"]
+                if code in left and not targets.get(code):
+                    found.append(Finding("Translations", catalog(code), 0, 0, "information",
+                                         f"{lang['pct']:.1f}% translated, no target here ({left[code]} of {counted(len(keys), 'text')} to do)",
+                                         "targets", level="info"))
+        # each language its own check, so the bar counts them: at its target, or short at the target's level. A finding
+        # of an English spelling (en-US, en-GB) is the catalogs', a check of its own only when there is one.
+        mine = {code: [f for f in found if f.path == catalog(code)] for code in TRANSLATED}
+        rest = [f for f in found if not any(f.path == catalog(code) for code in TRANSLATED)]
+        units = [Check(code, (lambda fs=fs, code=code: Outcome(code, "", fs))) for code, fs in mine.items()]
+        if rest:
+            units.append(Check("English spellings", lambda: Outcome("English spellings", "", rest)))
+        return checks.run(units, bar="i18n", more=shown, rules=r, notes=notes, met="languages at target", facts=facts)
     if cmd == "keys":
         for k in keys:
             print(k)

@@ -61,9 +61,13 @@ REVIEW = "python3 dev/style.py review"   # the one command to give the maintaine
 # date, opens the page and has the Approve buttons (approve, at a terminal, is the same without the page)
 FORMAT = 1
 sys.path.insert(0, ROOT)
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import devpage  # noqa: E402  (the dev tools' pages' colours)
-from progress import Progress, feeding, result, said, tally, then  # noqa: E402  (the dev tools' shared progress bar, and devtools's line under it)
+from dev import devpage, policy  # noqa: E402 — the dev tools' pages' colours, and the rules (devtools.toml)
+
+# The rules (devtools.toml's [style]): what looks waiting for approval are held as.
+SCHEMA = policy.Schema("style", "Style Approval", {
+    "waiting": policy.Setting("level", "looks not in the style guide, waiting for approval"),
+}, "The looks the app wears, against the style guide.")
+from dev.progress import Progress, feeding, result, said, tally, then  # noqa: E402 — the dev tools' shared progress bar, and devtools's line under it
 
 
 def _dev(name: str, file: str):
@@ -1560,7 +1564,14 @@ def main(argv: list[str]) -> int:
             if os.environ.get("DEVTOOLS_RECHECK") != "1":   # (checked again after the review: its line stands, what was approved)
                 said(result(tally(len(now), "look", "approved")))
             then(0)
-        return 1 if found else 0
+        if not found:
+            return 0
+        from dev import checks, policy
+        r = checks.levels("style")
+        level = r.level("waiting") if r else "warn"
+        from dev.progress import status
+        status("looks waiting")
+        return policy.exit_code([level])
     if cmd == "sample":
         rest = argv[2:]
         if rest and (rest[0] != "--before" or len(rest) != 2):

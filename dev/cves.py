@@ -6,14 +6,14 @@ us to do — always as a warning (the block orange), never a failure:
 
   - fixed in a patch or minor release upkeep moves by itself: nothing asked; the move's line says what it fixes;
   - fixed in a Debian package or the base image's own Python packages: nothing, unless the published image still lacks
-    the fix DEBIAN_GRACE days after it was first seen (the weekly rebuild takes it; shown only when it didn't);
+    the fix debian_grace_days after it was first seen (the weekly rebuild takes it; shown only when it didn't);
   - fixed only in a major release, or in a version held by choice (upkeep's HOLD): shown — moving is yours;
-  - fixed, but in a package pulled in by another (npm's) that still asks for the old one: quiet for STALE days, then
+  - fixed, but in a package pulled in by another (npm's) that still asks for the old one: quiet for stale_days, then
     shown, with the choices (an npm override, a newer parent, replacing it);
   - fixed in upstream's git only, on a date (NVD's range for a git snapshot, with no release named): quiet when the
     release we have was made after that date (its tag, TAGS), so has it; shown when it's older or can't be dated;
-  - no fix: quiet while upstream is at it; shown once there's been none for STALE days, or upstream has made no release
-    in DORMANT days — "no fix coming": replace it, patch it ourselves, or move to a maintained fork.
+  - no fix: quiet while upstream is at it; shown once there's been none for stale_days, or upstream has made no release
+    in dormant_days — "no fix coming": replace it, patch it ourselves, or move to a maintained fork.
     A Debian package's CVE with no fix is Debian's call (it maintains them, and says which it will fix): counted, not shown.
 
 One fixed here already, that only waits for the image's next build — pip's packages once the Dockerfile takes pip out,
@@ -21,7 +21,7 @@ or a package of an image built from an older Dockerfile on another OS (latest, u
 "fixed in dev, waiting on the release", not counted and not orange.
 
 What's shown can be decided (DECISIONS, the maintainer's only): the choice, when, and why. A decided CVE goes quiet; it's
-looked at again REVIEW days on, and as soon as a fix comes out for one decided with none (replace, patch, fork); a "not
+looked at again review_days on, and as soon as a fix comes out for one decided with none (replace, patch, fork); a "not
 reachable" one stays decided with a fix (a fix in a package pulled in by another, which still asks for the old one).
 
 Where the CVEs come from: OSV (osv.dev) for the npm packages of dev/package-lock.json and for oxipng (a Rust crate); NVD
@@ -47,10 +47,19 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CACHE = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "plex-cache", "cves.json")
 SEEN = os.path.join(os.path.dirname(CACHE), "cves-seen.json")   # each image fix as first seen missing: how long it's been
 DAY = 24 * 3600
-STALE = 90      # days a CVE may go without a fix (or a fix without reaching us) before it's ours to act on
-DORMANT = 365   # days without an upstream release: no fix is coming
-DEBIAN_GRACE = 8   # days after a Debian fix before an image without it is shown (the weekly rebuild takes it)
-REVIEW = 182    # days a decision stands before the CVE is shown again
+
+
+def windows() -> dict[str, float]:
+    """The CVE windows, in days (devtools.toml's [upkeep], through dev/policy.py — nothing here decides them): stale, how long
+    a CVE may go without a fix (or a fix without reaching us) before it's ours to act on; dormant, how long upstream may make
+    no release before no fix is coming; debian_grace, how long after a Debian fix an image without it waits (the weekly
+    rebuild takes it); review, how long a decision stands before the CVE is shown again. One not set is no limit."""
+    from dev import checks
+    r = checks.levels("upkeep")
+    inf = float("inf")
+    if r is None:
+        return {"stale": inf, "dormant": inf, "debian_grace": inf, "review": inf}
+    return {k: (inf if r.value(k + "_days") is None else float(r.value(k + "_days") or 0)) for k in ("stale", "dormant", "debian_grace", "review")}
 
 # A CVE decided: its ID → (the choice: "replace", "patch", "fork" or "not reachable", the date, why). The maintainer's only.
 DECISIONS: dict[str, tuple[str, str, str]] = {}
@@ -311,14 +320,14 @@ def source() -> str:
 
 
 def source_branch() -> str:
-    """The branch that copy is of: what devtools was asked for (DEVTOOLS_MODE: main or release are main, dev or beta are dev),
-    else (devtools local, or no devtools) the branch checked out here; "" when it's neither."""
-    mode = os.environ.get("DEVTOOLS_MODE", "")
-    if mode in ("main", "master", "release"):
-        return "main"
-    if mode in ("dev", "beta"):
-        return "dev"
-    from dev import upkeep
+    """The branch that copy is of: the one devtools worked out for the code it's checking (dev/policy.py's context:
+    DEVTOOLS_BRANCH), else (no devtools) the branch checked out here; "" when it's neither."""
+    from dev import policy, upkeep
+    if policy.find_file():
+        try:
+            return policy.context().branch or upkeep.branch() or ""
+        except policy.ConfigError:
+            pass
     return upkeep.branch() or ""
 
 
@@ -337,9 +346,16 @@ def build_local(src: str, status: Callable[[str], None] | None = None) -> tuple[
     if ROOT not in sys.path:
         sys.path.insert(0, ROOT)
     from dev import future
-    buildkit = future.has_buildkit()
-    cmd = ["docker", "buildx", "build", "--load", "--progress=plain"] if buildkit else ["docker", "build"]
     tell = status or (lambda text: None)
+    # (Docker's engine as the future run finds it: started, or at its own socket — said to the bar, never on stdout, where
+    # the Dependencies' first line is the word the board reads)
+    why = future.docker_up(say=lambda text: tell(text.strip()[:120]))
+    if why:
+        return "", why
+    buildkit = future.has_buildkit()
+    if not buildkit:
+        return "", future.NO_BUILDKIT
+    cmd = ["docker", "buildx", "build", "--load", "--progress=plain"] if buildkit else ["docker", "build"]
     tell(f"building {LOCAL_LABEL}")
     try:
         os.makedirs(os.path.dirname(BUILD_LOG), exist_ok=True)
@@ -417,7 +433,7 @@ def scan(image: str, local: bool = False) -> list[Vuln]:
 # ---------------------------------------------------------------- when upstream last made a release
 def released_at(vulns: list[Vuln]) -> dict[str, float]:
     """When each package with a CVE that has no fix last had a release upstream (npm's registry, GitHub's releases): what
-    tells "no fix yet" from "no fix coming". A package not found here is left out (the STALE rule still holds for it)."""
+    tells "no fix yet" from "no fix coming". A package not found here is left out (the stale_days rule still holds for it)."""
     out: dict[str, float] = {}
     for name in sorted({v.package for v in vulns if not v.fixed and v.kind in ("npm", "npm-via", "pin")}):
         try:
@@ -576,6 +592,8 @@ def judge(vulns: list[Vuln], plan: dict[str, tuple[str, str, str]], released: di
     move, report, behind, for dev or held); ``released``: when each package's newest release came out, where known (released_at)."""
     now = time.time() if now is None else now
     released = released or {}
+    w = windows()
+    stale, dormant, debian_grace, review = w["stale"], w["dormant"], w["debian_grace"], w["review"]   # (the windows: devtools.toml's [upkeep] *_days)
     out = Judged()
     seen: set[tuple[str, str]] = set()
     image_fixes: dict[tuple[str, str, str, str], list[Vuln]] = {}   # (kind, package, version, image) → its CVEs: one line each
@@ -588,7 +606,7 @@ def judge(vulns: list[Vuln], plan: dict[str, tuple[str, str, str]], released: di
         decision = DECISIONS.get(v.id)
         if decision:
             since = _when(decision[1])
-            if now - since < REVIEW * DAY and (decision[0] == "not reachable" or not fixed):   # (a fix since a no-fix choice: as any fix)
+            if now - since < review * DAY and (decision[0] == "not reachable" or not fixed):   # (a fix since a no-fix choice: as any fix)
                 out.decided += 1
                 continue
         where = f"{v.package} {v.version}"
@@ -598,7 +616,7 @@ def judge(vulns: list[Vuln], plan: dict[str, tuple[str, str, str]], released: di
                 out.quiet += 0 if v.kind == "debian" else 1
                 continue
             since = v.seen or v.published
-            if now - since < DEBIAN_GRACE * DAY:   # (a fix this new: the weekly rebuild takes it)
+            if now - since < debian_grace * DAY:   # (a fix this new: the weekly rebuild takes it)
                 out.quiet += 1
                 continue
             image_fixes.setdefault((v.kind, v.package, v.version, v.image), []).append(v)
@@ -622,7 +640,7 @@ def judge(vulns: list[Vuln], plan: dict[str, tuple[str, str, str]], released: di
             continue
         age = _days(now - v.published) if v.published else 0
         if v.kind == "npm-via" and fixed:
-            if age < STALE:
+            if age < stale:
                 out.quiet += 1
                 continue
             out.act.append((f"{v.id} in {where} (pulled in by {dep})",
@@ -630,10 +648,10 @@ def judge(vulns: list[Vuln], plan: dict[str, tuple[str, str, str]], released: di
                             f"(\"overrides\" in dev/package.json), a newer {dep.split(', ')[0]}, or replacing it."))
             continue
         quiet_for = _days(now - released[v.package]) if released.get(v.package) else 0
-        if age < STALE and quiet_for < DORMANT:
+        if age < stale and quiet_for < dormant:
             out.quiet += 1
             continue
-        why = f"no fix after {age} days" if age >= STALE else f"no fix, and no release of {v.package} in {quiet_for} days"
+        why = f"no fix after {age} days" if age >= stale else f"no fix, and no release of {v.package} in {quiet_for} days"
         out.act.append((f"{v.id} in {where}" + (f" (pulled in by {dep})" if v.kind == "npm-via" else ""),
                         f"No fix coming ({why}): replace it, patch it ourselves, or move to a maintained fork; then record "
                         "the choice in DECISIONS (dev/cves.py)."))
@@ -656,7 +674,7 @@ def judge(vulns: list[Vuln], plan: dict[str, tuple[str, str, str]], released: di
         if kind == "debian":
             todo = (f"Fixed in {fixed}, but the image still has {version} {days} days on: "
                     + (f"it was last built {_days(now - built)} days ago, so rebuild it (build.yml, workflow_dispatch); "
-                       if built and now - built >= DEBIAN_GRACE * DAY else "the base image hasn't taken it; ")
+                       if built and now - built >= debian_grace * DAY else "the base image hasn't taken it; ")
                     + (f"an apk upgrade {package}" if distro == "alpine" else f"an apt-get install --only-upgrade {package}")
                     + " in the Dockerfile's final stage takes it now.")
             out.act.append((f"{ids} in {package} {version} ({distro.title()}, in {image})", todo))

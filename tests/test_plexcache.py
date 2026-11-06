@@ -52,6 +52,34 @@ os.environ["PLEXCACHE_OPTIMIZER_URL"] = "http://127.0.0.1:9"
 MEDIA = os.path.join(TMP, "media")
 import fakes  # noqa: E402
 
+
+def _toml(project: str, **cmds: str) -> str:
+    """A devtools.toml for a test project: each integration given (unit, future, dhtml, types, build, coverage, audit, i18n,
+    release, upkeep, style) with its command, and the rules dev/starter.toml gives it; the rest left out. The path."""
+    import tomllib
+
+    from dev import policy
+    with open(os.path.join(ROOT, "dev", "starter.toml"), "rb") as fh:
+        data = tomllib.load(fh)
+    unknown = set(cmds) - set(data["integrations"])
+    assert not unknown, f"not integrations of dev/starter.toml: {unknown}"
+    data["integrations"] = {i: {k: v for k, v in spec.items() if k != "needs"} | {"cmd": cmds[i]} for i, spec in data["integrations"].items() if i in cmds}
+    for k in list(data):
+        if k not in ("config", "branches", "tags", "phases", "roles", "github", "gates", "integrations") and k not in cmds:
+            del data[k]
+    path = os.path.join(project, "devtools.toml")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(policy.dumps(data))
+    return path
+
+
+def _policy_env(role: str = "development", diff: bool = False, gate: str = "", base: str = "", **more: str) -> dict[str, str]:
+    """The context devtools gives each check (dev/policy.py), for a test that runs a tool as the board would: that role's
+    rules, whatever branch this checkout is on."""
+    return {"DEVTOOLS_CONFIG": os.path.join(ROOT, "devtools.toml"), "DEVTOOLS_CODE": "local", "DEVTOOLS_BRANCH": "dev",
+            "DEVTOOLS_ROLE": role, "DEVTOOLS_PHASE": "", "DEVTOOLS_TAG": "", "DEVTOOLS_DIFF": "1" if diff else "0",
+            "DEVTOOLS_GATE": gate, "DEVTOOLS_BASE": base, **more}
+
 CAT = fakes.make_media(MEDIA)
 # TV sits on its own child dataset, like many real setups.
 # A spare dataset is mounted too, with no library in it.
@@ -4635,9 +4663,9 @@ class TestRunnerTests(unittest.TestCase):
         path = os.path.join(folder, "upkeep.json")
         with mock.patch.object(upkeep, "check", return_value=r), mock.patch.object(upkeep, "branch", return_value="dev"), \
                 mock.patch.object(upkeep, "_progress", return_value=None), mock.patch.object(sys, "argv", ["upkeep.py", "--devtools"]), \
-                mock.patch.dict(os.environ, {"DEVTOOLS_DETAIL": path, "DEVTOOLS_UPKEEP": "look", "PLEXCACHE_PROGRESS": ""}), \
+                mock.patch.dict(os.environ, _policy_env(DEVTOOLS_DETAIL=path, DEVTOOLS_UPKEEP="look", PLEXCACHE_PROGRESS="")), \
                 contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(upkeep.main(), 0)
+            self.assertEqual(upkeep.main(), 4)   # (behind: a warning, as [upkeep] behind says)
         with open(path, encoding="utf-8") as fh:
             written = json.load(fh)
         self.assertEqual((written["step"], written["deps"]), ("look", r.deps))
@@ -5251,7 +5279,13 @@ class TestRunnerTests(unittest.TestCase):
         s.live = False                                     # (the board done: the command again, and no key)
         self.assertFalse(s.keyed)
         self.assertIn("3 looks need your approval: python3 dev/style.py review", s.lines(80)[2])
-        self.assertIn('review --board', _read(os.path.join(ROOT, "dev", "devtools"), encoding="utf-8"))
+        from dev import plan, policy
+        req = {"want": "check", "code": "local", "src": ROOT, "root": ROOT, "config": os.path.join(ROOT, "devtools.toml"), "tty": True,
+               "env": _policy_env("development"), "label": "Local Copy"}
+        sec = next(x for x in plan.build(req, policy.Config(req["config"]))[0]["sections"] if x["id"] == "style")   # (the block as devtools plans it)
+        self.assertEqual((sec["key"]["key"], sec["key"]["cmd"], sec["key"]["cwd"]), ("r", "python3 dev/style.py review --board", ROOT))
+        self.assertEqual((sec["then"]["cmd"], sec["finale"]["cmd"], sec["finale"]["env"]), ("python3 dev/style.py sample", "python3 dev/style.py review --step", {"DEVTOOLS_SAMPLE": "0", "DEVTOOLS_RECHECK": "1"}))
+        self.assertNotIn("key", plan.build(req | {"tty": False}, policy.Config(req["config"]))[0]["sections"][-1])   # (no keys read: no key)
 
     @unittest.skipUnless(shutil.which("rsync") and shutil.which("bash"), "no rsync here (devtools copies with it)")
     def test_no_sample_keeps_the_style_check_as_it_was(self):
@@ -5265,9 +5299,13 @@ class TestRunnerTests(unittest.TestCase):
         bars = [r for r in map(record, got.stdout.split("\n")) if r and "bar" in r]
         self.assertEqual([(b["label"], b["workers"], b["done"] == b["total"]) for b in bars], [("looks · against the style guide", 1, True)])
         self.assertNotIn("sample", " ".join(str(b) for b in bars))
-        devtools = _read(os.path.join(ROOT, "dev", "devtools"), encoding="utf-8")
-        self.assertIn('local then=", \\"env\\": {\\"DEVTOOLS_SAMPLE\\": \\"0\\"}"', devtools)   # (--no-sample: no "then", the check as it was)
-        self.assertIn('if [ "$NO_SAMPLE" != 1 ] && [[ "$TN_STYLE" == *" check" ]]; then', devtools)
+        from dev import plan, policy
+        req = {"want": "check", "code": "local", "src": ROOT, "root": ROOT, "config": os.path.join(ROOT, "devtools.toml"), "tty": True,
+               "env": _policy_env("development"), "label": "Local Copy", "no_sample": True}
+        got, _ = plan.build(req, policy.Config(req["config"]))
+        sec = got["sections"][-1]   # (--no-sample: no "then", no finale, the check as it was, DEVTOOLS_SAMPLE=0)
+        self.assertEqual((sec["id"], sec["env"]["DEVTOOLS_SAMPLE"], "then" in sec, "finale" in sec), ("style", "0", False, False))
+        self.assertEqual(got["header"], ["Local Copy · development · No sample"])
 
     def test_devtools_opens_the_review_once_the_board_is_done(self):
         """Once the rest of the board is done with looks waiting (Style Approval LOOKS WAITING, none failed), their review is
@@ -5287,7 +5325,7 @@ class TestRunnerTests(unittest.TestCase):
         with open(style, "w", encoding="utf-8") as fh:   # (dev/style.py as devtools sees it: check, sample, review)
             fh.write(f'#!/bin/bash\ncase "$1" in check) [ -n "$DEVTOOLS_RECHECK" ] && [ -f {folder}/reviewed ] && exit 0; '
                      f'echo "2 looks not in the style guide, for the maintainer to look at and approve: x"; '
-                     f"printf '\\036{{\"then\": 0}}\\n'; exit 1 ;; review) echo \"review $*\" >> {folder}/reviewed; sleep 0.6; "
+                     f"printf '\\036{{\"then\": 0}}\\n'; printf '\\036{{\"status\": \"looks waiting\"}}\\n'; exit 4 ;; review) echo \"review $*\" >> {folder}/reviewed; sleep 0.6; "
                      f"printf '\\036{{\"said\": \"2 approved just now · commit dev/style-guide.json and dev/style-approved.zip\"}}\\n' ;; esac\n")
         os.chmod(os.path.join(fake, "ssh"), 0o755)
         os.chmod(style, 0o755)
@@ -5299,7 +5337,8 @@ class TestRunnerTests(unittest.TestCase):
 
         def run(*args, test="echo 1 test passed", terminal=True):
             with open(os.path.join(project, ".devtools"), "w", encoding="utf-8") as fh:
-                fh.write(f"TN_APP=myapp\nTN_DEST={nas}\nTN_PATHS=app\nTN_TEST={test}\nTN_STYLE={style} check\n")
+                fh.write(f"TN_APP=myapp\nTN_DEST={nas}\nTN_PATHS=app\n")
+            _toml(project, unit=test, style=f"{style} check")
             with open(os.path.join(project, "app", "code.py"), "w", encoding="utf-8") as fh:   # (something to copy each time)
                 fh.write(f"{time.time()}\n")
             if os.path.exists(os.path.join(folder, "reviewed")):
@@ -5400,6 +5439,7 @@ class TestRunnerTests(unittest.TestCase):
             fh.write("TN_HOST=nas.example\nTN_USER=me\n")
         with open(os.path.join(project, ".devtools"), "w", encoding="utf-8") as fh:
             fh.write(f"TN_APP=myapp\nTN_DEST={nas}\nTN_PATHS=app\n")
+        _toml(project, unit="echo 1 test passed")
         state = os.path.join(folder, "state")
         env = dict(os.environ, PATH=fake + os.pathsep + os.environ.get("PATH", ""), DEVTOOLS_CONFIG=os.path.join(folder, "config"),
                    XDG_STATE_HOME=state, TMPDIR=folder)
@@ -5446,6 +5486,7 @@ class TestRunnerTests(unittest.TestCase):
                    XDG_STATE_HOME=os.path.join(folder, "state"), TMPDIR=folder)
         env.pop("PLEXCACHE_PROGRESS", None)
         good = f"TN_APP=myapp\nTN_DEST={nas}\nTN_PATHS=app\n"
+        _toml(project, unit="echo 1 test passed")
 
         def run(settings, *args, cwd=project, shared="TN_HOST=nas.example\nTN_USER=me\n"):
             with open(config, "w", encoding="utf-8") as fh:
@@ -5540,13 +5581,14 @@ class TestRunnerTests(unittest.TestCase):
                 (together("test", "12 tests passed"), together("validate", "checked"), together("types", "0 errors"),
                  together("build", "0 ShellCheck findings"))
             with open(os.path.join(project, ".devtools"), "w", encoding="utf-8") as fh:
-                fh.write(f"TN_APP=myapp\nTN_DEST={nas}\nTN_PATHS=app\nTN_TEST={checks[0]}\nTN_VALIDATE={checks[1]}\nTN_TYPES={checks[2]}\n"
-                         f"TN_BUILD={checks[3]}\n"
-                         # (once the tests are done: their marker gone; a test to add is a warning, not a failure)
-                         f"TN_COVERAGE=[ ! -f {folder}/test ] && echo 2 fresh functions no test reaches; exit 1\n"
-                         "TN_UPKEEP=echo current; echo DEPENDENCIES  -  ALL UP TO DATE; echo; echo upkeep: $DEVTOOLS_UPKEEP\n"
-                         "TN_AUDIT=echo 3 lines no audit has seen; exit 1\n"   # (code to audit: a warning, straight away)
-                         "TN_STYLE=echo '  new: css .a'; echo 2 looks need your approval: /the/page.html; exit 1\n")
+                fh.write(f"TN_APP=myapp\nTN_DEST={nas}\nTN_PATHS=app\n")
+            status = lambda note: f"printf '\\036{{\"status\": \"{note}\"}}\\n'"   # (the note beside the block's title, as a tool sends it)
+            _toml(project, unit=checks[0], dhtml=checks[1], types=checks[2], build=checks[3],
+                  # (once the tests are done: their marker gone; a test to add is a warning (exit 4), not a failure)
+                  coverage=f"[ ! -f {folder}/test ] && echo 2 fresh functions no test reaches; {status('tests to add')}; exit 4",
+                  upkeep="echo current; echo DEPENDENCIES  -  ALL UP TO DATE; echo; echo upkeep: $DEVTOOLS_UPKEEP",
+                  audit=f"echo 3 lines no audit has seen; {status('code to audit')}; exit 4",   # (code to audit: a warning, straight away)
+                  style=f"echo '  new: css .a'; echo 2 looks need your approval: /the/page.html; {status('looks waiting')}; exit 4")
         env = dict(os.environ, PATH=fake + os.pathsep + os.environ.get("PATH", ""), DEVTOOLS_CONFIG=os.path.join(folder, "config"),
                    XDG_STATE_HOME=os.path.join(folder, "state"), TMPDIR=folder)
         env.pop("PLEXCACHE_PROGRESS", None)
@@ -5573,7 +5615,7 @@ class TestRunnerTests(unittest.TestCase):
         self.assertEqual(_read(os.path.join(folder, "restarts"), encoding="utf-8"), "call -j app.redeploy myapp\n")
         self.assertNotIn("ALL CHECKS PASSED", out)   # (each section said its own: nothing said again)
         self.assertNotIn("\n  DEPENDENCIES  -  ALL UP TO DATE", out)   # (its box: none when all are current)
-        for said in ("Current Tests: PASSED (12 tests passed)", "HTML/JS/CSS Validation: PASSED (checked)", "Python Validation: PASSED (0 errors)",
+        for said in ("Unit Tests: PASSED (12 tests passed)", "DHTML: PASSED (checked)", "Python Validation: PASSED (0 errors)",
                      "Build Validation: PASSED (0 ShellCheck findings)", "Dependencies: UP TO DATE", "==> Dependencies: export DEVTOOLS_UPKEEP=move",
                      "Style Approval: LOOKS WAITING (2 looks need your approval: /the/page.html)",
                      "Coverage: TESTS TO ADD (2 fresh functions no test reaches)",
@@ -5583,7 +5625,7 @@ class TestRunnerTests(unittest.TestCase):
         rc, out = devtools()   # (a check, in sync: said, nothing restarted)
         self.assertEqual(rc, 0, out)
         self.assertIn("Sync to nas.example: ALREADY IN SYNC (Nothing copied · nas.example already has these files", out)   # (in its block, as each check is)
-        self.assertRegex(out, r"Current Tests: ALREADY PASSED \(Passed just now \(\d{4}-\d\d-\d\d \d\d:\d\d\) · 12 tests passed\)")   # (when, and its result from then)
+        self.assertRegex(out, r"Unit Tests: ALREADY PASSED \(Passed just now \(\d{4}-\d\d-\d\d \d\d:\d\d\) · 12 tests passed\)")   # (when, and its result from then)
         self.assertRegex(out, r"Python Validation: ALREADY PASSED \(Passed just now \(\d{4}-\d\d-\d\d \d\d:\d\d\) · 0 errors\)")
         self.assertIn("Security Audit: CODE TO AUDIT (3 lines no audit has seen)", out)   # (the audits, read again)
         self.assertNotIn("passed on this code", out)
@@ -5591,27 +5633,27 @@ class TestRunnerTests(unittest.TestCase):
         self.assertIn("Coverage: TESTS TO ADD (2 fresh functions no test reaches)", out)   # (said again: from what the tests saved)
         self.assertNotIn("ALREADY IN SYNC  -", out)   # (no box of its own: its block says it)
         if shutil.which("git"):   # a change outside what's copied (the tests, the dev tools) is a change to the code too: tested again
-            subprocess.run(["git", "init", "-q", project], check=True)
+            subprocess.run(["git", "init", "-q", "-b", "topic", project], check=True)   # (a feature branch: the role as it was)
             rc, out = devtools("push")   # (now a checkout: what the tests ran on is known, and this is the first time it is)
             self.assertIn("The code has changed since the last test run", out)
             rc, out = devtools("push")
-            self.assertRegex(out, r"Current Tests: ALREADY PASSED")
+            self.assertRegex(out, r"Unit Tests: ALREADY PASSED")
             os.makedirs(os.path.join(project, "tests"))
             with open(os.path.join(project, "tests", "test_it.py"), "w", encoding="utf-8") as fh:
                 fh.write("one more\n")
             rc, out = devtools("push")
             self.assertEqual(rc, 0, out)
             self.assertIn("Sync to nas.example: PASSED (The code has changed since the last test run (the tests or the dev tools, if not the app) · nothing copied · restarted myapp)", out)
-            self.assertIn("Current Tests: PASSED (12 tests passed)", out)
+            self.assertIn("Unit Tests: PASSED (12 tests passed)", out)
             rc, out = devtools("push")
-            self.assertRegex(out, r"Current Tests: ALREADY PASSED")
+            self.assertRegex(out, r"Unit Tests: ALREADY PASSED")
         # the NAS out of reach: the Sync block says so, red, with what ssh said; the checks run all the same
         rc, out = devtools("push", "--no-sample")   # (Style Approval only checks: said in the header's modes)
         self.assertRegex(out, r"\nLocal Copy[^\n]* · No sample")
         rc, out = devtools("push", NAS_DOWN="1")
         self.assertEqual(rc, 1, out)
         self.assertIn("Sync to nas.example: CAN'T CONNECT: NOTHING COPIED (ssh: connect to host nas.example: timed out)", out)
-        self.assertIn("Current Tests: PASSED", out)
+        self.assertIn("Unit Tests: PASSED", out)
         # a failing check with --tests-first: nothing copied (nor restarted)
         with open(os.path.join(project, "app", "code.py"), "w", encoding="utf-8") as fh:
             fh.write("two\n")
@@ -5619,7 +5661,7 @@ class TestRunnerTests(unittest.TestCase):
         rc, out = devtools("push", "--tests-first")
         self.assertEqual(rc, 1, out)
         self.assertEqual(_read(os.path.join(nas, "app", "code.py"), encoding="utf-8"), "one\n")
-        self.assertIn("Sync to nas.example: NOT RUN: CURRENT TESTS DIDN'T PASS", out)
+        self.assertIn("Sync to nas.example: NOT RUN: UNIT TESTS DIDN'T PASS", out)
         self.assertIn("\nthe failure\n", out)
         self.assertIn("\nLocal Copy", out)   # (the board's header)
         settings()
@@ -5658,7 +5700,7 @@ class TestRunnerTests(unittest.TestCase):
         rc, out = devtools("restart")
         self.assertEqual(rc, 0, out)
         self.assertIn("Nothing copied · restarted myapp", out)
-        self.assertNotIn("Current Tests", out)
+        self.assertNotIn("Unit Tests", out)
         self.assertEqual(_read(os.path.join(folder, "restarts"), encoding="utf-8").count("\n"), restarts + 4)
         rc, out = devtools("restart", MIDCLT_FAIL="1")
         self.assertEqual(rc, 4, out)
@@ -5716,10 +5758,12 @@ class DevToolsUITests(unittest.TestCase):
         with open(os.path.join(folder, "config"), "w", encoding="utf-8") as fh:
             fh.write("TN_HOST=nas.example\nTN_USER=me\n")
         with open(os.path.join(project, ".devtools"), "w", encoding="utf-8") as fh:
-            fh.write(f"TN_APP=myapp\nTN_DEST={nas}\nTN_PATHS=app\nTN_TEST=echo 3 tests passed\nTN_TYPES=echo 0 errors\n"
-                     "TN_BUILD=echo 2 ShellCheck findings; exit 1\nTN_COVERAGE=echo 1 fresh function no test reaches; exit 1\n"
-                     "TN_UPKEEP=echo current; echo DEPENDENCIES  -  ALL UP TO DATE\nTN_AUDIT=echo 3 lines no audit has seen; exit 1\n"
-                     "TN_I18N=echo 32% translated; exit 3\nTN_RELEASE=echo 3 of 8 ready; exit 3\n")
+            fh.write(f"TN_APP=myapp\nTN_DEST={nas}\nTN_PATHS=app\n")
+        status = lambda note: f"printf '\\036{{\"status\": \"{note}\"}}\\n'"
+        _toml(project, unit="echo 3 tests passed", types="echo 0 errors", build="echo 2 ShellCheck findings; exit 1",
+              coverage=f"echo 1 fresh function no test reaches; {status('tests to add')}; exit 4",
+              upkeep="echo current; echo DEPENDENCIES  -  ALL UP TO DATE", audit=f"echo 3 lines no audit has seen; {status('code to audit')}; exit 4",
+              i18n=f"echo 32% translated; {status('in progress')}; exit 3", release=f"echo 3 of 8 ready; {status('in progress')}; exit 3")
         env = dict(os.environ, PATH=fake + os.pathsep + os.environ.get("PATH", ""), DEVTOOLS_CONFIG=os.path.join(folder, "config"),
                    XDG_STATE_HOME=os.path.join(folder, "state"), TMPDIR=folder)
         for k in ("PLEXCACHE_PROGRESS", "DEVTOOLS_STEP", "DEVTOOLS_RUNS"):
@@ -5745,7 +5789,7 @@ class DevToolsUITests(unittest.TestCase):
         folder, run = self.toy()
         rc, out = run("local", "--checks-only")
         self.assertEqual(rc, 1, out)   # (the build check fails: said, as on any run)
-        self.assertIn("Local Copy · Checks only", out)
+        self.assertIn("Local Copy · feature · Checks only", out)   # (the branch has no role set in devtools.toml: "*", feature)
         self.assertNotIn("Sync to", out)
         self.assertFalse(os.path.exists(os.path.join(folder, "ssh-calls")))   # (the NAS wasn't asked)
         self.assertEqual([n for n in os.listdir(os.path.join(folder, "state", "devtools")) if n not in ("runs", "ssh")], [])   # (no result for the NAS)
@@ -5753,21 +5797,24 @@ class DevToolsUITests(unittest.TestCase):
         self.assertEqual(len(names), 1)
         self.assertRegex(names[0], r"^\d{8}-\d{6}-\d+$")
         record = os.path.join(folder, "state", "devtools", "runs", names[0])
-        self.assertEqual(sorted(os.listdir(record)), ["logs", "plan.json", "results", "state.json"])
+        self.assertEqual(sorted(os.listdir(record)), ["logs", "plan.json", "request.json", "results", "state.json"])   # (the request: what devtools asked dev/plan.py for)
         with open(os.path.join(record, "plan.json"), encoding="utf-8") as fh:
             plan = json.load(fh)
-        self.assertEqual((plan["mode"], plan["kind"], plan["only"], plan["release"]), ("local", "checks", "", 0))
+        self.assertEqual((plan["mode"], plan["kind"], plan["only"], plan["role"], plan["phase"], plan["gate"], plan["diff"]),
+                         ("local", "checks", "", "feature", "", "", False))
+        self.assertEqual(plan["config"], os.path.realpath(os.path.join(folder, "project", "devtools.toml")))
         self.assertEqual(plan["project"], os.path.realpath(os.path.join(folder, "project")))   # (the folder as it really is: on a Mac, /var is /private/var)
         self.assertEqual(plan["ui"]["cmd"], f"python3 {shlex.quote(os.path.join(os.path.realpath(ROOT), 'dev', 'devui.py'))}")
         pages = {s["id"]: s.get("page") for s in plan["sections"]}
-        self.assertEqual(pages, {"current": "c", "types": "p", "build": "b", "audit": None, "coverage": "o", "i18n": "t",
-                                 "release": "e", "upkeep": "d"})   # (the audit's key is a: the audits page, as it was)
-        self.assertEqual(plan["sections"][3]["key"]["key"], "a")
+        self.assertEqual(pages, {"unit": "u", "types": "v", "build": "b", "audit": None, "coverage": "c", "i18n": "t",
+                                 "release": "l", "upkeep": "d"})   # (the letters follow the menu, Hub and Sync first; the audit's key is a: the audits page)
+        self.assertEqual((plan["hub_key"], plan["letters"]["audit"]), ("h", "e"))
+        self.assertEqual(next(s for s in plan["sections"] if s["id"] == "audit")["key"]["key"], "a")
         with open(os.path.join(record, "state.json"), encoding="utf-8") as fh:
             state = json.load(fh)
         self.assertTrue(state["done"])
         self.assertEqual({s["id"]: s["state"] for s in state["sections"]},
-                         {"current": "pass", "types": "pass", "build": "fail", "audit": "warn", "coverage": "warn", "i18n": "info",
+                         {"unit": "pass", "types": "pass", "build": "fail", "audit": "warn", "coverage": "warn", "i18n": "info",
                           "release": "info", "upkeep": "pass"})
         build = next(s for s in state["sections"] if s["id"] == "build")
         self.assertEqual((build["status"], build["last"], build["page"], build["rc"]), ("FAILED", "2 ShellCheck findings", "b", 1))
@@ -5777,8 +5824,8 @@ class DevToolsUITests(unittest.TestCase):
         # one block alone, and the copy alone
         rc, out = run("local", "--only", "build")
         self.assertEqual(rc, 1, out)
-        self.assertIn("Local Copy · One block again", out)
-        self.assertNotIn("Current Tests", out)
+        self.assertIn("Local Copy · feature · One block again", out)
+        self.assertNotIn("Unit Tests", out)
         with open(os.path.join(folder, "state", "devtools", "runs", self.records(folder)[-1], "plan.json"), encoding="utf-8") as fh:
             plan = json.load(fh)
         self.assertEqual(([s["id"] for s in plan["sections"]], plan["kind"], plan["only"]), (["build"], "only", "build"))
@@ -5787,7 +5834,7 @@ class DevToolsUITests(unittest.TestCase):
         self.assertIn("--sync-only goes with push", out)
         rc, out = run("push", "local", "--sync-only")
         self.assertEqual(rc, 0, out)
-        self.assertIn("Local Copy · Push only", out)
+        self.assertIn("Local Copy · feature · Push only", out)
         self.assertIn("Sync to nas.example: PASSED", out)
         self.assertNotIn("Dependencies", out)
         self.assertNotIn("Tests and checks", out)
@@ -5804,7 +5851,7 @@ class DevToolsUITests(unittest.TestCase):
         self.assertEqual(sync["files"], ["code.py"])   # (as rsync lists them: within the path)
         rc, out = run("local", "--only", "nope")
         self.assertEqual(rc, 1)
-        self.assertIn("--only nope: not a block", out)
+        self.assertIn("--only nope: not an integration", out)
         rc, out = run("push", "local", "--sync-only", "--checks-only")
         self.assertEqual(rc, 1)
         # the oldest records go
@@ -5826,6 +5873,28 @@ class DevToolsUITests(unittest.TestCase):
         rc, out = run("--help")
         self.assertIn("devtools ui", out)
         self.assertIn("--only <id>", out)
+
+    def test_an_old_devtools_files_checks_are_moved_out(self):
+        """A .devtools from before devtools.toml (TN_TEST, TN_VALIDATE… lines, the checks' commands then): the first run that
+        meets them takes them out — the file kept aside as .devtools.before-toml, the lines said — and runs on; the next
+        run says nothing of it. The file is this computer's own, never committed (.gitignore has both)."""
+        folder, run = self.toy()
+        project = os.path.join(folder, "project")
+        with open(os.path.join(project, ".devtools"), "a", encoding="utf-8") as fh:
+            fh.write("TN_TEST=python3 -m unittest\n# a note\nTN_UPKEEP=python3 dev/upkeep.py\n")
+        rc, out = run("local", "--checks-only", "--skip-tests")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("moved the checks' settings out of", out)
+        self.assertIn("  TN_TEST=python3 -m unittest\n  TN_UPKEEP=python3 dev/upkeep.py\n", out)
+        self.assertNotIn("Warning:", out)
+        self.assertEqual(_read(os.path.join(project, ".devtools"), encoding="utf-8"),
+                         f"TN_APP=myapp\nTN_DEST={os.path.join(folder, 'nas')}\nTN_PATHS=app\n# a note\n")
+        self.assertIn("TN_TEST=python3 -m unittest\n", _read(os.path.join(project, ".devtools.before-toml"), encoding="utf-8"))
+        rc, out = run("local", "--checks-only", "--skip-tests")
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("moved the checks' settings", out)
+        ignored = _read(os.path.join(ROOT, ".gitignore"), encoding="utf-8").splitlines()
+        self.assertTrue({".devtools", ".devtools.before-toml"} <= set(ignored), ignored)
 
     def test_the_board_writes_its_state_and_underlines_the_letters(self):
         """dev/board.py: each section's letter (page) is underlined in its title while the board runs, pressed it opens
@@ -5858,9 +5927,9 @@ class DevToolsUITests(unittest.TestCase):
         st.live = True
         self.assertIn("Style App\033[4mr\033[24moval", st.lines(80)[0])   # (its key's letter)
         b = board.Board(plan, logs, tty=False)
-        with contextlib.redirect_stdout(io.StringIO()):
+        with contextlib.redirect_stdout(io.StringIO()):   # (its report too: the suite's output is the tests', not a board's)
             b.run()
-        b.report()
+            b.report()
         for sec in b.sections:
             sec.out.close()
         with open(os.path.join(folder, "state.json"), encoding="utf-8") as fh:
@@ -5902,7 +5971,7 @@ class DevToolsUITests(unittest.TestCase):
         os.makedirs(logs)
         pushed = os.path.join(folder, "pushed")
         plan = {"sections": [
-            {"id": "current", "title": "Current Tests", "cmd": "sleep 0.5; echo 3 tests passed"},
+            {"id": "current", "title": "Current Tests", "cmd": "echo test_one ok; sleep 0.5; echo 3 tests passed"},
             {"id": "sync", "title": "Sync to nas", "cmd": "echo 1 file to push", "info": "out of sync",
              "go": {"key": "p", "does": "Push and restart", "doing": "pushing", "cmd": f"echo $WHAT >> {pushed}; echo Copied 1 file · restarted myapp",
                     "env": {"WHAT": "local"}, "after": []}}]}
@@ -5920,6 +5989,11 @@ class DevToolsUITests(unittest.TestCase):
                 b.read(0.05)
             self.assertEqual((sync.state, sync.note, sync.last), ("info", "out of sync", "1 file to push"))
             self.assertTrue(sync.goes)
+            # a section's output is in its log as it comes (the devtools UI reads it while the block runs; a run stopped
+            # short keeps what was printed), not once it ends
+            current = b.by_id["current"]
+            self.assertFalse(current.done)
+            self.assertEqual(_read(current.log, encoding="utf-8"), "test_one ok\n")
             b.keys("p")
             self.assertEqual((sync.state, sync.goes), ("waiting", False))
             b.keys("p")   # (once)
@@ -5959,8 +6033,9 @@ class DevToolsUITests(unittest.TestCase):
             with open(path, encoding="utf-8") as fh:
                 got = json.load(fh)
         self.assertEqual((got["kind"], got["result"], got["files"]), ("checks", "1 Ruff finding · pyright didn't run", ["a.py", "b.py"]))
-        self.assertEqual(got["tools"][0], {"name": "Ruff", "tool": "Ruff", "version": "0.1", "ran": True, "why": "", "facts": ["1 Ruff finding"], "failed": True,
-                                           "findings": [{"tool": "Ruff", "path": "a.py", "line": 3, "col": 1, "severity": "warning", "message": "unused", "code": "F401", "fixable": True}]})
+        self.assertEqual(got["tools"][0], {"name": "Ruff", "tool": "Ruff", "version": "0.1", "ran": True, "why": "", "facts": ["1 Ruff finding"], "failed": False, "level": "warn",
+                                           "findings": [{"tool": "Ruff", "path": "a.py", "line": 3, "col": 1, "severity": "warning", "message": "unused", "code": "F401", "fixable": True,
+                                                         "level": "warn"}]})   # (each finding's level: what the rules hold it as — a warning, with no devtools.toml)
         self.assertEqual((got["tools"][1]["ran"], got["tools"][1]["why"], got["tools"][1]["findings"]), (False, "pyright didn't start", []))
         with open(os.path.join(folder, "detail_probe_tests.py"), "w", encoding="utf-8") as fh:
             fh.write(textwrap.dedent("""
@@ -5996,9 +6071,9 @@ class DevToolsUITests(unittest.TestCase):
         path = os.path.join(folder, "detail.json")
         a = coverage.File("plexcache/a.py", {1, 2, 3, 4}, {1, 2, 3}, fresh={4}, units=[coverage.Unit("function", "f", 4, {4})])
         b = coverage.File("plexcache/b.py", {1, 2}, {1, 2}, fresh=set(), units=[])
-        got = coverage.page([b, a], "no git history here", False, "python3 tests/run.py --coverage")
-        self.assertEqual((got["kind"], got["note"], got["release"], got["tests"]), ("coverage", "no git history here", False, "python3 tests/run.py --coverage"))
-        self.assertEqual(got["rules"], {"fresh_days": coverage.FRESH_DAYS, "settled": coverage.SETTLED, "release": coverage.RELEASE, "release_file": coverage.RELEASE_FILE})
+        shown = {"fresh_days": 14, "settled": 98, "fresh": "warn", "role": "development"}   # (the rules as the tool read them from devtools.toml)
+        got = coverage.page([b, a], "no git history here", shown, "python3 tests/run.py --coverage")
+        self.assertEqual((got["kind"], got["note"], got["rules"], got["tests"]), ("coverage", "no git history here", shown, "python3 tests/run.py --coverage"))
         self.assertEqual(got["totals"], {"lines": 6, "ran": 5, "pct": 83.3, "settled": 5, "settled_ran": 5, "settled_pct": 100.0, "fresh": 1, "fresh_units": 1, "fresh_reached": 0})
         self.assertEqual([f["path"] for f in got["files"]], ["plexcache/a.py", "plexcache/b.py"])
         self.assertEqual(got["files"][0], {"path": "plexcache/a.py", "lines": 4, "ran": 3, "pct": 75.0, "fresh": 1, "fresh_ran": 0, "missing": "4",
@@ -6093,7 +6168,7 @@ class DevToolsUITests(unittest.TestCase):
         self.record(runs, "20260101-130000-1", {"kind": "sync", "mode": "local", "header": ["Local Copy · Sync only"], "sections": []},
                     dict(done, sections=[self.section("sync", "Sync to nas", "fail", "rsync stopped partway", "s")]))
         view = data.view()
-        self.assertEqual((view["header"], view["commit"], view["mode"], view["release"], view["run"]), (["Local Copy"], "aaa", "local", True, "20260101-110000-1"))
+        self.assertEqual((view["header"], view["commit"], view["mode"], view["run"]), (["Local Copy"], "aaa", "local", "20260101-110000-1"))
         self.assertEqual([(b["id"], b["state"], b["last"], b["run"]) for b in view["blocks"]],
                          [("sync", "fail", "rsync stopped partway", "20260101-130000-1"), ("current", "pass", "3 tests passed", "20260101-110000-1"),
                           ("build", "pass", "0 findings", "20260101-120000-1")])
@@ -6310,6 +6385,128 @@ class DevToolsUITests(unittest.TestCase):
         from dev import style
         self.assertFalse(style.look_file("dev/devui.css"))
         self.assertFalse(style.look_file("dev/devui.html"))
+        # a block's output asked for while the server was away (the page's "Failed to fetch") is asked again once it answers,
+        # and another record's output is never shown for this one: the page keeps what it read by record
+        page = _read(os.path.join(ROOT, "dev", "devui.html"), encoding="utf-8")
+        # a Config tab: the default table, then only the roles it says something for (others added from the picker); the
+        # diff checks behind their arrow, open when there are some, and kept as opened across the page's redraws
+        self.assertIn('[["", "default"], ...shown.map(r => [r, r])]', page)
+        self.assertIn('"+ Add a role…"', page)
+        self.assertIn('"Diff Checks"', page)
+        self.assertIn("openNow === undefined ? says(table.diff) : openNow", page)
+        self.assertIn("else if (!editing()) render();", page)   # (a field in use, an open drop-down: not drawn again under it)
+        self.assertIn("table[k] = v; EDITED(); };", page)       # (Save and Undo follow the draft without a redraw)
+        # the Integration card edits [integrations.<id>] itself (enabled, title, cmd, letter, after) and can remove it;
+        # the Integrations page adds one and lists the check tools; a blank rule says the default it falls back to
+        for part in ('"Remove this integration"', 'data.integrations[f.id] = Object.assign', "function toolsCard()",
+                     '"default (" + shown(under(name)) + ")"', 'data.integrations[id] = JSON.parse(JSON.stringify(DRAFT._spec[id]));'):
+            self.assertIn(part, page)
+        self.assertNotIn("<details", page.split("function configTab")[1].split("function fields")[0])
+        self.assertIn("catch (e) { e.gone = true; throw e; }", page)
+        self.assertIn("if (VIEW.run !== SHOWN) { SHOWN = VIEW.run; LOGS = {}; DETAILS = {}; }", page)
+        self.assertIn("if (kept[id] && kept[id].gone) delete kept[id];", page)
+        self.assertEqual(page.count("gone: !!err.gone"), 3)
+
+    def test_the_config_tabs_and_the_gates_page(self):
+        """devtools.toml in the UI (dev/devui.py): the Integrations page and the Config tabs read the file as dev/policy.py
+        does (every integration, on the board or hidden, with its letter; each integration's rules as each role reads
+        them, full and diff mode), Save writes the file again — checked first, refused when [config] read_only — and
+        never commits; the Gates page says what the gates are and what GitHub runs of them, the tags and phases, the
+        change notes since the last release, and the manual items, ticked from the page (python3 dev/release.py tick).
+        The hub's letter and the code's context come from the plan; Push posts no --release."""
+        import subprocess
+
+        from dev import devui, policy
+        folder = tempfile.mkdtemp(dir=TMP)
+        project = os.path.realpath(os.path.join(folder, "project"))
+        os.makedirs(os.path.join(project, "plexcache"))
+        os.makedirs(os.path.join(project, "changes"))
+        with open(os.path.join(project, "plexcache", "__init__.py"), "w", encoding="utf-8") as fh:
+            fh.write('__version__ = "1.2.0"\n')
+        with open(os.path.join(project, "changes", "a-change.md"), "w", encoding="utf-8") as fh:
+            fh.write("## A change\n")
+        _toml(project, unit="echo 1 test passed", coverage="echo ok", release="echo ok", style="echo ok")
+        subprocess.run(["git", "init", "-q", "-b", "dev", project], check=True)
+        data = devui.Data(runs=os.path.join(folder, "runs"), script="/bin/true", root=project)
+        # the file, read: every integration with its letter (the menu's: Hub h and Sync s first), and the rules by role
+        got = data.config({})
+        self.assertEqual((got["path"], got["read_only"], got["hub_key"]), (os.path.join(project, "devtools.toml"), False, "h"))
+        self.assertIn("tests", got["kinds"])   # (the Add form's kinds; no dev/tools.toml in this project: no tools card)
+        self.assertEqual(got["tools"], [])
+        ruff = next(t for t in devui.Data(runs=os.path.join(folder, "runs"), script="/bin/true").config({})["tools"] if t["id"] == "ruff")
+        self.assertEqual((ruff["name"], ruff["config"], ruff["get"]), ("Ruff", "ruff.toml", "pip"))   # (this project's dev/tools.toml: each tool, and the file it reads)
+        self.assertEqual([(i["id"], i["letter"], i["enabled"] and i["ready"]) for i in got["integrations"]],
+                         [("unit", "u", True), ("coverage", "c", True), ("release", "e", True), ("style", "t", True)])   # (r is the review key)
+        self.assertEqual(got["roles"][:2], ["development", "release"])
+        self.assertIn("every_line: 98% (fail)", got["said"]["coverage"]["release"]["full"])
+        self.assertIn("every_line: off", got["said"]["coverage"]["development"]["full"])
+        self.assertIn("every_line: skipped in diff mode", got["said"]["coverage"]["release"]["diff"])
+        self.assertEqual(got["schemas"]["coverage"]["settings"]["settled"]["kind"], "threshold")
+        self.assertEqual(got["data"]["coverage"]["release"]["every_line"], {"value": 98, "level": "fail"})
+        # Save: the tables as the page holds them, written back as TOML (checked first: a bad level is refused, nothing written)
+        before = os.stat(got["path"]).st_mtime_ns
+        bad = json.loads(json.dumps(got["data"]))
+        bad["coverage"]["fresh"] = "loud"
+        with self.assertRaises(ValueError) as cm:
+            data.save_config({"data": bad})
+        self.assertIn("fresh", str(cm.exception))
+        self.assertEqual(os.stat(got["path"]).st_mtime_ns, before)
+        good = json.loads(json.dumps(got["data"]))
+        good["coverage"]["settled"] = {"value": 95, "level": "fail"}
+        good["coverage"]["hotfix"] = {"fresh": "off"}
+        saved = data.save_config({"data": good})
+        self.assertEqual(saved["path"], got["path"])
+        self.assertIn("settled = {value = 95, level = \"fail\"}", saved["text"])
+        self.assertIn("[coverage.hotfix]\nfresh = \"off\"", saved["text"])
+        again = data.config({})
+        self.assertIn("settled: 95% (fail)", again["said"]["coverage"]["development"]["full"])
+        self.assertEqual(again["said"]["coverage"]["hotfix"]["full"][1], "fresh: off")
+        self.assertEqual(subprocess.run(["git", "-C", project, "log", "--oneline"], capture_output=True, text=True).stdout, "")   # (nothing committed)
+        # read only: the page shows, Save is refused
+        ro = json.loads(json.dumps(again["data"]))
+        ro["config"]["read_only"] = True
+        data.save_config({"data": ro})
+        self.assertTrue(data.config({})["read_only"])
+        with self.assertRaises(ValueError) as cm:
+            data.save_config({"data": again["data"]})
+        self.assertIn("read only", str(cm.exception))
+        # the Gates page: the gates and GitHub, the tags and phases, the notes since the last release, the manual items
+        g = data.gates({})
+        self.assertEqual((g["github"]["enabled"], g["gates"]["push"], g["gates"]["release"]), (False, {"diff": True, "github": False}, {"diff": False, "github": True}))
+        self.assertEqual((g["tags"]["freeze"], g["phases"], g["branches"]["dev"]), ("v{version}-rc.{n}", {"preview": "preview", "freeze": "freeze"}, "development"))
+        self.assertEqual((g["version"], g["last_release"], g["notes_dir"], g["notes"]), ("1.2.0", "", "changes", ["changes/a-change.md"]))
+        self.assertEqual(g["manual"], [{"item": "Read the release notes through", "done": False}, {"item": "Check the README's screenshots still match", "done": False}])
+        self.assertEqual(data.tick({"item": "Read the release notes through"})["ok"], True)
+        self.assertEqual([m["done"] for m in data.gates({})["manual"]], [True, False])
+        data.tick({"item": "Read the release notes through", "done": False})
+        self.assertEqual([m["done"] for m in data.gates({})["manual"]], [False, False])
+        self.assertTrue(os.path.isfile(os.path.join(project, "changes", "manual-1.2.0.json")))   # (kept with the notes, in the project)
+        with self.assertRaises(ValueError):
+            data.tick({})
+        # no file: said, not a crash
+        with self.assertRaises(ValueError) as cm:
+            devui.Data(runs=os.path.join(folder, "runs"), script="/bin/true", root=folder).config({})
+        self.assertIn("devtools init", str(cm.exception))
+        # the view: the hub's letter and the code's context are the plan's; nothing of --release
+        runs = os.path.join(folder, "runs")
+        self.record(runs, "20260101-100000-1", {"kind": "checks", "mode": "local", "header": ["Local Copy · freeze (v1.2.0-rc.1) · Checks only"], "role": "freeze",
+                                                 "phase": "freeze", "tag": "v1.2.0-rc.1", "branch": "dev", "gate": "", "diff": False, "hub_key": "h", "letters": {"unit": "u"}, "sections": []},
+                    {"header": ["Local Copy · freeze (v1.2.0-rc.1) · Checks only"], "done": True, "sections": [self.section("unit", "Unit Tests", "pass", "1 test passed", "u")]})
+        view = data.view()
+        self.assertEqual((view["hub_key"], view["letters"], view["context"]),
+                         ("h", {"unit": "u"}, {"role": "freeze", "phase": "freeze", "tag": "v1.2.0-rc.1", "gate": "", "diff": False, "branch": "dev"}))
+        self.assertNotIn("release", view)
+        self.assertEqual(data._mode({"mode": "dev", "release": True}), ["dev"])
+        page_text = devui.page()
+        self.assertIn('lettered("Hub", VIEW.hub_key)', page_text)
+        self.assertIn('e.key === VIEW.hub_key', page_text)
+        self.assertNotIn("--release", page_text)
+        self.assertNotIn("TN_I18N", page_text)
+        for route in ("/api/config", "/api/gates", "/api/tick"):
+            self.assertIn(route, page_text)
+        for name in ("function integrations()", "function configTab(id)", "function gates()", "function tally()"):
+            self.assertIn(name, page_text)
+        self.assertEqual(policy.letters(["Hub", "Sync", "Unit Tests"]), ["h", "s", "u"])
 
 
 class _RawWS:
@@ -16154,14 +16351,16 @@ class TranslationTests(unittest.TestCase):
     # The catalogs are only brought in step with the code for a release (README.md → Translations):
     # in between, a new text isn't in them yet (the app shows the English) and an old one lingers.
     # So that's only checked where they gate — dev/i18n.py's strict_now, the one place that decides
-    # (for these tests and devtools's Translations block alike): a release run, master, a tag's sync.
-    # What a catalog does hold — placeholders, tags, plural forms — is checked every time.
+    # (for these tests and devtools's Translations block alike): devtools.toml's [i18n] targets for the code's role,
+    # 100% held as a failure for a release's code. What a catalog does hold — placeholders, tags, plural forms — is
+    # checked every time.
 
     def test_the_board_block(self):
         """dev/i18n.py --devtools, devtools's Translations block: the overall share translated, one number; between
-        releases it only tells (exit 3), and where the catalogs gate (strict_now: master, a release run) anything
-        untranslated is a finding, red — the one place that decides, for this suite's strictness too."""
-        quiet = {"PLEXCACHE_PROGRESS": "", "PLEXCACHE_I18N_RELEASE": "", "DEVTOOLS_RELEASE": "", "DEVTOOLS_MODE": ""}
+        releases (the development role: targets of 0) it only tells (exit 3), and where the catalogs gate (strict_now:
+        a release's roles, targets of 100% held as "fail") a language short of its target is a finding, red — the one
+        place that decides, for this suite's strictness too."""
+        quiet = _policy_env("development", PLEXCACHE_PROGRESS="")
         catalogs = lambda code: {"Idle": "x", "Busy": "y" if code == "de" else None}
         patched = lambda: (mock.patch.object(self.tool, "all_keys", return_value={"Idle": None, "Busy": None}),
                            mock.patch.object(self.tool, "TRANSLATED", ["de", "fr"]),
@@ -16173,15 +16372,22 @@ class TranslationTests(unittest.TestCase):
             self.assertEqual(self.tool.main(["i18n.py", "--devtools"]), 3)   # (between releases: it only tells)
         self.assertIn("75.0% translated · 2 languages · 2 texts", out.getvalue())
         self.assertNotIn("error", out.getvalue())
-        for env in ({"DEVTOOLS_MODE": "master"}, {"DEVTOOLS_RELEASE": "1"}, {"PLEXCACHE_I18N_RELEASE": "1"}):
-            with self.subTest(env), contextlib.ExitStack() as stack:
+        for role in ("release", "hotfix", "freeze"):   # (a release's code, and the roles that inherit its rules)
+            with self.subTest(role), contextlib.ExitStack() as stack:
                 out = io.StringIO()
-                for m in patched() + (mock.patch.dict(os.environ, quiet | env), contextlib.redirect_stdout(out)):
+                for m in patched() + (mock.patch.dict(os.environ, _policy_env(role, PLEXCACHE_PROGRESS="")), contextlib.redirect_stdout(out)):
                     stack.enter_context(m)
                 self.assertTrue(self.tool.strict_now())
                 self.assertEqual(self.tool.main(["i18n.py", "--devtools"]), 1)   # (main must ship complete: red)
-            self.assertIn(os.path.join("plexcache", "web", "i18n", "fr.json") + ":0:0 - error: 1 of 2 texts untranslated",
+            self.assertIn(os.path.join("plexcache", "web", "i18n", "fr.json") + ":0:0 - error: 50.0% translated, under its target of 100% (1 of 2 texts to do)",
                           out.getvalue())
+        with contextlib.ExitStack() as stack:   # (a preview: the release's rules, capped at a warning)
+            out = io.StringIO()
+            for m in patched() + (mock.patch.dict(os.environ, _policy_env("preview", PLEXCACHE_PROGRESS="")), contextlib.redirect_stdout(out)):
+                stack.enter_context(m)
+            self.assertFalse(self.tool.strict_now())
+            self.assertEqual(self.tool.main(["i18n.py", "--devtools"]), 4)
+        self.assertIn("fr.json:0:0 - warning: 50.0% translated, under its target of 100%", out.getvalue())
         out = io.StringIO()
         with contextlib.ExitStack() as stack:
             for m in (mock.patch.object(self.tool, "all_keys", return_value={"Idle": None}),
@@ -16232,8 +16438,8 @@ class TranslationTests(unittest.TestCase):
         # a --devtools run writes it, whether it only tells (between releases) or gates (strict)
         folder = tempfile.mkdtemp(dir=TMP)
         path = os.path.join(folder, "i18n.json")
-        for strict, rc in ((False, 3), (True, 1)):
-            with mock.patch.dict(os.environ, {"DEVTOOLS_DETAIL": path, "PLEXCACHE_PROGRESS": ""}), mock.patch.object(tool, "strict_now", return_value=strict), \
+        for role, strict, rc in (("development", False, 3), ("release", True, 1)):
+            with mock.patch.dict(os.environ, _policy_env(role, DEVTOOLS_DETAIL=path, PLEXCACHE_PROGRESS="")), \
                     mock.patch.object(tool, "all_keys", return_value=keys), mock.patch.object(tool, "TRANSLATED", ["fr", "de"]), \
                     mock.patch.object(tool, "load", side_effect=lambda code: cats.get(code, {})), mock.patch.object(tool, "leftovers", return_value=[]), \
                     contextlib.redirect_stdout(io.StringIO()):
@@ -16241,7 +16447,15 @@ class TranslationTests(unittest.TestCase):
             with open(path, encoding="utf-8") as fh:
                 page = json.load(fh)
             self.assertEqual((page["kind"], page["strict"], len(page["languages"])), ("i18n", strict, 2))
-            self.assertEqual("tools" in page, strict)   # (strict: the check's findings too, a language a finding)
+            self.assertEqual(page["targets"], {"fr": 100, "de": 100} if strict else {"fr": 0, "de": 0})   # (the rules as read)
+            self.assertEqual(page["context"]["role"], role)
+            # each language its own check (the bar counts them), with its findings: short of its target, strict; between
+            # releases, with no target, how far it still is (grey: not met, not failed)
+            self.assertEqual([t["name"] for t in page["tools"]], ["fr", "de"])
+            found = [f for t in page["tools"] for f in t["findings"]]
+            self.assertEqual(({f["level"] for f in found}, sorted(f["path"] for f in found if f["code"] == "targets")),
+                             ({"fail"} if strict else {"info"}, ["plexcache/web/i18n/de.json", "plexcache/web/i18n/fr.json"]))
+            self.assertEqual([t["level"] for t in page["tools"]], ["fail", "fail"] if strict else ["info", "info"])
 
     def test_untranslated_falls_back_to_english(self):
         from unittest import mock
@@ -16332,6 +16546,90 @@ class FutureTests(unittest.TestCase):
         self.assertIn("colima start --cpu 8", future.cores_hint(2, 16))
         self.assertEqual((future.cores_hint(8, 16), future.cores_hint(0, 16), future.cores_hint(2, 0)), ("", "", ""))
 
+    def test_a_docker_engine_that_isnt_running_is_started(self):
+        """Docker's engine not answering (docker info): Docker Desktop (or OrbStack, or colima) is started and waited for,
+        said on the way; one that answers is left alone; one nothing here can start, or that doesn't come up, means the
+        run is not run (NOTRUN), never a failure of the next Python."""
+        from dev import future, policy
+        ran: list[list[str]] = []
+        answers = iter([False, False, True])
+        with mock.patch.object(future, "reachable", side_effect=lambda *a, **kw: next(answers)), \
+                mock.patch.object(future, "starters", return_value=[("Docker", ["open", "-g", "-a", "/Applications/Docker.app"])]), \
+                mock.patch.object(future, "started", side_effect=lambda cmd, wait, say=None: ran.append(cmd) or (0, "")), \
+                mock.patch.object(future.time, "sleep"), contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(future.docker_up(wait=30), "")
+        self.assertEqual(ran, [["open", "-g", "-a", "/Applications/Docker.app"]])
+        self.assertIn("Docker's engine isn't running: starting Docker (up to 30 seconds", out.getvalue())
+        self.assertIn("Docker is up.", out.getvalue())
+        # a starter's output passed on as it comes (colima's steps), its colours left out; one that takes too long, stopped
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(future.started(["sh", "-c", "printf '\\033[32mINFO\\033[0m creating VM\\n\\nready\\n'"], 10), (0, "ready"))
+        self.assertEqual(out.getvalue(), "      INFO creating VM\n      ready\n")
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(future.started(["sh", "-c", "echo booting; exec sleep 30"], 0.5), (None, "booting"))
+            self.assertEqual(future.started(["sh", "-c", "echo no VM; exit 3"], 10), (3, "no VM"))
+            self.assertEqual(future.started(["/nonexistent/colima"], 10)[0], 1)
+        with mock.patch.object(future, "reachable", return_value=True), mock.patch.object(future.subprocess, "run") as run:
+            self.assertEqual(future.docker_up(), "")
+            run.assert_not_called()
+        with mock.patch.object(future, "reachable", return_value=False), mock.patch.object(future, "starters", return_value=[]):
+            self.assertIn("nothing here starts it", future.docker_up())
+        with mock.patch.object(future, "reachable", return_value=False), \
+                mock.patch.object(future, "starters", return_value=[("colima", ["colima", "start"])]), \
+                mock.patch.object(future, "started", return_value=(1, "no VM")), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertIn("didn't start", future.docker_up(wait=1))
+        self.assertIn("colima didn't start: no VM", out.getvalue())
+        with mock.patch.object(future.shutil, "which", return_value="/usr/bin/docker"), \
+                mock.patch.object(future, "docker_up", return_value="Docker's engine isn't running and didn't start"), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(future.image_route("3.16", None, ["tests.test_plexcache"], False, False, False), policy.NOTRUN)
+        self.assertIn("Not run: Docker's engine isn't running", out.getvalue())
+        # a Docker without BuildKit can't build the Dockerfile (its RUN --mount caches): not run, how to get it said
+        with mock.patch.object(future.shutil, "which", return_value="/usr/bin/docker"), mock.patch.object(future, "docker_up", return_value=""), \
+                mock.patch.object(future, "has_buildkit", return_value=False), mock.patch.object(future, "build_image") as build, \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(future.image_route("3.16", None, ["tests.test_plexcache"], False, False, False), policy.NOTRUN)
+        build.assert_not_called()
+        self.assertIn("Not run: this Docker has no BuildKit (docker buildx)", out.getvalue())
+        self.assertIn("brew install docker-buildx", out.getvalue())
+        # what answers and what starts: docker info's exit code (no docker, or one that hangs: no); on a Mac the app found
+        # first (in /Applications or ~/Applications), opened in the background, then colima
+        with mock.patch.object(future.subprocess, "run", return_value=mock.Mock(returncode=0)):
+            self.assertTrue(future.engine_answers())
+        with mock.patch.object(future.subprocess, "run", side_effect=future.subprocess.TimeoutExpired("docker", 1)):
+            self.assertFalse(future.engine_answers())
+        home = tempfile.mkdtemp(dir=TMP)
+        # an engine that answers only at its own socket (colima running, docker's context the default): found, and used
+        # for the run (DOCKER_HOST), said with how to make it the default; colima's default profile first
+        for sock in (".colima/default/docker.sock", ".colima/work/docker.sock", ".docker/run/docker.sock"):
+            os.makedirs(os.path.dirname(os.path.join(home, sock)), exist_ok=True)
+            open(os.path.join(home, sock), "w").close()
+        os.makedirs(os.path.join(home, ".colima", "_lima"))   # (colima's own folder: no socket, not listed)
+        with mock.patch.dict(os.environ, {"COLIMA_HOME": ""}):
+            self.assertEqual(future.sockets(home), [os.path.join(home, s) for s in (".colima/default/docker.sock", ".colima/work/docker.sock", ".docker/run/docker.sock")])
+        asked: list[str] = []
+        with mock.patch.dict(os.environ, {}), mock.patch.object(future, "sockets", return_value=[os.path.join(home, ".colima/default/docker.sock")]), \
+                mock.patch.object(future, "engine_answers", side_effect=lambda timeout=15, host="": asked.append(host) or bool(host)), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            os.environ.pop("DOCKER_HOST", None)
+            self.assertTrue(future.reachable())
+            self.assertEqual(os.environ["DOCKER_HOST"], f"unix://{home}/.colima/default/docker.sock")
+        self.assertEqual(asked, ["", f"unix://{home}/.colima/default/docker.sock"])
+        self.assertIn("not where docker looks: using it for this run (docker context use colima makes it docker's default).", out.getvalue())
+        with mock.patch.object(future, "sockets", return_value=[]), mock.patch.object(future, "engine_answers", return_value=False):
+            self.assertFalse(future.reachable())
+        with mock.patch.object(future.subprocess, "run", return_value=mock.Mock(returncode=0)) as run:
+            self.assertTrue(future.engine_answers(host="unix:///x.sock"))
+        self.assertEqual(run.call_args[0][0], ["docker", "-H", "unix:///x.sock", "info"])
+        os.makedirs(os.path.join(home, "Applications", "OrbStack.app"))
+        with mock.patch.object(future.sys, "platform", "darwin"), mock.patch.object(future, "APPS", ("/nonexistent/Docker.app", "/Applications/OrbStack.app")), \
+                mock.patch.object(future.shutil, "which", side_effect=lambda n: f"/usr/bin/{n}"):
+            self.assertEqual(future.starters(home), [("OrbStack", ["open", "-g", "-a", os.path.join(home, "Applications", "OrbStack.app")]),
+                                                     ("colima", ["colima", "start"])])
+        with mock.patch.object(future.sys, "platform", "linux"), mock.patch.object(future.shutil, "which", return_value=None):
+            self.assertEqual(future.starters(home), [])
+
     def test_the_tests_that_need_no_tools_run_while_the_image_builds(self):
         """On devtools's board the suite runs in two parts: every test but the ones that need the image's tools
         (IMAGE_CLASSES) on the plain Python image while the image builds, then those in the image. One bar for the build
@@ -16372,7 +16670,7 @@ class FutureTests(unittest.TestCase):
         (plain, plain_cmd), (image, image_cmd) = runs
         self.assertEqual((plain, image), ("python:3.16.0a1-slim-trixie", future.IMAGE))
         self.assertIn("--exclude StyleGuideTests --exclude OptimizerTests -j8", plain_cmd)   # (the tools' tests left for the image)
-        self.assertIn("--exclude AppTests -j8", image_cmd)                                    # (only those, in it)
+        self.assertIn("--exclude StyleGuideTests --exclude AppTests -j8", image_cmd)          # (only those in it, and nothing the run leaves out)
         self.assertNotIn("OptimizerTests", image_cmd)
         self.assertTrue(all("playwright install-deps chromium" in c for c in (plain_cmd, image_cmd)))   # (Chromium's libraries in each)
         recs = [json.loads(x[1:]) for x in out.getvalue().split("\n") if x.startswith("\036")]
@@ -16382,6 +16680,70 @@ class FutureTests(unittest.TestCase):
         self.assertEqual([r for r in recs if r.get("bar") == "tests"][-1]["bad"], 1)
         self.assertEqual(sum(1 for r in recs if "tell" in r), 2)          # (each part's failures, passed on)
         self.assertEqual([r["said"] for r in recs if "said" in r][-1], f"Ran on {future.IMAGE}")
+
+    def test_the_suite_in_the_container_is_held_to_this_blocks_rules(self):
+        """The suite inside the container is told devtools's context (the block's integration, the file as /src has it,
+        the role…), so its exit code is what Future Tests' rules hold its failures, warnings and skipped tests as; the
+        parts' codes are combined through dev/policy.py: a failure in either fails the run, else its worst warning or note
+        stands — a skipped test held as a note is never a failure."""
+        from dev import future, policy
+        with mock.patch.dict(os.environ, {"DEVTOOLS_ROLE": "release", "DEVTOOLS_BRANCH": "main", "DEVTOOLS_INTEGRATION": ""}):
+            args = future.suite_context()
+        env = dict(a.split("=", 1) for a in args[1::2])
+        self.assertEqual(args[0::2], ["-e"] * len(env))
+        self.assertEqual((env["DEVTOOLS_INTEGRATION"], env["DEVTOOLS_CONFIG"], env["DEVTOOLS_REPO"], env["DEVTOOLS_ROLE"], env["DEVTOOLS_BRANCH"]),
+                         ("future", "/src/devtools.toml", "/src", "release", "main"))
+        self.assertTrue(set(future.CONTEXT_KEYS) <= set(__import__("tests.run", fromlist=["CONTEXT_KEYS"]).CONTEXT_KEYS))   # (what the suite reads)
+        self.assertEqual([future.combined(c) for c in ([0, 0], [0, 3], [4, 3], [1, 3], [2, 0], [5, 5], [5, 0], [])],
+                         [policy.PASS, policy.INFO, policy.WARN, policy.FAIL, policy.FAIL, policy.NOTRUN, policy.PASS, policy.PASS])
+        self.assertIn("passes, with notes", future.verdict_line("3.16", policy.INFO))
+        self.assertIn("the suite fails", future.verdict_line("3.16", policy.FAIL))
+
+    def test_an_image_that_doesnt_build_ends_the_run_at_once(self):
+        """The image not built: the run fails then, said with the build's log above it — the plain part's container (the
+        tests that need no tools, which can take an hour on a small VM) killed by its name, never waited for to the end,
+        and nothing run in the image."""
+        from dev import future
+        killed = threading.Event()
+        runs, ran = [], []
+
+        class Proc:
+            def __init__(self, cmd, **kw):
+                runs.append(cmd)
+                self.returncode = None
+
+                def lines():
+                    yield "test_one ok\n"
+                    killed.wait(20)   # (a long suite: until its container is killed)
+                    self.returncode = 137
+                self.stdout = lines()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def run(cmd, **kw):
+            ran.append(cmd)
+            if cmd[:2] == ["docker", "kill"]:
+                killed.set()
+            return mock.Mock(returncode=0)
+        started = time.time()
+        with mock.patch.dict(os.environ, {"PLEXCACHE_PROGRESS": "feed"}), mock.patch.object(sys, "stdout", io.StringIO()) as out, \
+                mock.patch.object(future, "TESTS", [520]), mock.patch.object(future, "build_image", side_effect=lambda *a: time.sleep(0.3) or False), \
+                mock.patch.object(future, "docker_cpus", return_value=1), mock.patch.object(future, "fetch_node", return_value=None), \
+                mock.patch.object(future, "install_web", return_value=[]), mock.patch.object(future, "test_classes", return_value=["AppTests", "OptimizerTests"]), \
+                mock.patch.object(future.subprocess, "Popen", Proc), mock.patch.object(future.subprocess, "run", side_effect=run):
+            rc = future.parallel_route("3.16.0a1-slim-trixie", [], [], None, [])
+        self.assertEqual(rc, 1)
+        self.assertLess(time.time() - started, 10)
+        (plain,) = runs   # (nothing in the image)
+        name = plain[plain.index("--name") + 1]
+        self.assertEqual(name, f"plex-cache-future-{os.getpid()}-plain")
+        self.assertIn(["docker", "kill", name], ran)
+        self.assertIn("The image doesn't build on python:3.16.0a1-slim-trixie", out.getvalue())
+        self.assertIn("The tests that need no tools were stopped", out.getvalue())
 
     def test_the_container_gets_a_node_that_starts(self):
         """The suite's containers get the channel's node — and on the plain Python image (the tests that need no tools,
@@ -16947,7 +17309,7 @@ class StyleGuideTests(unittest.TestCase):
         self.assertIn('require("playwright")', js)
         self.assertEqual(s.LOOKS, [("classic", "light"), ("classic", "dark"), ("dionysus", "light"), ("dionysus", "dark")])
         src = _read(os.path.join(ROOT, "dev", "style.py"), encoding="utf-8")
-        self.assertIn("from progress import Progress", src)
+        self.assertIn("from dev.progress import Progress", src)   # (the shared bar, by the package: as the other dev tools)
         self.assertIn('_dev("i18n_tool", "i18n.py")', src)               # the translations' JavaScript tokenizer, shared
         self.assertIn("dev/style-sample/", _read(os.path.join(ROOT, ".gitignore"), encoding="utf-8"))
 
@@ -17306,13 +17668,14 @@ class UpkeepTests(unittest.TestCase):
             self.assertIn("ARG FFMPEG_GH_SHA256=" + "e" * 64 + "\n", _read(df, encoding="utf-8"))
 
     def test_moves_only_on_dev_and_tells_devtools(self):
-        """Pins are moved only in a checkout of dev, or of main (its minor and patch releases; a copy isn't a checkout), and
-        --devtools is the box devtools shows at the end of a run (TN_UPKEEP): its first line current (green), behind
-        (yellow: what moved, what's left and what to do) or unknown (grey), every line fitting the box."""
+        """Pins are moved as the code's role allows (devtools.toml's [upkeep] move: all on development's code, minor on a
+        release's, none on a feature branch — and none without a devtools.toml), and --devtools is the box devtools shows
+        at the end of a run: its first line current (green), behind (yellow: what moved, what's left and what to do) or
+        unknown (grey), every line fitting the box."""
         from dev import upkeep
-        for where, moves in (("dev", True), ("main", True), ("feature", False), (None, False)):
-            with mock.patch.object(upkeep, "branch", return_value=where):
-                self.assertEqual(upkeep.may_move(), moves, where)
+        for where, moves in (("development", True), ("release", True), ("feature", False), (None, False)):
+            with mock.patch.dict(os.environ, _policy_env(where) if where else {"DEVTOOLS_CONFIG": os.path.join(ROOT, "none.toml")}):
+                self.assertEqual((upkeep.moves(), upkeep.may_move()), ({"development": "all", "release": "minor", "feature": "none"}.get(where or "", "none"), moves), where)
                 with mock.patch.object(upkeep, "check", side_effect=upkeep.Offline("x")) as check, \
                         mock.patch.object(sys, "argv", ["upkeep.py"]), mock.patch("builtins.print"):
                     upkeep.main()
@@ -17335,9 +17698,9 @@ class UpkeepTests(unittest.TestCase):
         t = found["terser"][0].split(".")
         minor = f"{t[0]}.{int(t[1]) + 1}.0"
         found["terser"] = [found["terser"][0], minor]
-        with mock.patch.object(upkeep, "lookup", return_value=(found, True)):
-            r = upkeep.check(apply=False)
-        got = upkeep.box(r, "main")
+        with mock.patch.object(upkeep, "lookup", return_value=(found, True)), mock.patch.dict(os.environ, _policy_env("development")):
+            r = upkeep.check(apply=False, where="dev")   # (dev's code: a major is yours, a minor moves there by itself)
+        got = upkeep.box(r, "dev")
         self.assertEqual(got[0], "behind")
         self.assertEqual(got[1], "NEW VERSIONS UPSTREAM  -  1 FOR YOU, 1 TO MOVE ON DEV")
         self.assertIn(f"eslint {have} → {major}  (a major release)", got)
@@ -17347,21 +17710,25 @@ class UpkeepTests(unittest.TestCase):
         self.assertEqual(fits(got), [])
         got = upkeep.box(None, "dev", "Python: no route to host")
         self.assertEqual((got[0], got[1]), ("unknown", "DEPENDENCIES NOT CHECKED  -  UPSTREAM NOT REACHED"))
-        # on main, only the minor and patch releases count (moved there): a major is dev's, a line and never a prompt
-        with mock.patch.object(upkeep, "lookup", return_value=(found, False)):
+        # on main (release: move = "minor"), only the minor and patch releases count (moved there): a major is dev's, a
+        # line and never a prompt; on a feature branch (move = "none") a minor is dev's to move too
+        with mock.patch.object(upkeep, "lookup", return_value=(found, False)), mock.patch.dict(os.environ, _policy_env("release")):
             r = upkeep.check(apply=False, where="main")
         self.assertEqual([n[0] for n in r.news], ["terser"])
-        self.assertIn(f"eslint {have}: {major} is out — a major release, for dev (never moved on main)", r.lines)
+        self.assertIn(f"eslint {have}: {major} is out — a major release, for dev (never moved here)", r.lines)
         got = upkeep.box(r, "main")
         self.assertEqual(got[1], "NEW VERSIONS UPSTREAM  -  1 TO MOVE ON MAIN")
         self.assertNotIn("eslint", " ".join(got))
+        with mock.patch.object(upkeep, "lookup", return_value=(found, False)), mock.patch.dict(os.environ, _policy_env("feature")):
+            r = upkeep.check(apply=False, where="topic")
+        self.assertEqual((upkeep.box(r, "topic")[1], upkeep.moves_on()), ("NEW VERSIONS UPSTREAM  -  1 TO MOVE ON DEV", "dev"))
         found["terser"] = [found["terser"][0], found["terser"][0]]
-        with mock.patch.object(upkeep, "lookup", return_value=(found, False)):
+        with mock.patch.object(upkeep, "lookup", return_value=(found, False)), mock.patch.dict(os.environ, _policy_env("release")):
             self.assertEqual(upkeep.box(upkeep.check(apply=False, where="main"), "main")[0], "current")   # (only a major behind: nothing to do on main)
-        # devtools shows it last, from your folder, coloured by that first line; this project's .devtools names it
+        # devtools shows it last, from your folder, coloured by that first line, the upkeep integration's command
         tool = _read(os.path.join(ROOT, "dev", "devtools"), encoding="utf-8")
-        for word in ("TN_UPKEEP", 'current) green_banner "${lines[@]}" ;;', 'behind|cves) yellow_banner "${lines[@]}" ;;',
-                     'out="$( cd "$ROOT" && PYTHONDONTWRITEBYTECODE=1 bash -c "$TN_UPKEEP"'):
+        for word in ("UPKEEP_CMD", 'current) green_banner "${lines[@]}" ;;', 'behind|cves) yellow_banner "${lines[@]}" ;;',
+                     'out="$( cd "$ROOT" && PYTHONDONTWRITEBYTECODE=1 DEVTOOLS_INTEGRATION=upkeep bash -c "$UPKEEP_CMD"'):
             self.assertIn(word, tool)
 
     def test_saved_answers_never_ask_upstream(self):
@@ -17370,7 +17737,7 @@ class UpkeepTests(unittest.TestCase):
         found = {d.name: [d.have(), d.have()] for d in upkeep.DEPS}
         with tempfile.TemporaryDirectory() as d, mock.patch.object(upkeep, "CACHE", os.path.join(d, "upkeep.json")), \
                 mock.patch.object(upkeep, "_get", side_effect=AssertionError("upstream asked")), \
-                mock.patch.object(upkeep.subprocess, "run", side_effect=AssertionError("npm run")):
+                mock.patch.object(upkeep.subprocess, "run", side_effect=AssertionError("npm run")), mock.patch.dict(os.environ, _policy_env()):
             with self.assertRaises(upkeep.Offline):
                 upkeep.check(apply=False, saved=True)                                     # (nothing saved yet)
             upkeep._save_cache({k: v for k, v in found.items() if k != "eslint"})
@@ -17655,22 +18022,26 @@ class CoverageTests(unittest.TestCase):
     def test_settled_code_is_held_at_98_percent(self):
         from dev import coverage
         code = set(range(1, 101))
-        ok = coverage.settled_check([self.file(code, code - {5, 6})])
+        ok = coverage.settled_check([self.file(code, code - {5, 6})], 98)   # (the bar: devtools.toml's [coverage] settled)
         self.assertEqual((ok.findings, ok.said()), ([], ["settled 98.0% (of 98%)"]))
-        fresh_gaps = coverage.settled_check([self.file(code, code - set(range(1, 30)), fresh=set(range(1, 30)))])
+        fresh_gaps = coverage.settled_check([self.file(code, code - set(range(1, 30)), fresh=set(range(1, 30)))], 98)
         self.assertEqual(fresh_gaps.findings, [])   # (what fresh code lacks isn't settled code's)
-        short = coverage.settled_check([self.file(code, code - {5, 6, 7})])
-        self.assertEqual([f.message for f in some(short.findings)], ["3 settled lines no test runs: 5-7"])
+        short = coverage.settled_check([self.file(code, code - {5, 6, 7})], 98, "fail")
+        self.assertEqual([(f.message, f.level) for f in some(short.findings)], [("3 settled lines no test runs: 5-7", "fail")])
         self.assertTrue(short.bad())
+        self.assertFalse(coverage.settled_check([self.file(code, code - {5, 6, 7})], 98, "warn").bad())   # (held as a warning: not failed)
+        self.assertEqual(coverage.settled_check([self.file(code, code - {5, 6, 7})], 90).findings, [])      # (a lower bar)
 
     def test_the_release_bar(self):
         from dev import coverage
         code = set(range(1, 101))
-        self.assertEqual(coverage.release_check([self.file(code, code - {1, 2})]).findings, [])
-        got = coverage.release_check([self.file(code, set(range(1, 90)))])
-        self.assertEqual([f.message for f in some(got.findings)], ["89.0% of every line run, under the release's 98%",
-                                                             "89.0% of its lines run, under the release's 90% for each file"])
-        self.assertEqual(some(got.findings)[0].severity, "error")
+        self.assertEqual(coverage.release_check([self.file(code, code - {1, 2})], 98, 90).findings, [])   # (the bars: [coverage.release] every_line, each_file)
+        got = coverage.release_check([self.file(code, set(range(1, 90)))], 98, 90)
+        self.assertEqual([f.message for f in some(got.findings)], ["89.0% of every line run, under the bar's 98%",
+                                                             "89.0% of its lines run, under the bar's 90% for each file"])
+        self.assertEqual((some(got.findings)[0].severity, some(got.findings)[0].level), ("error", "fail"))
+        self.assertEqual(coverage.release_check([self.file(code, set(range(1, 90)))], None, None).findings, [])   # (no bar set: nothing asked)
+        self.assertEqual([f.code for f in some(coverage.release_check([self.file(code, set(range(1, 90)))], 98, None).findings)], ["every_line"])
 
     @unittest.skipUnless(shutil.which("git"), "no git here")
     def test_fresh_and_settled_from_git(self):
@@ -17753,20 +18124,408 @@ class CoverageTests(unittest.TestCase):
         from dev import board, coverage
         folder = tempfile.mkdtemp(dir=TMP)
         out = io.StringIO()
-        with mock.patch.object(coverage, "SAVED", os.path.join(folder, "none.json")), contextlib.redirect_stdout(out):
-            self.assertEqual(coverage.main(["--devtools"]), 3)   # (nothing saved: orange, "not measured", not a test to add)
-        self.assertIn("Coverage not measured · no coverage saved yet: the tests save it with --coverage (in .devtools, TN_TEST=", out.getvalue())
-        devtools = _read(os.path.join(ROOT, "dev", "devtools"), encoding="utf-8")
-        self.assertIn('\\"warn\\": {\\"rc\\": 1, \\"note\\": \\"tests to add\\", \\"more\\": {\\"3\\": \\"not measured\\"}}', devtools)
-        # (on the board: 1 a test to add, 3 not measured, both orange; anything else red)
-        warn = {"rc": 1, "note": "tests to add", "more": {"3": "not measured"}}
-        for rc, state, header in ((1, "warn", "TESTS TO ADD"), (3, "warn", "NOT MEASURED"), (2, "fail", "")):
-            s = board.Section({"id": "coverage", "title": "Coverage", "cmd": "true", "warn": warn}, folder)
+        from dev.progress import record
+        with mock.patch.object(coverage, "SAVED", os.path.join(folder, "none.json")), contextlib.redirect_stdout(out), \
+                mock.patch.dict(os.environ, _policy_env(PLEXCACHE_PROGRESS="feed")):
+            self.assertEqual(coverage.main(["--devtools"]), 4)   # (nothing saved: "not measured", a warning ([coverage] not_measured), not a test to add)
+        self.assertIn("Coverage not measured · no coverage saved yet: the tests save it with --coverage (", out.getvalue())
+        self.assertIn({"status": "not measured"}, [r for r in map(record, out.getvalue().split("\n")) if r])   # (the note beside its title)
+        # (on the board: exit 4 a warning with the tool's own note, 3 a note, 5 not run; anything else red)
+        for rc, state, header in ((4, "warn", "TESTS TO ADD"), (3, "info", "NOT MEASURED"), (5, "notrun", "NOT RUN"), (1, "fail", "FAILED"), (2, "fail", "")):
+            s = board.Section({"id": "coverage", "title": "Coverage", "cmd": "true", "warn": {"rc": 4}, "tell": {"rc": 3}, "not_run_rc": 5}, folder)
             self.addCleanup(s.out.close)
+            s.status_note = {4: "tests to add", 3: "not measured"}.get(rc, "")
             s.finished(rc)
             self.assertEqual(s.state, state, rc)
             self.assertIn(header, s.lines(80)[0])
-        self.assertIn('if [ "$RELEASE" = 1 ]; then warn=""; CHECK_IDS+=("coverage"); fi', devtools)   # (red at release)
+        with mock.patch.object(coverage, "SAVED", os.path.join(folder, "none.json")), contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch.dict(os.environ, _policy_env("release")):
+            self.assertEqual(coverage.main(["--devtools"]), 4)   # (a release's code: the same rule, until the toml says otherwise)
+        with mock.patch.object(coverage, "SAVED", os.path.join(folder, "none.json")), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(coverage.main(["--saved"]), 2)   # (by hand: an error, as before)
+
+
+class PolicyTests(unittest.TestCase):
+    """devtools.toml, read through dev/policy.py: the one place every rule lives — each kind of integration's schema, the
+    branches' roles and the tags' phases, what a role inherits and its cap, full and diff mode, the gates, the exit codes
+    every check shares, the menu letters, and dev/plan.py's board from it. No tool decides a level or a threshold itself."""
+
+    def starter(self, **data):
+        """dev/starter.toml as a Config, with ``data`` laid over its top-level tables."""
+        import tomllib
+
+        from dev import policy
+        with open(os.path.join(ROOT, "dev", "starter.toml"), "rb") as fh:
+            got = tomllib.load(fh)
+        for k, v in data.items():
+            got[k] = v
+        return policy.Config(os.path.join(ROOT, "devtools.toml"), got)
+
+    def test_every_kind_of_integration_has_a_schema_and_the_files_check_clean(self):
+        from dev import policy
+        for kind in policy.KIND_FILES:
+            sch = policy.schema(kind)
+            self.assertEqual(sch.kind, kind)
+            self.assertTrue(sch.settings, kind)
+            for name, s in sch.settings.items():
+                self.assertIn(s.kind, policy.KINDS, (kind, name))
+                self.assertTrue(s.doc, (kind, name))
+                self.assertNotIn(name, (*policy.BUILTIN_ROLES, "diff", "level"), (kind, name))   # (a setting can't be named like a role's table)
+        for path in (os.path.join(ROOT, "devtools.toml"), os.path.join(ROOT, "dev", "starter.toml")):
+            self.assertEqual(policy.Config(path).check(), [], path)
+        with self.assertRaises(policy.ConfigError):
+            self.starter(unit={"failures": "loud"}).check()
+        with self.assertRaises(policy.ConfigError):
+            self.starter(unit={"nothing": "fail"}).check()
+        with self.assertRaises(policy.ConfigError):
+            self.starter(coverage={"settled": "high"}).check()
+        with self.assertRaises(policy.ConfigError):
+            self.starter(branches={"main": {"role": "boss"}}).check()
+        import subprocess
+        got = subprocess.run([sys.executable, os.path.join(ROOT, "dev", "policy.py"), "check", "--repo", ROOT], capture_output=True, text=True, timeout=60)
+        self.assertEqual((got.returncode, got.stdout.strip()), (0, f"{os.path.join(ROOT, 'devtools.toml')}: ok"), got.stderr)
+
+    def test_no_tool_decides_a_rule_of_its_own(self):
+        """The old switches and constants are gone from every tool: the rules are devtools.toml's, read through
+        dev/policy.py (the context devtools sets, DEVTOOLS_ROLE and the rest, is all a tool is told)."""
+        tools = [os.path.join(ROOT, "dev", f) for f in os.listdir(os.path.join(ROOT, "dev")) if f.endswith(".py")] + \
+            [os.path.join(ROOT, "tests", "run.py"), os.path.join(ROOT, "dev", "devtools")]
+        gone = ("DEVTOOLS_MODE", "DEVTOOLS_RELEASE", "PLEXCACHE_I18N_RELEASE", "MOVES_ON", "MINORS_ON", "FRESH_DAYS", "SETTLED =",
+                "RELEASE_FILE", "GRACE_DAYS", "GRACE_SHARE", "STALE_DAYS", "DORMANT_DAYS", "REVIEW_DAYS", "DEBIAN_GRACE")
+        for path in tools:
+            text = _read(path, encoding="utf-8")
+            if path.endswith("devtools"):
+                text = "\n".join(ln for ln in text.splitlines() if "MOVED_KEYS" not in ln)   # (the one mention: the warning that they moved)
+            for word in gone + tuple(f"TN_{k}" for k in ("TEST", "VALIDATE", "TYPES", "BUILD", "COVERAGE", "I18N", "AUDIT", "FUTURE", "STYLE", "RELEASE", "UPKEEP")):
+                self.assertNotIn(word, text, (os.path.relpath(path, ROOT), word))
+
+    def test_branches_have_roles_and_tags_have_phases(self):
+        from dev import policy
+        cfg = self.starter()
+        self.assertEqual([cfg.branch_role(b) for b in ("main", "master", "dev", "hotfix/x", "feature/x", "topic")],
+                         ["release", "release", "development", "hotfix", "feature", "feature"])
+        self.assertEqual(cfg.branch_role(""), "feature")   # (not a checkout, no branch: "*")
+        cfg = self.starter(branches={"preset": "dev-main", "main": {"role": "release"}, "release/*": {"role": "release-line"},
+                                     "release/2.*": {"role": "freeze"}, "*": {"role": "development"}})
+        self.assertEqual([cfg.branch_role(b) for b in ("release/1.0", "release/2.1", "anything")], ["release-line", "freeze", "development"])   # (the most specific wins)
+        cfg = self.starter()
+        self.assertEqual([cfg.tag_phase(t) for t in ("v1.2.0", "v1.2.0-rc.3", "v1.2.0-beta.1", "v1.2.0-alpha.2", "nightly")],
+                         [("release", "1.2.0"), ("freeze", "1.2.0"), ("preview", "1.2.0"), ("alpha", "1.2.0"), ("", "")])
+        self.assertEqual([cfg.phase_role(p) for p in ("preview", "freeze", "alpha")], ["preview", "freeze", ""])   # (an alpha changes nothing)
+        self.assertEqual(cfg.branches_of("development"), ["dev"])
+        self.assertEqual(cfg.role_chain("preview"), ["release", "preview"])
+        self.assertEqual(cfg.role_chain("feature"), ["development", "feature"])
+        self.assertEqual((cfg.role_cap("preview"), cfg.role_cap("release")), ("warn", ""))
+        self.assertEqual((cfg.gate("push")["diff"], cfg.gate("release")["diff"], cfg.gate("merge")["github"]), (True, False, True))
+        with self.assertRaises(policy.ConfigError):
+            cfg.gate("deploy")
+        # a pre-release tag holds its phase only while it's the code's version ([config] version_file): a beta of 0.16.0
+        # says nothing about 0.16.22, however new it is among the tags
+        import subprocess
+        repo = os.path.realpath(tempfile.mkdtemp(dir=TMP))
+        os.makedirs(os.path.join(repo, "plexcache"))
+        with open(os.path.join(repo, "plexcache", "__init__.py"), "w", encoding="utf-8") as fh:
+            fh.write('__version__ = "0.16.0"\n')
+        g = lambda *a: subprocess.run(["git", "-C", repo, *a], check=True, capture_output=True, text=True)
+        g("init", "-q", "-b", "dev")
+        g("-c", "user.name=t", "-c", "user.email=t@x", "commit", "-q", "--allow-empty", "-m", "one")
+        g("tag", "v0.16.0-beta.2")
+        cfg = policy.Config(os.path.join(repo, "devtools.toml"), {**self.starter().data, "config": {"version": 1, "version_file": "plexcache/__init__.py"}})
+        self.assertEqual(cfg.version(), "0.16.0")
+        self.assertEqual(policy.phase_tag(repo, cfg, "HEAD"), "v0.16.0-beta.2")   # (the beta of this very version: its preview)
+        with open(os.path.join(repo, "plexcache", "__init__.py"), "w", encoding="utf-8") as fh:
+            fh.write('__version__ = "0.16.22"\n')
+        self.assertEqual(policy.phase_tag(repo, cfg, "HEAD"), "")   # (dev has moved on: no phase)
+        self.assertEqual(policy.context(cfg=cfg, repo=repo).phase, "")
+        no_file = policy.Config(os.path.join(repo, "devtools.toml"), {**self.starter().data, "config": {"version": 1}})
+        self.assertEqual((no_file.version(), policy.phase_tag(repo, no_file, "HEAD")), ("", "v0.16.0-beta.2"))   # (no version named: the tag as it stands)
+
+    def test_a_roles_rules_are_laid_over_the_ones_it_inherits(self):
+        from dev import policy
+        cfg = self.starter()
+        ctx = lambda role, diff=False: policy.Context(role=role, diff=diff, base="HEAD~1" if diff else "")
+        self.assertEqual([cfg.rules("unit", ctx(r)).level("warnings") for r in ("development", "feature", "release", "hotfix", "preview")],
+                         ["info", "info", "fail", "fail", "warn"])   # (hotfix inherits release's; a preview is capped at a warning)
+        self.assertEqual([cfg.rules("future", ctx(r)).level("failures") for r in ("development", "release")], ["fail", "off"])
+        r = cfg.rules("coverage", ctx("release"))
+        self.assertEqual((r.value("settled"), r.value_level("settled"), r.value("every_line"), r.value_level("every_line"), r.value("each_file")),
+                         (98, "warn", 98, "fail", 90))   # (a number's level: the integration's, or its own {value, level})
+        self.assertEqual((r.value("changed"), r.skipped("every_line")), (None, False))
+        d = cfg.rules("coverage", ctx("release", diff=True))
+        self.assertEqual((d.value("changed"), d.skipped("every_line"), d.skipped("each_file"), d.value("settled")), (90, True, True, 98))   # (full-only rules are skipped in diff mode, and said so)
+        self.assertIn("every_line: skipped in diff mode", d.said())
+        i = cfg.rules("i18n", ctx("release"))
+        self.assertEqual((i.target_for("targets", "fr"), i.targets_level("targets"), i.level("unused")), (100, "fail", "fail"))
+        self.assertEqual((cfg.rules("i18n", ctx("development")).target_for("targets", "fr"), cfg.rules("i18n", ctx("preview")).targets_level("targets")), (0, "warn"))
+        self.assertEqual([cfg.rules("upkeep", ctx(r)).text("move") for r in ("development", "release", "feature", "hotfix")], ["all", "minor", "none", "minor"])
+        self.assertEqual(cfg.rules("release", ctx("development")).items("manual_items"), ["Read the release notes through", "Check the README's screenshots still match"])
+        self.assertEqual((cfg.rules("audit", ctx("release", diff=True)).level("changed"), cfg.rules("audit", ctx("development", diff=True)).level("changed")), ("fail", "warn"))
+        with self.assertRaises(KeyError):   # (a tool asking for a setting its schema hasn't got: the tool's mistake, not the file's)
+            cfg.rules("unit", ctx("development")).level("nothing")
+
+    def test_a_tool_run_inside_another_block_reads_its_own_rules(self):
+        """dev/checks.py's levels: DEVTOOLS_INTEGRATION names the block a command runs as (unit, say), but a tool a test
+        runs from inside it (the release checks, the CVE look) is another kind: it reads the first integration of its
+        own kind, never the block's schema. And tests/run.py takes devtools's context out of the tests' environment
+        altogether, so the suite and every tool it runs see the same world wherever the suite is run."""
+        from dev import checks, policy
+        with mock.patch.dict(os.environ, {"DEVTOOLS_INTEGRATION": "unit", "DEVTOOLS_CONFIG": os.path.join(ROOT, "devtools.toml"), **_policy_env("preview")}):
+            r = some(checks.levels("release"))
+            self.assertEqual((r.id, r.schema.kind, r.level("version")), ("release", "release", "warn"))   # (its own, for the role: a preview caps at warn)
+            self.assertEqual(some(checks.levels("upkeep")).text("move"), "minor")   # (a preview inherits the release's)
+            self.assertEqual(some(checks.levels()).id, "unit")   # (a tool with no name of its own: the block's)
+            self.assertEqual(some(checks.levels("unit")).id, "unit")
+            # the UI asked about a folder by name reads that folder's file, not DEVTOOLS_CONFIG's
+            folder = tempfile.mkdtemp(dir=TMP)
+            self.assertEqual(policy.find_file(folder), "")
+            self.assertEqual(policy.find_file(), os.path.join(ROOT, "devtools.toml"))
+        import tests.run as run
+        # tests/run.py as a block of the checks' kind (DHTML runs the web's build tests): held to that block's rules, its
+        # failures as errors, never a KeyError for a setting the tests schema has and the checks' hasn't
+        for block, rc in (("dhtml", 1), ("unit", 1), ("release", 1)):
+            with mock.patch.object(run, "CONTEXT", {"DEVTOOLS_INTEGRATION": block, **_policy_env("development")}), \
+                    mock.patch.object(run, "CONFIG", os.path.join(ROOT, "devtools.toml")), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(run.verdict(2, 0, 0), rc, block)
+                self.assertEqual(run.verdict(0, 0, 0), 0, block)
+        self.assertTrue(set(run.CONTEXT_KEYS) >= {"DEVTOOLS_INTEGRATION", "DEVTOOLS_CONFIG", "DEVTOOLS_ROLE", "DEVTOOLS_PHASE", "DEVTOOLS_DIFF", "DEVTOOLS_GATE"})
+        self.assertFalse(set(run.CONTEXT_KEYS) & set(os.environ), "devtools's context reached the tests")   # (this very run: taken out)
+
+    def test_the_context_is_what_every_check_is_told(self):
+        from dev import policy
+        cfg = self.starter()
+        ctx = policy.context(cfg=cfg, env={"DEVTOOLS_ROLE": "release", "DEVTOOLS_BRANCH": "main", "DEVTOOLS_PHASE": "freeze", "DEVTOOLS_TAG": "v1.0.0-rc.1",
+                                           "DEVTOOLS_DIFF": "1", "DEVTOOLS_GATE": "push", "DEVTOOLS_BASE": "origin/main", "DEVTOOLS_CODE": "local"})
+        self.assertEqual((ctx.role, ctx.branch, ctx.phase, ctx.tag, ctx.diff, ctx.gate, ctx.base, ctx.mode), ("release", "main", "freeze", "v1.0.0-rc.1", True, "push", "origin/main", "diff"))
+        env = ctx.env()
+        self.assertEqual(sorted(env), ["DEVTOOLS_BASE", "DEVTOOLS_BRANCH", "DEVTOOLS_CODE", "DEVTOOLS_CONFIG", "DEVTOOLS_DIFF", "DEVTOOLS_GATE", "DEVTOOLS_PHASE", "DEVTOOLS_ROLE", "DEVTOOLS_TAG"])
+        self.assertEqual(policy.context(cfg=cfg, env=env).__dict__ | {"root": "", "config": ""}, ctx.__dict__ | {"root": "", "config": ""})   # (round trip: nothing asked of git)
+        with self.assertRaises(policy.ConfigError):
+            policy.context(cfg=cfg, env={"DEVTOOLS_ROLE": "boss"})
+
+    def test_exit_codes_and_the_worst_level(self):
+        from dev import policy
+        self.assertEqual((policy.PASS, policy.FAIL, policy.BROKEN, policy.INFO, policy.WARN, policy.NOTRUN), (0, 1, 2, 3, 4, 5))
+        self.assertEqual([policy.exit_code(lv) for lv in ([], ["info"], ["info", "warn"], ["warn", "fail", "info"], ["off"])], [0, 3, 4, 1, 0])
+        self.assertEqual(policy.exit_code(["fail"], broken=True), 2)
+        self.assertEqual([policy.worst(lv) for lv in ([], ["info", "warn"], ["fail", "info"])], ["off", "warn", "fail"])
+        self.assertEqual([policy.state_of(rc) for rc in range(7)], ["pass", "fail", "fail", "info", "warn", "notrun", "fail"])
+
+    def test_the_letters_follow_the_menu(self):
+        from dev import policy
+        self.assertEqual(policy.letters(["Hub", "Sync", "Python Validation", "Security Audit", "Style Approval", "Translations", "Tests"]),
+                         ["h", "s", "v", "e", "t", "n", ""])   # (p, a and r are the board's, never a page's; a title whose letters are all taken: no key)
+        self.assertEqual(policy.letters(["Hub", "Sync", "Translations", "Style Approval"]), ["h", "s", "t", "y"])   # (menu order: the first takes the letter)
+        self.assertEqual(policy.letters(["Hub", "Sync", "Unit Tests"], ["", "", "x"]), ["h", "s", "x"])   # (a letter asked for, when free)
+        self.assertEqual(policy.letters(["Hub", "Sync", "Unit Tests"], ["", "", "p"]), ["h", "s", "u"])
+        self.assertEqual(policy.letters(["Hi", "Hi", "Hi"]), ["h", "i", ""])   # (none left: no key)
+
+    def test_the_integrations_on_the_board_are_the_ones_set_up(self):
+        from dev import policy
+        folder = tempfile.mkdtemp(dir=TMP)
+        path = _toml(folder, unit="echo 1 test passed", types="echo 0 errors", audit="echo 0 findings", style="echo looks approved")
+        cfg = policy.Config(path)
+        self.assertEqual([i["id"] for i in cfg.integrations()], ["unit", "types", "audit", "style"])
+        cfg.data["integrations"]["audit"]["needs"] = ["dev/audit.toml"]   # (a file it needs that isn't here: not set up, hidden)
+        self.assertEqual([i["id"] for i in cfg.integrations()], ["unit", "types", "style"])
+        self.assertEqual([(i["id"], i["enabled"], i["ready"]) for i in cfg.integrations(all_=True) if i["id"] == "audit"], [("audit", True, False)])
+        cfg.data["integrations"]["types"]["enabled"] = False
+        cfg.data["integrations"]["more"] = {"title": "More Checks", "kind": "checks", "cmd": "echo more", "after": ["unit"], "letter": "m"}
+        self.assertEqual([(i["id"], i["letter"]) for i in cfg.integrations()], [("unit", "u"), ("style", "t"), ("more", "m")])   # (letters follow the menu; ``letter`` asks for one)
+        self.assertEqual((cfg.integration("types")["enabled"], cfg.integration("types")["letter"]), (False, ""))   # (hidden: no key; the Integrations page still lists it)
+        with self.assertRaises(policy.ConfigError):
+            cfg.integration("nothing")
+        cfg.data["integrations"]["more"]["kind"] = "magic"
+        with self.assertRaises(policy.ConfigError):
+            cfg.integrations()
+
+    def test_the_plan_is_the_board(self):
+        from dev import plan, policy
+        folder = tempfile.mkdtemp(dir=TMP)
+        path = _toml(folder, unit="echo 3 tests passed", future="echo future", types="echo 0 errors", coverage="echo covered",
+                     i18n="echo translated", upkeep="echo current", style="python3 dev/style.py check")
+        cfg = policy.Config(path)
+        req = {"want": "check", "code": "local", "src": folder, "root": folder, "config": path, "self": "/x/devtools", "orig_args": ["local"],
+               "env": _policy_env("development", DEVTOOLS_CONFIG=path), "tty": True, "label": "Local Copy", "commit": "abc", "action": "check",
+               "sync": {"id": "sync", "title": "Sync to nas", "cmd": "echo synced", "after": "__AFTER__", "page": "s"}}
+        got, ids = plan.build(req, cfg)
+        self.assertEqual(ids, ["unit", "future", "types", "coverage", "i18n"])   # (the checks whose result the run's is: not the dependencies, nor the looks)
+        self.assertEqual([s["id"] for s in got["sections"]], ["sync", "unit", "future", "types", "coverage", "i18n", "upkeep", "style"])
+        self.assertEqual((got["header"], got["role"], got["kind"], got["hub_key"], got["letters"]), (["Local Copy · development"], "development", "run", "h",
+                         {"unit": "u", "future": "f", "types": "v", "coverage": "c", "i18n": "t", "upkeep": "d", "style": "y"}))
+        unit = got["sections"][1]
+        self.assertEqual((unit["cmd"], unit["cwd"], unit["env"]["DEVTOOLS_INTEGRATION"], unit["env"]["DEVTOOLS_ROLE"], unit["warn"], unit["tell"], unit["not_run_rc"], unit["page"]),
+                         ("echo 3 tests passed", folder, "unit", "development", {"rc": 4}, {"rc": 3}, 5, "u"))
+        self.assertEqual((got["sections"][2]["stop_with"], got["sections"][4]["after"], got["sections"][0]["after"]), (["unit"], ["unit"], []))
+        upkeep = got["sections"][6]
+        self.assertEqual((upkeep["cmd"], upkeep["then"]["after"], upkeep["env"]["DEVTOOLS_COPY"]), ("export DEVTOOLS_UPKEEP=look; echo current", ids, folder))
+        self.assertEqual((got["sections"][7]["key"]["key"], got["sections"][7]["then"]["cmd"], got["sections"][7]["finale"]["cmd"]),
+                         ("r", "python3 dev/style.py sample", "python3 dev/style.py review --step"))
+        # --tests-first: the copy waits for the checks; a passed run: the tests' and checks' blocks only tell, the rest run again
+        got, _ = plan.build(req | {"tests_first": True}, cfg)
+        self.assertEqual((got["sections"][0]["after"], got["header"]), (ids, ["Local Copy · development · Tests first"]))
+        got, ids = plan.build(req | {"want": "passed", "passed": {"when": "just now", "last": {"unit": "3 tests passed"}}, "future_passed": True}, cfg)
+        self.assertEqual(ids, ["coverage", "i18n"])
+        self.assertEqual([(s["id"], s.get("info", "")) for s in got["sections"]],
+                         [("sync", ""), ("unit", "already passed"), ("future", "already passed"), ("types", "already passed"), ("coverage", ""), ("i18n", ""), ("upkeep", ""), ("style", "")])
+        self.assertEqual(got["sections"][1]["cmd"], "printf '%s\\n' 'Passed just now · 3 tests passed'")
+        self.assertEqual(got["sections"][4]["after"], [])   # (coverage: from what the tests saved, quick)
+        got, ids = plan.build(req | {"want": "passed", "passed": {"when": "just now", "last": {}}, "future_passed": False}, cfg)
+        self.assertNotIn("future", [s["id"] for s in got["sections"]])   # (the future tests didn't pass: run again)
+        # --only one block, --skip-tests, --skip-future, --no-sample, a release's code, a gate in diff mode
+        got, ids = plan.build(req | {"only": "types", "sync": None}, cfg)
+        self.assertEqual(([s["id"] for s in got["sections"]], ids, got["kind"], got["header"]), (["types"], ["types"], "only", ["Local Copy · development · One block again"]))
+        got, ids = plan.build(req | {"skip_tests": True, "sync": None}, cfg)
+        self.assertEqual(([s["id"] for s in got["sections"]], ids), (["checks", "upkeep"], []))
+        got, ids = plan.build(req | {"skip_future": True, "no_sample": True, "sync": None}, cfg)
+        self.assertEqual((got["sections"][1]["info"], ids, got["sections"][-1]["env"]["DEVTOOLS_SAMPLE"], "then" in got["sections"][-1]), ("skipped", ["unit", "types", "coverage", "i18n"], "0", False))
+        got, _ = plan.build(req | {"env": _policy_env("release", DEVTOOLS_CONFIG=path, DEVTOOLS_PHASE="freeze", DEVTOOLS_TAG="v1.0.0-rc.1"), "sync": None}, cfg)
+        self.assertEqual(got["header"], ["Local Copy · freeze (v1.0.0-rc.1)"])   # (a phase names its role: said once)
+        got, _ = plan.build(req | {"env": _policy_env("development", diff=True, gate="push", base="origin/dev", DEVTOOLS_CONFIG=path), "sync": None, "checks_only": True}, cfg)
+        self.assertEqual((got["header"], got["gate"], got["diff"], got["kind"]), (["Local Copy · development · push gate · Diff · Checks only"], "push", True, "checks"))
+
+    def test_the_file_is_written_as_it_is_read(self):
+        """dumps (the UI's save) writes a file tomllib reads back the same: tables for the top level and each integration's
+        role and diff tables, inline tables for a number with a level and the targets."""
+        import tomllib
+
+        from dev import policy
+        with open(os.path.join(ROOT, "dev", "starter.toml"), "rb") as fh:
+            data = tomllib.load(fh)
+        text = policy.dumps(data)
+        self.assertEqual(tomllib.loads(text), data)
+        self.assertIn("\n[coverage.release]\nevery_line = {value = 98, level = \"fail\"}", text)
+        self.assertIn("\n[i18n.release]\ntargets = {\"*\" = 100}", text)
+        self.assertIn("\n[integrations.unit]\ntitle = \"Unit Tests\"", text)
+        self.assertIn('\n[branches."hotfix/*"]\nrole = "hotfix"', text)
+
+
+class GateTests(unittest.TestCase):
+    """dev/gate.py: the checks run as a moment in the code's life holds them (push, merge, release), by hand, from the
+    pre-push hook and on GitHub alike; what GitHub's workflows ask of devtools.toml; and the release's own steps
+    (dev/release.py notes, bump)."""
+
+    def project(self, **cmds):
+        """A project in git on dev, with a devtools.toml of the integrations given: (folder, git, env for a run there)."""
+        import subprocess
+        folder = tempfile.mkdtemp(dir=TMP)
+        git = lambda *a: subprocess.run(["git", "-C", folder, *a], check=True, capture_output=True, text=True,
+                                        env=dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")).stdout
+        git("init", "-q", "-b", "dev")
+        _toml(folder, **cmds)
+        git("add", "-A")
+        git("commit", "-qm", "one")
+        env = dict(os.environ, XDG_STATE_HOME=os.path.join(folder, "state"), DEVTOOLS_CONFIG="")
+        for k in ("PLEXCACHE_PROGRESS", "DEVTOOLS_RUNS", "GITHUB_ACTIONS", "GITHUB_EVENT_NAME", "GITHUB_REF", "GITHUB_REF_TYPE", "GITHUB_REF_NAME"):
+            env.pop(k, None)
+        return folder, git, env
+
+    def test_what_github_asks(self):
+        """dev/gate.py --outputs: the config job's outputs — whether GitHub runs the gates ([github] enabled), which gate
+        this event is (a pull request the merge gate, a tag the release gate, else the push gate), and whether it runs:
+        true, false, or warn (reported, never blocking)."""
+        import tomllib
+
+        from dev import gate, policy
+        with open(os.path.join(ROOT, "dev", "starter.toml"), "rb") as fh:
+            data = tomllib.load(fh)
+        cfg = policy.Config(os.path.join(ROOT, "devtools.toml"), data)
+        self.assertEqual(gate.github_config(cfg), {"enabled": False, "push": False, "merge": True, "release": True})   # (the starter: off until switched on)
+        self.assertEqual([gate.event_gate(e) for e in ({}, {"GITHUB_EVENT_NAME": "pull_request"}, {"GITHUB_EVENT_NAME": "pull_request_target"},
+                                                       {"GITHUB_EVENT_NAME": "push", "GITHUB_REF_TYPE": "tag"}, {"GITHUB_REF": "refs/tags/v1.0.0"}, {"GITHUB_EVENT_NAME": "workflow_dispatch"})],
+                         ["push", "merge", "merge", "release", "release", "push"])
+        self.assertEqual(gate.outputs(cfg, {"GITHUB_EVENT_NAME": "pull_request"}), {"enabled": "false", "gate": "merge", "run": "false"})
+        data["github"]["enabled"] = True
+        data["gates"]["push"]["github"] = "warn"
+        self.assertEqual(gate.outputs(cfg, {}), {"enabled": "true", "gate": "push", "run": "warn"})
+        self.assertEqual(gate.outputs(cfg, {"GITHUB_EVENT_NAME": "pull_request"}), {"enabled": "true", "gate": "merge", "run": "true"})
+        data["gates"]["release"]["github"] = False
+        self.assertEqual(gate.outputs(cfg, {"GITHUB_REF_TYPE": "tag"}), {"enabled": "true", "gate": "release", "run": "false"})
+        # the workflows ask exactly that: gates.yml its outputs and the gate by name, publish.yml the release gate, the notes and the bump
+        gates = _read(os.path.join(ROOT, ".github", "workflows", "gates.yml"), encoding="utf-8")
+        self.assertIn("python3 dev/gate.py --outputs | tee -a \"$GITHUB_OUTPUT\"", gates)
+        self.assertIn("if: needs.config.outputs.run != 'false'", gates)
+        self.assertIn("python3 dev/gate.py \"$GATE\" --ci", gates)
+        publish = _read(os.path.join(ROOT, ".github", "workflows", "publish.yml"), encoding="utf-8")
+        self.assertIn("python3 dev/gate.py release --ci", publish)
+        self.assertIn("python3 dev/release.py notes > notes.md", publish)
+        self.assertIn("python3 dev/release.py bump", publish)
+        self.assertIn('tags: ["v*"]', publish)
+        build = _read(os.path.join(ROOT, ".github", "workflows", "build.yml"), encoding="utf-8")
+        self.assertNotIn('tags: ["v*"]', build)   # (a tag is publish.yml's)
+        self.assertNotIn("type=semver", build)
+
+    @unittest.skipUnless(shutil.which("git"), "no git here")
+    def test_a_gate_runs_the_board_as_the_moment_holds_it(self):
+        """python3 dev/gate.py push: the blocks devtools.toml turns on, as the board runs them, in the gate's context (its
+        role, diff mode when [gates.push] says so); the verdict the exit code — a warning passes, a failure doesn't.
+        --ci: skipped when [github] says so; a "warn" gate reports and exits 0."""
+        import subprocess
+        folder, git, env = self.project(unit="echo 2 tests passed", types="echo 1 warning; exit 4", build="echo 1 error; exit 1")
+        run = lambda *args, **more: subprocess.run([sys.executable, os.path.join(ROOT, "dev", "gate.py"), *args], cwd=folder, env=dict(env, **more),
+                                                   capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
+        got = run("push")
+        self.assertEqual(got.returncode, 1, got.stdout + got.stderr)
+        self.assertIn("Dev · development · push gate · Diff · Checks only", got.stdout)
+        self.assertIn("push gate (diff mode, development): FAILED: build", got.stdout)
+        self.assertIn("Python Validation: CHECK ABOVE (1 warning)", got.stdout)
+        got = run("push", "--ci")   # ([github] enabled = false: skipped, blocking nothing)
+        self.assertEqual(got.returncode, 0, got.stdout + got.stderr)
+        self.assertIn("the push gate is skipped on GitHub (devtools.toml: [github] enabled = false)", got.stdout)
+        toml = _read(os.path.join(folder, "devtools.toml"), encoding="utf-8")
+        with open(os.path.join(folder, "devtools.toml"), "w", encoding="utf-8") as fh:
+            fh.write(toml.replace("enabled = false", "enabled = true").replace('github = false', 'github = "warn"'))
+        got = run("push", "--ci")
+        self.assertEqual(got.returncode, 0, got.stdout + got.stderr)
+        self.assertIn("(reported only: [gates.push] github = \"warn\")", got.stdout)
+        got = run("merge", "--ci")   # (a merge gate: the code judged as the branch it's going to — main, a release's)
+        self.assertEqual(got.returncode, 1, got.stdout + got.stderr)
+        self.assertIn("merge gate (diff mode, release): FAILED: build", got.stdout)
+        git("checkout", "-q", "-b", "main")
+        git("tag", "-a", "-m", "rc", "v1.0.0-rc.1")
+        got = run("release", "--ci")   # (a release candidate: the freeze, the whole codebase)
+        self.assertEqual(got.returncode, 1, got.stdout + got.stderr)
+        self.assertIn("release gate (full mode, freeze, freeze v1.0.0-rc.1): FAILED: build", got.stdout)
+        got = run("deploy")
+        self.assertEqual(got.returncode, 2)
+        records = sorted(os.listdir(os.path.join(folder, "state", "devtools", "runs")))
+        self.assertEqual(len(records), 4)   # (each run a record, like devtools's own)
+        with open(os.path.join(folder, "state", "devtools", "runs", records[-1], "plan.json"), encoding="utf-8") as fh:
+            plan = json.load(fh)
+        self.assertEqual((plan["gate"], plan["diff"], plan["phase"], plan["tag"], [s["id"] for s in plan["sections"]]), ("release", False, "freeze", "v1.0.0-rc.1", ["unit", "types", "build"]))
+
+    @unittest.skipUnless(shutil.which("git"), "no git here")
+    def test_the_release_notes_and_the_next_version(self):
+        """dev/release.py notes: the change notes written since the last release, joined — the GitHub Release's body;
+        bump: __version__ on to the next X.Y.0 (the next-version pull request)."""
+        import subprocess
+
+        from dev import release
+        folder, git, env = self.project(unit="echo ok", release="python3 dev/release.py --devtools")   # ([release] notes_dir: changes)
+        os.makedirs(os.path.join(folder, "changes"))
+        os.makedirs(os.path.join(folder, "plexcache"))
+        with open(os.path.join(folder, "changes", "old.md"), "w", encoding="utf-8") as fh:
+            fh.write("An old change.\n")
+        with open(os.path.join(folder, "plexcache", "__init__.py"), "w", encoding="utf-8") as fh:
+            fh.write('"""The app."""\n\n__version__ = "1.2.0"\n')
+        git("add", "-A")
+        git("commit", "-qm", "released")
+        git("tag", "v1.2.0")
+        with open(os.path.join(folder, "changes", "b-second.md"), "w", encoding="utf-8") as fh:
+            fh.write("## Faster\n\nIt's faster.\n")
+        git("add", "-A")
+        git("commit", "-qm", "work")
+        with open(os.path.join(folder, "changes", "a-first.md"), "w", encoding="utf-8") as fh:
+            fh.write("A fix, not committed yet.\n")
+        with mock.patch.dict(os.environ, {"DEVTOOLS_REPO": folder, "DEVTOOLS_CONFIG": os.path.join(folder, "devtools.toml")}), \
+                mock.patch.object(release, "ROOT", folder), mock.patch.object(release, "VERSION_FILE", os.path.join(folder, "plexcache", "__init__.py")):
+            self.assertEqual(release.change_notes(), ["changes/a-first.md", "changes/b-second.md"])
+            self.assertEqual(release.release_notes(), "A fix, not committed yet.\n\n## Faster\n\nIt's faster.\n")
+            self.assertEqual(release.bump(), "1.3.0")
+            self.assertEqual(release.bump(), "1.4.0")
+        self.assertIn('__version__ = "1.4.0"', _read(os.path.join(folder, "plexcache", "__init__.py"), encoding="utf-8"))
+        got = subprocess.run([sys.executable, os.path.join(ROOT, "dev", "release.py"), "notes"], cwd=folder, env=dict(env, DEVTOOLS_REPO=folder),
+                             capture_output=True, text=True, timeout=60)
+        self.assertEqual((got.returncode, "It's faster." in got.stdout), (0, True), got.stdout + got.stderr)
 
 
 class CVETests(unittest.TestCase):
@@ -17972,24 +18731,27 @@ class CVETests(unittest.TestCase):
     def test_the_look_is_of_the_copy_devtools_checks(self):
         """devtools main looks at main's copy, devtools dev at dev's, devtools local at the folder on its branch: that copy's pins,
         its npm lock, and its own image built here; the published image of its branch only when it can't be built."""
-        from dev import cves, upkeep
+        from dev import cves, plan, policy, upkeep
         d = tempfile.mkdtemp(dir=TMP)
         with open(os.path.join(d, "Dockerfile"), "w") as fh:
             fh.write("FROM python:3.13-alpine\nARG FFMPEG=7.1.1\nARG OXIPNG=9.0.0\n")
-        with mock.patch.dict(os.environ, {"DEVTOOLS_COPY": d, "DEVTOOLS_MODE": "main"}):
+        with mock.patch.dict(os.environ, {"DEVTOOLS_COPY": d, **_policy_env("release", DEVTOOLS_BRANCH="main", DEVTOOLS_CODE="main")}):
             self.assertEqual(cves.source(), d)
-            self.assertEqual(cves.source_branch(), "main")
+            self.assertEqual(cves.source_branch(), "main")   # (the branch devtools worked out for the code: dev/policy.py's context)
             self.assertEqual(cves.images(), ["ghcr.io/drsassafras/plex-cache:latest"])
             self.assertEqual(upkeep.cve_pins(cves.source()), {"ffmpeg": "7.1.1", "oxipng": "9.0.0"})
             self.assertEqual(cves.copy_os(), "alpine")
-        with mock.patch.dict(os.environ, {"DEVTOOLS_MODE": "beta"}):
+        with mock.patch.dict(os.environ, _policy_env("development", DEVTOOLS_BRANCH="dev", DEVTOOLS_CODE="dev")):
             self.assertEqual(cves.source_branch(), "dev")
-        with mock.patch.dict(os.environ, {"DEVTOOLS_MODE": "local"}), mock.patch.object(upkeep, "branch", return_value="main"):
+        with mock.patch.dict(os.environ, _policy_env("release", DEVTOOLS_BRANCH="")), mock.patch.object(upkeep, "branch", return_value="main"):
             self.assertEqual(cves.source_branch(), "main")   # (the folder: the branch it's on)
         for name, arg in upkeep.CVE_ARGS.items():   # (each the ARG its Dep reads)
             self.assertEqual(next(dep.where for dep in upkeep.DEPS if dep.name == name), f"ARG {arg} in the Dockerfile")
-        devtools = _read(os.path.join(ROOT, "dev", "devtools"), encoding="utf-8")
-        self.assertRegex(devtools, r'"id\\": \\"upkeep\\".*DEVTOOLS_COPY\\": \$\(json_str "\$SRC"\)')
+        # on the board: the copy being checked is what its CVEs are of (DEVTOOLS_COPY)
+        req = {"want": "check", "code": "main", "src": "/the/copy", "root": ROOT, "config": os.path.join(ROOT, "devtools.toml"),
+               "env": _policy_env("release", DEVTOOLS_BRANCH="main", DEVTOOLS_CODE="main"), "label": "Main"}
+        sec = next(x for x in plan.build(req, policy.Config(req["config"]))[0]["sections"] if x["id"] == "upkeep")
+        self.assertEqual((sec["env"]["DEVTOOLS_COPY"], sec["env"]["DEVTOOLS_BRANCH"], sec["cwd"]), ("/the/copy", "main", ROOT))
 
     def test_the_copys_image_is_built_and_looked_at(self):
         from dev import cves
@@ -18035,6 +18797,21 @@ class CVETests(unittest.TestCase):
                                 f"building {cves.LOCAL_LABEL} · stage-3 2/9: RUN set -eux; arch=amd64"])
         with open(os.path.join(d, "build.log")) as fh:
             self.assertEqual(fh.read().splitlines(), out)   # (the whole build kept: a failure's note names it)
+        # Docker's engine found (or started) as the future run finds it, and BuildKit needed: why not, said, nothing built
+        from dev import future
+        with mock.patch.object(future, "docker_up", return_value="Docker's engine isn't running and didn't start"), mock.patch("subprocess.Popen") as popen:
+            self.assertEqual(cves.build_local(d), ("", "Docker's engine isn't running and didn't start"))
+        # what it says finding the engine goes to the bar, never to stdout: the Dependencies' first line is its word
+        said.clear()
+        with mock.patch.object(future, "sockets", return_value=["/home/me/.colima/default/docker.sock"]), \
+                mock.patch.object(future, "engine_answers", side_effect=lambda timeout=15, host="": bool(host)), mock.patch.dict(os.environ, {}), \
+                mock.patch.object(future, "has_buildkit", return_value=False), contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(cves.build_local(d, said.append), ("", future.NO_BUILDKIT))
+        self.assertEqual(out.getvalue(), "")
+        self.assertTrue(said[0].startswith("Docker's engine answers at /home/me/.colima/default/docker.sock"), said)
+        with mock.patch.object(future, "docker_up", return_value=""), mock.patch.object(future, "has_buildkit", return_value=False):
+            self.assertEqual(cves.build_local(d), ("", future.NO_BUILDKIT))
+        popen.assert_not_called()
 
     def test_a_copy_on_alpine_is_told_apk(self):
         from dev import cves
@@ -18232,7 +19009,7 @@ class CheckToolTests(unittest.TestCase):
         self.assertEqual(sorted(buildcheck.DOCKERFILES), sorted(f for f in tracked if os.path.basename(f).startswith("Dockerfile")))
         build = _read(os.path.join(ROOT, ".github", "workflows", "build.yml"), encoding="utf-8")
         self.assertIn("run: python dev/buildcheck.py", build)   # (GitHub runs what devtools's block runs)
-        self.assertIn("TN_BUILD=python3 dev/buildcheck.py", _read(os.path.join(ROOT, "dev", "README.md"), encoding="utf-8"))
+        self.assertIn("`build`: `python3 dev/buildcheck.py`", _read(os.path.join(ROOT, "dev", "README.md"), encoding="utf-8"))   # (the README names the block's command as devtools.toml has it)
         hadolint = _read(os.path.join(ROOT, ".hadolint.yaml"), encoding="utf-8")
         for rule in re.findall(r"(?m)^\s*-\s*(DL\d+|SC\d+)", hadolint):
             self.assertRegex(hadolint, rf"(?s)#[^\n]*\n(?:\s*#[^\n]*\n)*\s*-\s*{rule}", f"{rule}: turned off without a word on why")
@@ -18248,14 +19025,14 @@ class CheckToolTests(unittest.TestCase):
             with mock.patch.dict(os.environ, {"PLEXCACHE_PROGRESS": ""}), mock.patch.object(checks, "ON_GITHUB", github):
                 return checks.run(list(cs), stream=out), out.getvalue().splitlines()
         self.assertEqual(run(clean), (0, ["0 A findings"]))
-        self.assertEqual(run(clean, found), (1, ["  x.sh:1:2 - warning: m (B SC1)", "0 A findings · 1 B finding"]))
-        self.assertEqual(run(clean, found, github=True), (1, ["  x.sh:1:2 - warning: m (B SC1)", "::warning file=x.sh,line=1,col=2,title=B SC1::m",
+        self.assertEqual(run(clean, found), (4, ["  x.sh:1:2 - warning: m (B SC1)", "0 A findings · 1 B finding"]))   # (a warning: held as one, exit 4)
+        self.assertEqual(run(clean, found, github=True), (4, ["  x.sh:1:2 - warning: m (B SC1)", "::warning file=x.sh,line=1,col=2,title=B SC1::m",
                                                                "0 A findings · 1 B finding"]))
         self.assertEqual(run(found, broken), (2, ["  x.sh:1:2 - warning: m (B SC1)", "  C couldn't be fetched: no network",
                                                    "1 B finding · C didn't run"]))
         # a tool whose findings don't fail it (pyright's information notes) says its own facts
         notes = Check("D", lambda: Outcome("D", "4.0", [Finding("D", "y.py", 1, 1, "information", "n")], facts=["0 errors"], failed=False))
-        self.assertEqual(run(notes), (0, ["  y.py:1:1 - information: n (D)", "0 errors"]))
+        self.assertEqual(run(notes), (3, ["  y.py:1:1 - information: n (D)", "0 errors"]))   # (a note: exit 3, told on the board, nothing failed)
 
     def test_a_check_that_fails_says_what_it_found_as_it_comes(self):
         """On devtools's board every check tool's findings go above the board as they come, as the tests' failures do
@@ -18395,6 +19172,16 @@ class CheckToolTests(unittest.TestCase):
                 self.assertFalse(os.path.exists(os.path.join(cache, f"t-2.0-{checks.platform()}")))
 
 
+def _release_check(name: str, ok: bool, line: str, todo: list[str] | None = None):
+    """A dev/release.py check for a test: check_<name>, so its rule in devtools.toml's [release] is <name>'s."""
+    from dev import release
+
+    def check():
+        return release.Result(name.replace("_", " ").title() if name != "mqtt_docs" else "MQTT docs", ok, line, todo or [])
+    check.__name__ = f"check_{name}"
+    return check
+
+
 class ReleaseTests(unittest.TestCase):
     """The release checks (dev/release.py): what devtools --release checks before dev is released, and only then."""
 
@@ -18443,17 +19230,20 @@ class ReleaseTests(unittest.TestCase):
         from dev import release
         folder = tempfile.mkdtemp(dir=TMP)
         path = os.path.join(folder, "release.json")
-        checks = [lambda: release.Result("Version", True, "0.17.0, a new release"),
-                  lambda: release.Result("Looks", False, "2 looks waiting for approval", ["new: css .a", "python3 dev/style.py review"])]
-        for args, env, rc, strict in (([], {}, 1, True), (["--devtools"], {}, 3, False), (["--devtools"], {"DEVTOOLS_RELEASE": "1"}, 1, True)):
-            with mock.patch.object(release, "CHECKS", checks), mock.patch.dict(os.environ, {"DEVTOOLS_DETAIL": path, "PLEXCACHE_PROGRESS": "", **env}), \
+        checks = [_release_check("version", True, "0.17.0, a new release"),
+                  _release_check("looks", False, "2 looks waiting for approval", ["new: css .a", "python3 dev/style.py review"])]
+        for args, role, rc, strict in (([], "release", 1, True), (["--devtools"], "development", 3, False), (["--devtools"], "release", 1, True)):
+            with mock.patch.object(release, "CHECKS", checks), mock.patch.dict(os.environ, _policy_env(role, DEVTOOLS_DETAIL=path, PLEXCACHE_PROGRESS="")), \
                     contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(release.main(args), rc)
             with open(path, encoding="utf-8") as fh:
                 got = json.load(fh)
-            self.assertEqual(got, {"kind": "release", "strict": strict, "ready": 1, "total": 2, "checks": [
-                {"name": "Version", "ok": True, "line": "0.17.0, a new release", "todo": []},
-                {"name": "Looks", "ok": False, "line": "2 looks waiting for approval", "todo": ["new: css .a", "python3 dev/style.py review"]}]})
+            level = "fail" if strict else "info"   # (each check's level: [release]'s for the role — info between releases, fail for a release's code)
+            self.assertEqual({k: v for k, v in got.items() if k not in ("tools", "result", "files", "level", "rc", "note", "context", "rules")},
+                             {"kind": "release", "strict": strict, "ready": 1, "total": 2, "skipped": [], "checks": [
+                                 {"name": "Version", "ok": True, "line": "0.17.0, a new release", "todo": [], "level": level},
+                                 {"name": "Looks", "ok": False, "line": "2 looks waiting for approval", "todo": ["new: css .a", "python3 dev/style.py review"], "level": level}]})
+            self.assertEqual((got["context"]["role"], got["level"], got["rc"]), (role, level, rc))
 
     def test_every_setting_is_placed_for_mqtt(self):
         from dev import release
@@ -18509,11 +19299,12 @@ class ReleaseTests(unittest.TestCase):
         from dev import release
         said = "Audited 100% · 0 findings open · release rules met"
         done = mock.Mock(returncode=0, stdout=f"  (a note)\n{said}\n")
-        with mock.patch.object(release.subprocess, "run", return_value=done) as run:
+        with mock.patch.object(release.subprocess, "run", return_value=done) as run, mock.patch.dict(os.environ, _policy_env("development", diff=True)):
             got = release.check_audits()
         self.assertTrue(got.ok)
         self.assertEqual(got.line, said)
-        self.assertIn("--release", run.call_args.args[0])   # (as a release run holds them: the one set of rules)
+        env = run.call_args.kwargs["env"]   # (as a release's code holds them, the whole codebase: the one set of rules, dev/policy.py's context)
+        self.assertEqual((env["DEVTOOLS_ROLE"], env["DEVTOOLS_DIFF"], env["DEVTOOLS_INTEGRATION"]), ("release", "0", "audit"))
         bad = mock.Mock(returncode=1, stdout="  sensitive code waits\n2 release rules not met\n")
         with mock.patch.object(release.subprocess, "run", return_value=bad):
             got = release.check_audits()
@@ -18532,26 +19323,32 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(got.todo[0], "changed: css .fhit")
 
     def test_the_board_block_is_a_readiness(self):
-        """dev/release.py --devtools, devtools's Release checks block: between releases an overall readiness that only
-        tells (exit 3, "N of M ready"); on a release run (DEVTOOLS_RELEASE — the tool alone decides) the blocking check
-        it always was."""
+        """dev/release.py --devtools, devtools's Release checks block: between releases (development's code: [release]
+        level info) an overall readiness that only tells (exit 3, "N of M ready"); for a release's code ([release.release]:
+        fail) the blocking check it always was — the rules decide, from devtools.toml."""
         from dev import release
         from dev.progress import FEED
-        checks = [lambda: release.Result("Version", True, "0.17.0, a new release"),
-                  lambda: release.Result("Coverage", False, "overall 97.1%"),
-                  lambda: release.Result("Looks", False, "2 looks waiting for approval")]
-        quiet = {"PLEXCACHE_PROGRESS": "feed", "DEVTOOLS_RELEASE": ""}
+        checks = [_release_check("version", True, "0.17.0, a new release"),
+                  _release_check("coverage", False, "overall 97.1%"),
+                  _release_check("looks", False, "2 looks waiting for approval")]
+        quiet = _policy_env("development", PLEXCACHE_PROGRESS="feed")
         out = io.StringIO()
         with mock.patch.object(release, "CHECKS", checks), contextlib.redirect_stdout(out), \
                 mock.patch.dict(os.environ, quiet):
             self.assertEqual(release.main(["--devtools"]), 3)
         self.assertIn("1 of 3 ready · to go: coverage, looks", out.getvalue())
         self.assertIn(FEED + json.dumps({"said": "1 of 3 ready · to go: coverage, looks"}), out.getvalue())   # (its block's line)
+        # each requirement its own unit: the bar ends at those met, out of all (the misses held as info: its grey rest)
+        bars = [json.loads(line[len(FEED):]) for line in out.getvalue().split("\n") if line.startswith(FEED) and '"bar"' in line]
+        self.assertEqual({k: bars[-1][k] for k in ("done", "total", "bad", "warned", "unit")},
+                         {"done": 1, "total": 3, "bad": 0, "warned": 0, "unit": "requirements met"})
         out = io.StringIO()
         with mock.patch.object(release, "CHECKS", checks), contextlib.redirect_stdout(out), \
-                mock.patch.dict(os.environ, quiet | {"DEVTOOLS_RELEASE": "1"}):
-            self.assertEqual(release.main(["--devtools"]), 1)   # (a release run: red, and the copy waits)
+                mock.patch.dict(os.environ, _policy_env("release", PLEXCACHE_PROGRESS="feed")):
+            self.assertEqual(release.main(["--devtools"]), 1)   # (a release's code: red, and the copy waits)
         self.assertIn(FEED + json.dumps({"said": "Coverage: overall 97.1%; Looks: 2 looks waiting for approval"}), out.getvalue())
+        bars = [json.loads(line[len(FEED):]) for line in out.getvalue().split("\n") if line.startswith(FEED) and '"bar"' in line]
+        self.assertEqual((bars[-1]["done"], bars[-1]["total"], bars[-1]["bad"]), (3, 3, 2))   # (1 met, 2 failed)
         out = io.StringIO()
         with mock.patch.object(release, "CHECKS", checks[:1]), contextlib.redirect_stdout(out), \
                 mock.patch.dict(os.environ, quiet):
@@ -18560,24 +19357,23 @@ class ReleaseTests(unittest.TestCase):
 
     def test_runs_each_check_and_says_them(self):
         from dev import release
-        checks = [lambda: release.Result("Version", True, "0.16.0, a new release"),
-                  lambda: release.Result("Translations", False, "1 of 17 catalogs not complete", ["fr: 1 problems"])]
+        checks = [_release_check("version", True, "0.16.0, a new release"),
+                  _release_check("translations", False, "1 of 17 catalogs not complete", ["fr: 1 problems"])]
         out = io.StringIO()
         with mock.patch.object(release, "CHECKS", checks), contextlib.redirect_stdout(out), \
-                mock.patch.dict(os.environ, {"PLEXCACHE_PROGRESS": "feed"}):
+                mock.patch.dict(os.environ, _policy_env("release", PLEXCACHE_PROGRESS="feed")):
             self.assertEqual(release.main(), 1)
         self.assertIn("✔ Version: 0.16.0, a new release\n✘ Translations: 1 of 17 catalogs not complete\n    fr: 1 problems\n", out.getvalue())
         self.assertIn('{"said": "Translations: 1 of 17 catalogs not complete"}', out.getvalue())   # (its block's line on the board)
-        with mock.patch.object(release, "CHECKS", checks[:1]), contextlib.redirect_stdout(io.StringIO()):
+        with mock.patch.object(release, "CHECKS", checks[:1]), contextlib.redirect_stdout(io.StringIO()), mock.patch.dict(os.environ, _policy_env("release")):
             self.assertEqual(release.main(), 0)
 
-    @unittest.skipUnless(shutil.which("rsync") and shutil.which("bash"), "no rsync here (devtools copies with it)")
+    @unittest.skipUnless(shutil.which("rsync") and shutil.which("bash") and shutil.which("git"), "no rsync or git here (devtools copies with it)")
     def test_devtools_release_and_translations_every_run(self):
-        """devtools's Release checks and Translations blocks (TN_RELEASE, TN_I18N), every run: the tools alone decide how
-        strict they are, from DEVTOOLS_RELEASE and DEVTOOLS_MODE — between releases exit 3 only tells (grey, the run goes
-        on), and where they gate exit 1 is a failure like a failing test. The checks are told it's a release
-        (DEVTOOLS_RELEASE, PLEXCACHE_I18N_RELEASE) only with --release. A pass without --release doesn't count for one
-        with it."""
+        """devtools's Release checks and Translations blocks, every run: the tools alone decide how strict they are, from
+        the code's role (devtools.toml's [branches]: told them as DEVTOOLS_ROLE) — on a feature branch exit 3 only tells
+        (grey, the run goes on), and on main, a release's code, exit 1 is a failure like a failing test. A pass as one
+        role doesn't count for another."""
         import subprocess
         folder = tempfile.mkdtemp(dir=TMP)
         project, nas, fake = (os.path.join(folder, d) for d in ("project", "nas", "bin"))
@@ -18594,14 +19390,17 @@ class ReleaseTests(unittest.TestCase):
             fh.write("one\n")
         with open(os.path.join(folder, "config"), "w", encoding="utf-8") as fh:
             fh.write("TN_HOST=nas.example\nTN_USER=me\n")
+        with open(os.path.join(project, ".devtools"), "w", encoding="utf-8") as fh:
+            fh.write(f"TN_APP=myapp\nTN_DEST={nas}\nTN_PATHS=app\n")
+        git = lambda *a: subprocess.run(["git", "-C", project, *a], check=True, capture_output=True,
+                                        env=dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t"))
+        git("init", "-q", "-b", "topic")
 
-        def settings(strict_rc: int):
-            with open(os.path.join(project, ".devtools"), "w", encoding="utf-8") as fh:
-                fh.write(f"TN_APP=myapp\nTN_DEST={nas}\nTN_PATHS=app\n"
-                         "TN_TEST=echo tests: release=${DEVTOOLS_RELEASE:-no} i18n=${PLEXCACHE_I18N_RELEASE:-no}\n"
-                         "TN_I18N=echo 32.9% translated; [ \"${DEVTOOLS_RELEASE:-}\" = 1 ] && exit 1; exit 3\n"
-                         "TN_RELEASE=echo the version is wrong; echo 4 of 7 ready; "
-                         f"if [ \"${{DEVTOOLS_RELEASE:-}}\" = 1 ]; then exit {strict_rc}; else exit 3; fi\n")
+        def settings(strict_rc: int, i18n_ok: bool = False):
+            told = "printf '\\036{\"status\": \"in progress\"}\\n'"   # (the note beside the block's title, as the tools send it)
+            _toml(project, unit="echo tests: role=$DEVTOOLS_ROLE",
+                  i18n="echo 100% translated; exit 0" if i18n_ok else f'echo 32.9% translated; [ "$DEVTOOLS_ROLE" = release ] && exit 1; {told}; exit 3',
+                  release=f'echo the version is wrong; echo 4 of 7 ready; if [ "$DEVTOOLS_ROLE" = release ]; then exit {strict_rc}; else {told}; exit 3; fi')
         env = dict(os.environ, PATH=fake + os.pathsep + os.environ.get("PATH", ""), DEVTOOLS_CONFIG=os.path.join(folder, "config"),
                    XDG_STATE_HOME=os.path.join(folder, "state"), TMPDIR=folder)
         env.pop("PLEXCACHE_PROGRESS", None)
@@ -18612,40 +19411,35 @@ class ReleaseTests(unittest.TestCase):
                                  text=True, timeout=120, stdin=subprocess.DEVNULL)
             return got.returncode, got.stdout + got.stderr
         settings(1)
-        rc, out = devtools("push")   # (between releases: both blocks only tell, grey, and the run passes)
+        rc, out = devtools("push")   # (a feature branch: both blocks only tell, grey, and the run passes)
         self.assertEqual(rc, 0, out)
         self.assertIn("Release checks: IN PROGRESS", out)
         self.assertIn("Translations: IN PROGRESS", out)
-        self.assertIn("tests: release=no i18n=no", out)
-        rc, out = devtools("--release")   # (in sync, and passed: but not as a release, so tested again)
+        self.assertIn("tests: role=feature", out)
+        self.assertRegex(out, r"\nLocal Copy[^\n]* · feature")
+        git("checkout", "-q", "-b", "main")   # (a release's code now: in sync, and passed — but not as this role, so tested again)
+        rc, out = devtools()
         self.assertEqual(rc, 1, out)
-        self.assertIn("The last tests weren't a release run (--release) · nothing copied", out)
+        self.assertIn("The last tests weren't run for this code's role or phase", out)
         self.assertIn("Release checks: FAILED", out)
         self.assertIn("Translations: FAILED", out)
         self.assertIn("\nthe version is wrong\n", out)   # (what it said, above the board)
-        self.assertIn("tests: release=1 i18n=1", out)
-        self.assertIn("Local Copy", out)   # (the board's header)
-        self.assertRegex(out, r"\nLocal Copy[^\n]* · Release")
+        self.assertIn("tests: role=release", out)
+        self.assertRegex(out, r"\nLocal Copy[^\n]* · release")   # (the board's header: the role)
         settings(0)
-        rc, out = devtools("--release")
-        self.assertEqual(rc, 1, out)   # (the translations still gate a release run)
+        rc, out = devtools()
+        self.assertEqual(rc, 1, out)   # (the translations still gate a release's code)
         self.assertIn("Release checks: PASSED", out)
         self.assertIn("Translations: FAILED", out)
-        with open(os.path.join(project, ".devtools"), "a", encoding="utf-8") as fh:
-            fh.write("TN_I18N=echo 100% translated; exit 0\n")   # (the last TN_I18N line wins)
-        rc, out = devtools("--release")
+        settings(0, i18n_ok=True)
+        rc, out = devtools()
         self.assertEqual(rc, 0, out)
         self.assertIn("Release checks: PASSED", out)
         self.assertIn("Translations: PASSED", out)
-        rc, out = devtools("--release")   # (passed, and nothing changed: readiness runs again all the same, quick)
+        rc, out = devtools()   # (passed, and nothing changed: readiness runs again all the same, quick; the tests don't)
         self.assertEqual(rc, 0, out)
         self.assertIn("Release checks: PASSED", out)
-        # the blocks' plan: the tool decides, devtools only tells and counts (one source of truth)
-        devtools_src = _read(os.path.join(ROOT, "dev", "devtools"), encoding="utf-8")
-        self.assertIn('\\"id\\": \\"i18n\\", \\"title\\": \\"Translations\\"', devtools_src)
-        self.assertIn('\\"id\\": \\"release\\", \\"title\\": \\"Release checks\\"', devtools_src)
-        self.assertEqual(devtools_src.count('\\"tell\\": {\\"rc\\": 3, \\"note\\": \\"in progress\\"}'), 2)
-
+        self.assertIn("Unit Tests: ALREADY PASSED", out)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
@@ -18757,25 +19551,25 @@ class AuditTests(unittest.TestCase):
         from dev import audit
         repo, private, git = self.project()
         audits = audit.load()[0]
-        got = audit.coverage_check(audit.measure(audits), audits, time.time(), [])
+        got = audit.coverage_check(audit.measure(audits), audits, time.time(), [], 7, 10)
         self.assertIn("24 lines no audit has seen: the oldest has waited", (got.findings or [])[0].message)   # (since 2001; all of it)
         self.assertEqual(got.said(), ["audited 0.0%", "full 0.0%", "no full audit yet"])
         self.audit_files(repo, private, "2026-11-01-1", "2026-11-01", git("rev-parse", "HEAD"), "full")
         with open(os.path.join(repo, "b.py"), "a") as fh:
             fh.write("y = 1\n")   # (1 line of 25, uncommitted: 4%, just now)
         audits = audit.load()[0]
-        got = audit.coverage_check(audit.measure(audits), audits, time.time(), [])
+        got = audit.coverage_check(audit.measure(audits), audits, time.time(), [], 7, 10)
         self.assertEqual((got.findings or []), [])   # (inside the window: fine)
         self.assertEqual(got.said(), ["audited 96.0%", "full 96.0%", "last full 2026-11-01", "1 line to audit before a push"])
         git("commit", "-qam", "more", when="2001-06-01T00:00:00Z")
-        got = audit.coverage_check(audit.measure(audits), audits, time.time(), [])
+        got = audit.coverage_check(audit.measure(audits), audits, time.time(), [], 7, 10)
         self.assertIn("the oldest has waited", (got.findings or [])[0].message)   # (committed long ago, still unaudited: orange)
         with open(os.path.join(repo, "a.py"), "a") as fh:
             fh.write("z = 1\n")
         git("commit", "-qam", "sensitive")
         audits = audit.load()[0]
         self.audit_files(repo, private, "2026-11-02-1", "2026-11-02", git("rev-parse", "HEAD~1"), "partial", ["b.py"])
-        got = audit.coverage_check(audit.measure(audit.load()[0]), audit.load()[0], time.time(), ["a.py"])
+        got = audit.coverage_check(audit.measure(audit.load()[0]), audit.load()[0], time.time(), ["a.py"], 7, 10)
         self.assertEqual([(f.path, f.message) for f in (got.findings or [])], [("a.py", "1 line of sensitive code no audit has seen")])
 
     @unittest.skipUnless(shutil.which("git"), "no git here")
@@ -18788,7 +19582,7 @@ class AuditTests(unittest.TestCase):
         today = dt.date.fromtimestamp(now).isoformat()
         self.audit_files(repo, private, f"{today}-1", today, head, "full", auditor="gamma-5.5", thoroughness=1)
         audits = audit.load()[0]
-        got = audit.release_check(audit.measure(audits), audits, True, rule, now, release=True)
+        got = audit.release_check(audit.measure(audits), audits, True, rule, now, "fail", freeze=True)
         msgs = [f.message for f in (got.findings or [])]
         self.assertIn("no full audit the release rules accept in the last 180 days", msgs)   # (gamma isn't on the list)
         self.assertIn("no release candidate tagged (vX.Y.Z-rc.N) on this code", msgs)
@@ -18799,27 +19593,28 @@ class AuditTests(unittest.TestCase):
         self.audit_files(repo, private, f"{today}-2", today, head, "full", auditor="beta-5.1", thoroughness=4, extra=finding)
         git("tag", "-a", "-m", "rc", "v1.0.0-rc.1")   # (annotated: it carries when it was made)
         audits = audit.load()[0]
-        got = audit.release_check(audit.measure(audits), audits, True, rule, now + 8 * audit.DAY, release=True)
+        got = audit.release_check(audit.measure(audits), audits, True, rule, now + 8 * audit.DAY, "fail", freeze=True)
         self.assertEqual([f.message for f in (got.findings or [])], ["F-2026-001 is open at high"])
         self.assertEqual([f.message for f in (audit.findings_check(audits).findings or [])], ["F-2026-001 high: Token compared with =="])
-        got = audit.release_check(audit.measure(audits), audits, True, rule, now, release=False)
+        got = audit.release_check(audit.measure(audits), audits, True, rule, now, "warn", freeze=False)
         self.assertIn("v1.0.0-rc.1 has soaked 0.0 of 7 days", [f.message for f in (got.findings or [])])
         self.assertEqual({f.severity for f in (got.findings or [])}, {"warning"})   # (on dev, once an RC is tagged: orange)
 
     def test_what_who_audits_needs_is_configured_privately(self):
         from dev import audit
-        public = audit.config_check(False, {}, release=True)   # (anyone's clone: a notice, never a failure)
+        public = audit.config_check(False, {}, "fail", "info")   # (anyone's clone: a notice, never a failure)
         self.assertEqual([f.severity for f in public.findings or []], ["information"])
         self.assertIn("auditor and thoroughness requirements", (public.findings or [])[0].message)
         self.assertFalse(public.bad())
         self.assertEqual(public.said(), ["public records only"])
-        ours = audit.config_check(True, {"release": {"accept": ["alpha>=5.5 thoroughness<=3"]}}, release=False)
+        ours = audit.config_check(True, {"release": {"accept": ["alpha>=5.5 thoroughness<=3"]}}, "warn")
         self.assertEqual((ours.findings, ours.said()), ([], ["auditor requirements set"]))
-        unset = audit.config_check(True, {}, release=False)   # (the private repo, but no requirement in it: orange)
+        unset = audit.config_check(True, {}, "warn")   # (the private repo, but no requirement in it: orange)
         self.assertEqual([(f.severity, f.message) for f in unset.findings or []],
                          [("warning", "the private rules.toml has no [release] accept: no auditor is required")])
-        self.assertTrue(unset.bad())
-        typo = audit.config_check(True, {"release": {"accept": ["alpha>=5.5 effort>=high"]}}, release=True)
+        self.assertFalse(unset.bad())   # (held as a warning: not failed)
+        self.assertTrue(audit.config_check(True, {}, "fail").bad())   # (a release's code: [audit.release] config = "fail")
+        typo = audit.config_check(True, {"release": {"accept": ["alpha>=5.5 effort>=high"]}}, "fail")
         self.assertEqual([(f.severity, f.message) for f in typo.findings or []],
                          [("error", "the private rules.toml's accept entry 'alpha>=5.5 effort>=high' can't be read")])
 
@@ -18832,9 +19627,9 @@ class AuditTests(unittest.TestCase):
             audits, have_private, bad = audit.load()
             self.assertEqual((have_private, bad, audits[0].auditor, audits[0].kind), (False, [], "", "partial"))
             out = io.StringIO()
-            with contextlib.redirect_stdout(out):
+            with contextlib.redirect_stdout(out), mock.patch.dict(os.environ, _policy_env("development")):
                 rc = audit.main([])
-        self.assertEqual(rc, 1)
+        self.assertEqual(rc, 4)   # (code no audit has seen: a warning, as [audit] unaudited says)
         self.assertIn("audited 83.3%", out.getvalue().lower())
         self.assertIn("public records only", out.getvalue())
         self.assertNotIn("beta", out.getvalue())   # (who did it stays private)
@@ -18913,7 +19708,7 @@ class AuditTests(unittest.TestCase):
         with open(os.path.join(repo, "a.py"), "w") as fh:
             fh.write("def login(user):\n    return user.strip()\n\n\ndef other():\n    return 2\n")   # (not committed)
         audits = audit.load()[0]
-        got = audit.coverage_check(audit.measure(audits), audits, time.time(), [])
+        got = audit.coverage_check(audit.measure(audits), audits, time.time(), [], 7, 10)
         self.assertIn("1 line to audit before a push", got.said())
         self.write(repo, "filled.toml", f'id = "2026-11-10-1"\ndate = 2026-11-10\ncommit = "{git("rev-parse", "HEAD")}"\n'
                    'kind = "partial"\nscope = ["a.py:login"]\nauditor = "alpha-5.5"\nthoroughness = 2\n')
@@ -18976,7 +19771,7 @@ class AuditTests(unittest.TestCase):
         self.assertTrue(audits[0].author)
         m = audit.measure(audits)
         self.assertEqual([(rel, n) for rel, n, ln in m.all() if not ln.seen], [])   # (on dev: it counts)
-        got = audit.release_check(m, audits, True, rule, time.time(), release=False)
+        got = audit.release_check(m, audits, True, rule, time.time(), "warn", freeze=False)
         self.assertIn("no full audit the release rules accept in the last 180 days", [f.message for f in got.findings or []])
 
     @unittest.skipUnless(shutil.which("git"), "no git here")
@@ -19414,7 +20209,7 @@ class AuditTests(unittest.TestCase):
         check = audit.findings_check(audit.load()[0])
         self.assertEqual(check.said()[:2], ["1 open finding", "1 to confirm fixed (their code is gone)"])
         rule = {"accept": ["human"], "max_age_days": 180, "soak_days": 0, "block_open": "high"}
-        rel = audit.release_check(audit.measure(audit.load()[0]), audit.load()[0], True, rule, time.time(), release=False)
+        rel = audit.release_check(audit.measure(audit.load()[0]), audit.load()[0], True, rule, time.time(), "warn", freeze=False)
         msgs = [x.message for x in rel.findings or []]
         self.assertTrue(any("is open at critical 9.1" in m for m in msgs), msgs)
         self.assertFalse(any("hardening" in m for m in msgs), msgs)   # (a hardening finding never holds up a release)
@@ -19815,7 +20610,7 @@ const { chromium } = require("playwright");
         said = audit.findings_check(audit.load()[0]).said()
         self.assertIn("1 mitigated", said)
         self.assertIn("no open findings", said)   # (not open: it doesn't hold the block, nor a release)
-        self.assertNotIn("F-2026-001", "\n".join(x.message for x in audit.release_check(audit.measure(audit.load()[0]), audit.load()[0], True, {}, time.time(), release=False).findings or []))
+        self.assertNotIn("F-2026-001", "\n".join(x.message for x in audit.release_check(audit.measure(audit.load()[0]), audit.load()[0], True, {}, time.time(), "warn", freeze=False).findings or []))
 
     def _cli(self, audit, *args):
         out = io.StringIO()

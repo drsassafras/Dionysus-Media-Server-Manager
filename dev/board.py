@@ -147,6 +147,7 @@ class Section:
         self.opened = ""    # (how its key's page stands, in its header: "is open", "has closed", "didn't open")
         self.state = "waiting"
         self.note = ""                # (why it's waiting, stopped or not run)
+        self.status_note = ""         # (what the tool said its result is, progress.status: the note for warn and info)
         self.rc: int | None = None
         self.proc: subprocess.Popen | None = None
         self.started: float | None = None
@@ -155,7 +156,9 @@ class Section:
         self.last = ""
         self.buf = b""
         self.log = os.path.join(logs, f"{self.id}.log")
-        self.out = open(self.log, "w", encoding="utf-8", errors="replace")  # noqa: SIM115 — (kept open while it runs)
+        # (kept open while it runs, each line written as it comes: the devtools UI reads the file as the block runs, and a
+        # run stopped short — Ctrl-C — keeps what was printed)
+        self.out = open(self.log, "w", buffering=1, encoding="utf-8", errors="replace")  # noqa: SIM115
         self.phase = 0                # 1: its "then" command
         self.reported = False         # (what it had to say beyond its block: said)
         self.telling: list[str] = []  # (failures said as they came, not yet put above the board)
@@ -220,7 +223,7 @@ class Section:
         self.env.update({str(k): str(v) for k, v in (self.go.get("env") or {}).items()})
         self.after = [str(x) for x in self.go.get("after") or []]
         self.doing = self.go.get("doing") or self.doing
-        self.state, self.note, self.rc, self.said, self.last, self.bars = "waiting", "", None, None, "", {}
+        self.state, self.note, self.rc, self.said, self.last, self.bars, self.status_note = "waiting", "", None, None, "", {}, ""
         self.started = self.ended = None
         self.reported = False
         self.out.write(f"\n==> {self.go.get('does') or 'go'}: {self.cmd}\n")
@@ -279,6 +282,8 @@ class Section:
         rec = record(text)
         if rec is not None and "said" in rec:   # (the line under its bar: what came of it, as the tool puts it)
             self.said = str(rec["said"])
+        if rec is not None and isinstance(rec.get("status"), str):   # (the note beside its title, once done: the tool's word)
+            self.status_note = rec["status"]
             return
         if rec is not None and isinstance(rec.get("issue"), dict):   # (something it found: in the board's Issues at the end)
             self.issues.append({k: str(rec["issue"].get(k) or "") for k in ("level", "text", "fix")})
@@ -330,7 +335,7 @@ class Section:
             self.rc = rc
             self.out.close()
             self.log = self.log[: -len(".log")] + ".then.log"
-            self.out = open(self.log, "w", encoding="utf-8", errors="replace")  # noqa: SIM115
+            self.out = open(self.log, "w", buffering=1, encoding="utf-8", errors="replace")  # noqa: SIM115
             return
         if self.phase == 1 and not self.upkeep:   # (a second step after one with a result of its own: the first's stands —
             if rc != 0 and self.then.get("fail_note"):   # the looks still waiting, the sample not made: said, not failed)
@@ -341,10 +346,12 @@ class Section:
         self.ended = time.time()
         if self.info is not None:   # (a section that only tells: its header the same, red when its command failed)
             self.state, self.note = "info" if rc == 0 else "fail", str(self.info)
-        elif self.upkeep:
+        elif self.upkeep:   # (its first line is the word; its exit code, what devtools.toml holds that as: dev/upkeep.py's verdict)
             self.state = {"current": "pass", "behind": "warn", "cves": "warn"}.get(self.first, "skipped")
-            self.note = {"current": "up to date", "behind": "new versions upstream",
-                         "cves": "up to date · CVEs to act on"}.get(self.first, "not checked")   # (the box, above)
+            if self.state != "skipped" and rc in (1, 3, 4):   # (what devtools.toml holds that as, when its exit code says: fail, a note, a warning)
+                self.state = {1: "fail", 3: "info", 4: "warn"}[rc]
+            self.note = self.status_note or {"current": "up to date", "behind": "new versions upstream",
+                                             "cves": "up to date · CVEs to act on"}.get(self.first, "not checked")   # (the box, above)
             self.last = ""
         elif rc == 0:
             self.state = "pass"
@@ -354,13 +361,13 @@ class Section:
                 self.note = f"passed · {counted(self.warned, 'warning')}"
         elif self.warn_rc is not None and rc == self.warn_rc:   # (its block says it all: the line it said, the note)
             self.state = "warn"
-            self.note = self.warn_note   # (its key: in the header's keys, and its last line)
+            self.note = self.status_note or self.warn_note   # (its key: in the header's keys, and its last line)
         elif rc in self.warn_more:
             self.state = "warn"
             self.note = self.warn_more[rc]
         elif self.tell_rc is not None and rc == self.tell_rc:   # (nothing wrong, only how things stand: its last line says)
             self.state = "info"
-            self.note = self.tell_note
+            self.note = self.status_note or self.tell_note
         elif self.not_run_rc is not None and rc == self.not_run_rc:
             self.state = "notrun"
         else:
@@ -488,7 +495,8 @@ class Board:
         self.header = [str(x) for x in plan.get("header") or []]   # (the board's own block on top: what this run is)
         self.commit = str(plan.get("commit") or "")   # (the commit checked: after the header's first line)
         self.offered = [dict(k) for k in plan.get("keys") or []]   # (the keys the board says under it: Enter)
-        self.ui = dict(plan.get("ui") or {})   # (the devtools UI: u opens its hub, a section's letter its page)
+        self.ui = dict(plan.get("ui") or {})   # (the devtools UI: the hub's key opens its hub, a section's letter its page)
+        self.hub_key = str(plan.get("hub_key") or "u")[:1] if isinstance(plan, dict) else "u"
         self.record = os.path.dirname(logs)    # (the run's record: the plan and results, each section's log, and state.json)
         self.ui_proc: subprocess.Popen | None = None   # (the UI, once a key opened it from here)
         self.written = ""        # (state.json as last written: written again only when it changed)
@@ -622,7 +630,7 @@ class Board:
             if ch in "\r\n":
                 self.enter()
                 continue
-            if self.ui and ch == "u":
+            if self.ui and ch == self.hub_key:
                 self.open_ui("")
                 continue
             for s in self.sections:
@@ -741,7 +749,7 @@ class Board:
         header = list(self.header) or [""]
         keys = [s.go for s in self.sections if s.goes] + list(self.offered) + ([s.key for s in self.sections if s.keyed] if not self.pressed else [])
         if self.ui and self.stdin_tty and not self.pressed:
-            keys.append({"key": "u", "does": "Open the devtools UI"})
+            keys.append({"key": self.hub_key, "does": "Open the devtools UI"})
         last = [s for s in self.sections if s.final_phase in (1, 2) and not s.done]
         if last:   # (a last step under way: Enter skips it)
             keys = [{"key": "Enter", "does": last[0].finale.get("enter", "Skip")}]

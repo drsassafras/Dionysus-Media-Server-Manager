@@ -1,9 +1,9 @@
 name: Test and publish image
 
+# (A release tag is .github/workflows/publish.yml's: the release gate, the image at its version, the GitHub Release.)
 on:
   push:
     branches: [main, dev]
-    tags: ["v*"]
   pull_request:
   schedule:
     - cron: "41 5 * * 1"  # weekly: the image built again on the release branch, so it carries the newest Python 3.15.x and Debian packages
@@ -69,8 +69,6 @@ jobs:
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' }}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
             type=sha,format=short
       # Built first without pushing, so the optimizer's tests can run inside it: with the image's own
       # MKVToolNix, ffmpeg, oxipng and jpegtran (the runner has none of them, so there they're skipped).

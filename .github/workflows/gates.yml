@@ -1,0 +1,54 @@
+name: Gates
+
+# The gates devtools.toml sets (dev/gate.py): the same blocks the board puts on, held to the same rules, run on GitHub
+# as a check — a push the push gate, a pull request the merge gate (the code judged as the branch it's going to), a
+# tag's push the release gate (the tag's phase: a release candidate the freeze, a beta the preview). Nothing runs
+# unless devtools.toml says so: [github] enabled = true, and the gate's github = true (a required check) or "warn"
+# (reported, never blocking). A gate switched off is skipped, so it blocks nothing.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  config:
+    # what devtools.toml says for this event: whether GitHub runs the gates, which gate it is, whether it runs (dev/gate.py --outputs)
+    runs-on: ubuntu-latest
+    outputs:
+      enabled: ${{ steps.cfg.outputs.enabled }}
+      gate: ${{ steps.cfg.outputs.gate }}
+      run: ${{ steps.cfg.outputs.run }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7
+        with:
+          python-version: "3.15"
+      - id: cfg
+        run: python3 dev/gate.py --outputs | tee -a "$GITHUB_OUTPUT"
+
+  gate:
+    needs: config
+    if: needs.config.outputs.run != 'false'
+    name: ${{ needs.config.outputs.gate }} gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          fetch-depth: 0   # (the whole history: a diff-mode gate compares with its base, a release gate reads the tags)
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7
+        with:
+          python-version: "3.15"
+      # what checks and builds the web app (dev/web.js), for the DHTML block; the browser its accessibility check draws in
+      - run: npm ci --prefix dev --no-audit --no-fund
+      - run: npx --prefix dev playwright install --with-deps chromium
+      # the gate: every block devtools.toml turns on, as the board runs them, a line per block and what each found
+      # above it; the exit code the verdict (with --ci a "warn" gate reports and exits 0)
+      - name: Run the gate
+        env:
+          GATE: ${{ needs.config.outputs.gate }}
+        run: python3 dev/gate.py "$GATE" --ci

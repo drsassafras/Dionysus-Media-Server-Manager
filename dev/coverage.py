@@ -4,7 +4,7 @@
     python3 dev/coverage.py              # run the suite (tests/run.py --coverage), then the table and the checks
     python3 dev/coverage.py --missing    # the table with the lines that never ran
     python3 dev/coverage.py --devtools     # the checks, from the coverage the last tests/run.py --coverage saved
-    python3 dev/coverage.py --release    # the release bar too (devtools --release: its failure is red)
+    python3 dev/coverage.py --devtools --role release   # (DEVTOOLS_ROLE: the rules of that role, the bars among them)
 
 What counts: every line of plexcache/ that holds code — not a docstring, nor a ``def`` or ``class`` line (they run on
 import, whatever the tests do), nor the ``if __name__ == "__main__":`` tail a test imports rather than runs. Nothing is
@@ -12,16 +12,17 @@ left out beyond that: a line no test can reach is a test to write, or the mainta
 
 git says how long each line has stood (``git blame``), so nobody marks code fresh or settled:
 
-  - fresh: not committed, or changed in the last FRESH_DAYS days — while it's moving, one test at its seam is enough:
+  - fresh: not committed, or changed in the last fresh_days days — while it's moving, one test at its seam is enough:
     each function (or server route) with a fresh line has to be reached by a test; no line target;
-  - settled: unchanged for FRESH_DAYS days or more — SETTLED % of its lines run by the tests, the lines that don't listed
+  - settled: unchanged for fresh_days days or more — settled % of its lines run by the tests, the lines that don't listed
     by file when it's under;
-  - at release (--release): RELEASE % of every line, and each file at RELEASE_FILE % or more.
+  - the bars (a release's, as devtools.toml sets them by role): every_line % of every line, each file at each_file % or more;
+    in diff mode, changed % of the lines changed since the gate's base.
 
 The suite's run saves what it reached (tests/run.py --coverage, every worker's, in ~/.cache/plex-cache/coverage.json), so
 the checks don't run it again; the coverage of other code (a change since) isn't used. Through dev/checks.py, as every check says it: what's missing one line each (file:line -
-warning: …), then the result line. Exit 0 every rule met, 1 something to add (devtools's block orange; with --release, a
-release bar not met: red), 2 no coverage saved for this code.
+warning: …), then the result line. The exit code is dev/policy.py's: 0 every rule met, 4 something to add (devtools's block
+orange), 1 a rule held as fail not met (red), 3 only notes, 2 no coverage saved for this code.
 """
 
 import ast
@@ -36,16 +37,22 @@ from dataclasses import dataclass, field
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-from dev import checks  # noqa: E402 — the check tools' shared code
+from dev import checks, policy  # noqa: E402 — the check tools' shared code, and the rules (devtools.toml)
 from dev.checks import Check, Finding, Outcome  # noqa: E402
 
 PKG = os.path.join(ROOT, "plexcache")
 SAVED = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "plex-cache", "coverage.json")
 DAY = 24 * 3600
-FRESH_DAYS = 14      # a line changed within this many days (or not committed) is fresh
-SETTLED = 98.0       # % of the settled lines the tests have to run
-RELEASE = 98.0       # % of every line, at release
-RELEASE_FILE = 90.0  # % of each file's lines, at release
+# The rules (devtools.toml's [coverage], read through dev/policy.py: nothing here decides a number or a level).
+SCHEMA = policy.Schema("coverage", "Coverage", {
+    "fresh_days": policy.Setting("window", "a line changed within this many days (or not committed) is fresh", unit="days"),
+    "fresh": policy.Setting("level", "a fresh function or route no test reaches"),
+    "settled": policy.Setting("threshold", "the share of the settled lines the tests must run", unit="%"),
+    "every_line": policy.Setting("threshold", "the share of every line the tests must run", full_only=True, unit="%"),
+    "each_file": policy.Setting("threshold", "the share of each file's lines the tests must run", full_only=True, unit="%"),
+    "changed": policy.Setting("threshold", "the share of the changed lines the tests must run (diff mode)", unit="%"),
+    "not_measured": policy.Setting("level", "the tests saved no coverage (run without --coverage)"),
+}, "What of the code the tests reach, from the coverage the last test run saved.")
 TOOL = sys.monitoring.COVERAGE_ID
 
 
@@ -194,7 +201,7 @@ def load() -> tuple[dict | None, str]:
         with open(SAVED, encoding="utf-8") as fh:
             got = json.load(fh)
     except (OSError, ValueError):
-        return None, "no coverage saved yet: the tests save it with --coverage (in .devtools, TN_TEST=python3 tests/run.py --coverage …)"
+        return None, "no coverage saved yet: the tests save it with --coverage (devtools.toml: the unit integration, python3 tests/run.py --coverage …)"
     if got.get("code") != code_signature():
         return None, "plexcache/ has changed since the coverage was saved: python3 tests/run.py --coverage again"
     return got, ""
@@ -243,8 +250,9 @@ class File:
         return self.code - self.fresh
 
 
-def measure(hit: dict[str, list[int]], now: float | None = None) -> tuple[list[File], str]:
-    """Every file of plexcache/, its code, what ran, and which lines are fresh; and what git couldn't say."""
+def measure(hit: dict[str, list[int]], now: float | None = None, fresh_days: float | None = None) -> tuple[list[File], str]:
+    """Every file of plexcache/, its code, what ran, and which lines are fresh (changed within ``fresh_days``, or not
+    committed; None: nothing is fresh); and what git couldn't say."""
     now = time.time() if now is None else now
     where = checks.repo_at()
     files = []
@@ -254,10 +262,12 @@ def measure(hit: dict[str, list[int]], now: float | None = None) -> tuple[list[F
         files.append(File(rel, code, set(hit.get(rel, ())) & code, units=units(path, code)))
     if where is None:
         return files, "no git history here: every line counted as settled"
+    if fresh_days is None:
+        return files, ""
 
     def one(f: File):
         when = blame(f.rel, where)
-        f.fresh = {n for n in f.code if when.get(n, now) is None or now - (when.get(n) or now) < FRESH_DAYS * DAY}
+        f.fresh = {n for n in f.code if when.get(n, now) is None or now - (when.get(n) or now) < fresh_days * DAY}
     try:
         with ThreadPoolExecutor(8) as pool:
             list(pool.map(one, files))
@@ -286,7 +296,7 @@ def _ranges(nums: list[int]) -> str:
 
 
 # ---------------------------------------------------------------- the rules
-def fresh_check(files: list[File]) -> Outcome:
+def fresh_check(files: list[File], level: str = "warn") -> Outcome:
     found = []
     fresh_units = 0
     for f in files:
@@ -295,39 +305,62 @@ def fresh_check(files: list[File]) -> Outcome:
                 fresh_units += 1
                 if not u.lines & f.ran:
                     what = f"no test reaches the fresh {u.kind} {u.name}" if u.kind == "function" else f"no test reaches the fresh route {u.name}"
-                    found.append(Finding("Coverage", f.rel, u.line, 0, "warning", what, "fresh"))
+                    found.append(Finding("Coverage", f.rel, u.line, 0, "warning", what, "fresh", level=level))
     from dev.progress import counted
     facts = [f"{counted(len(found), 'fresh function')} no test reaches" if found else f"{counted(fresh_units, 'fresh function')} reached"]
     return Outcome("Fresh code", "", found, facts=facts)
 
 
-def settled_check(files: list[File]) -> Outcome:
+def settled_check(files: list[File], settled: float, level: str = "warn") -> Outcome:
     total = sum(len(f.settled) for f in files)
     ran = sum(len(f.settled & f.ran) for f in files)
     pct = _pct(ran, total)
     found = []
-    if pct < SETTLED:
+    if pct < settled:
         for f in sorted(files, key=lambda f: -len(f.settled - f.ran)):
             missing = sorted(f.settled - f.ran)
             if missing:
                 found.append(Finding("Coverage", f.rel, missing[0], 0, "warning",
-                                     f"{len(missing)} settled lines no test runs: {_ranges(missing)}", "settled"))
-    return Outcome("Settled code", "", found, facts=[f"settled {pct:.1f}% (of {SETTLED:g}%)"])
+                                     f"{len(missing)} settled lines no test runs: {_ranges(missing)}", "settled", level=level))
+    return Outcome("Settled code", "", found, facts=[f"settled {pct:.1f}% (of {settled:g}%)"])
 
 
-def release_check(files: list[File]) -> Outcome:
+def release_check(files: list[File], every_line: float | None, each_file: float | None, level: str = "fail") -> Outcome:
+    """The bars of the whole codebase: ``every_line`` % of every line run, and each file at ``each_file`` % (None: not asked)."""
     total = sum(len(f.code) for f in files)
     ran = sum(len(f.ran) for f in files)
     pct = _pct(ran, total)
     found = []
-    if pct < RELEASE:
-        found.append(Finding("Coverage", "plexcache", 0, 0, "error", f"{pct:.1f}% of every line run, under the release's {RELEASE:g}%", "release"))
+    if every_line is not None and pct < every_line:
+        found.append(Finding("Coverage", "plexcache", 0, 0, "error", f"{pct:.1f}% of every line run, under the bar's {every_line:g}%", "every_line", level=level))
     for f in files:
         mine = _pct(len(f.ran), len(f.code))
-        if mine < RELEASE_FILE:
+        if each_file is not None and mine < each_file:
             found.append(Finding("Coverage", f.rel, 0, 0, "error",
-                                 f"{mine:.1f}% of its lines run, under the release's {RELEASE_FILE:g}% for each file", "release"))
-    return Outcome("Release bar", "", found, facts=[f"overall {pct:.1f}% (release: {RELEASE:g}%, each file {RELEASE_FILE:g}%)"])
+                                 f"{mine:.1f}% of its lines run, under the bar's {each_file:g}% for each file", "each_file", level=level))
+    bars = [f"{every_line:g}% of every line" if every_line is not None else "", f"each file {each_file:g}%" if each_file is not None else ""]
+    return Outcome("Bar", "", found, facts=[f"overall {pct:.1f}% (bar: {', '.join(b for b in bars if b)})" if any(bars) else f"overall {pct:.1f}%"])
+
+
+def changed_check(files: list[File], base: str, changed: float, level: str = "warn") -> Outcome:
+    """Diff mode: ``changed`` % of the lines changed since ``base`` run by the tests."""
+    lines = policy.changed_lines(base, ROOT)
+    total = ran = 0
+    found = []
+    for f in files:
+        mine = f.code & lines.get(f.rel, set())
+        if not mine:
+            continue
+        total += len(mine)
+        ran += len(mine & f.ran)
+        missing = sorted(mine - f.ran)
+        if missing:
+            found.append(Finding("Coverage", f.rel, missing[0], 0, "warning",
+                                 f"{len(missing)} changed lines no test runs: {_ranges(missing)}", "changed", level=level))
+    pct = _pct(ran, total) if total else 100.0
+    if pct >= changed:
+        found = []
+    return Outcome("Changed code", "", found, facts=[f"changed {pct:.1f}% (of {changed:g}%, {total} lines since {base})"])
 
 
 def table(files: list[File], missing: bool) -> None:
@@ -342,38 +375,54 @@ def table(files: list[File], missing: bool) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = ["--devtools" if a == "--tnsync" else a for a in (sys.argv[1:] if argv is None else argv)]   # (the flag's old name still read)
-    release = "--release" in args or os.environ.get("DEVTOOLS_RELEASE") == "1"
+    r = checks.levels("coverage")
     if "--devtools" not in args and "--saved" not in args:
         run = subprocess.run([sys.executable, os.path.join(ROOT, "tests", "run.py"), "--coverage"], cwd=ROOT)
-        if run.returncode not in (0, 1):
+        if run.returncode not in (0, 1, policy.INFO, policy.WARN):
             return 2
     saved, why = load()
     if saved is None:
-        from dev.progress import result
+        from dev.progress import result, status
         print(result("coverage not measured", why))   # (on the board, its last line: why, and what to do)
-        return 3 if "--devtools" in args else 2   # (on the board: a warning, orange, "not measured": not a test to add)
-    files, note = measure(saved["hit"])
+        if "--devtools" not in args:
+            return 2
+        level = r.level("not_measured") if r else "warn"
+        status("not measured")
+        return policy.exit_code([level])
+    if r is None:   # (no devtools.toml: the numbers as they're told, the levels as the severities say)
+        files, note = measure(saved["hit"], fresh_days=14)
+        rules = [Check("Fresh code", lambda: fresh_check(files, "")), Check("Settled code", lambda: settled_check(files, 98, ""))]
+        return checks.run(rules, bar="coverage", more=page(files, note, {}, saved.get("tests", "")))
+    files, note = measure(saved["hit"], fresh_days=r.value("fresh_days"))
     if "--devtools" not in args:
         table(files, "--missing" in args)
-    outcomes = [fresh_check(files), settled_check(files)]
-    rules = [Check(o.tool, (lambda o=o: o)) for o in outcomes]
-    if release:
-        for o in outcomes:
-            o.failed = False   # (at release, the bar is what holds it up)
-        rules.append(Check("Release bar", lambda: release_check(files)))
+    rules = []
+    if r.value("fresh_days") is not None and r.level("fresh") != "off":
+        rules.append(Check("Fresh code", lambda: fresh_check(files, r.level("fresh"))))
+    if r.value("settled") is not None:
+        rules.append(Check("Settled code", lambda: settled_check(files, r.value("settled") or 0, r.value_level("settled"))))
+    if r.value("every_line") is not None or r.value("each_file") is not None:
+        rules.append(Check("Bar", lambda: release_check(files, r.value("every_line"), r.value("each_file"),
+                                                       policy.worst([lv for lv in (r.value_level("every_line"), r.value_level("each_file")) if lv != "off"]))))
+    if r.value("changed") is not None and r.ctx.base:
+        rules.append(Check("Changed code", lambda: changed_check(files, r.ctx.base, r.value("changed") or 0, r.value_level("changed"))))
     if note:
         print(f"  ({note})")
-    return checks.run(rules, bar="coverage", more=page(files, note, release, saved.get("tests", "")))
+    if not rules:
+        rules.append(Check("Coverage", lambda: Outcome("Coverage", "", [], facts=["no coverage rule set for this role"])))
+    shown = {n: r.value(n) for n in ("fresh_days", "settled", "every_line", "each_file", "changed")}
+    return checks.run(rules, bar="coverage", rules=r, notes={"warn": "tests to add", "fail": "under the bar"},
+                      more=page(files, note, shown, saved.get("tests", "")))
 
 
-def page(files: list[File], note: str, release: bool, tests: str) -> dict:
+def page(files: list[File], note: str, shown: dict, tests: str) -> dict:
     """What the Coverage page in the devtools UI shows beyond the rules' findings (dev/checks.py's detail): each file's
-    lines, what ran, its fresh lines and the ranges no test runs; the rules' thresholds; the totals."""
+    lines, what ran, its fresh lines and the ranges no test runs; the rules' thresholds as they stand (``shown``); the totals."""
     total, ran = sum(len(f.code) for f in files), sum(len(f.ran) for f in files)
     settled, settled_ran = sum(len(f.settled) for f in files), sum(len(f.settled & f.ran) for f in files)
     fresh_units = [u for f in files for u in f.units if u.lines & f.fresh]
-    return {"kind": "coverage", "note": note, "release": release, "tests": tests,
-            "rules": {"fresh_days": FRESH_DAYS, "settled": SETTLED, "release": RELEASE, "release_file": RELEASE_FILE},
+    return {"kind": "coverage", "note": note, "tests": tests,
+            "rules": shown,
             "totals": {"lines": total, "ran": ran, "pct": round(_pct(ran, total), 1), "settled": settled, "settled_ran": settled_ran,
                        "settled_pct": round(_pct(settled_ran, settled), 1), "fresh": sum(len(f.fresh) for f in files),
                        "fresh_units": len(fresh_units), "fresh_reached": sum(1 for f in files for u in f.units if u.lines & f.fresh and u.lines & f.ran)},

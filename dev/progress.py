@@ -154,6 +154,16 @@ def said(text: str, stream=None):
         stream.flush()
 
 
+def status(text: str, stream=None):
+    """On devtools's board, the note beside a section's title once it's done ("tests to add", "looks waiting", "in
+    progress"): what the tool's result is, in a word or three, for its warn (exit 4) and info (exit 3) states — the board
+    says the state's own word without one. Sent only when feeding."""
+    if feeding():
+        stream = stream or sys.stdout
+        stream.write(FEED + json.dumps({"status": text}) + "\n")
+        stream.flush()
+
+
 def tell(text: str, stream=None, feed: bool | None = None) -> bool:
     """On devtools's board, a failure as it comes, in full (a test's traceback, a check's findings): above the board at
     once on a terminal, and in the section's output (its log, the devtools UI's Output) the same, so what a section that

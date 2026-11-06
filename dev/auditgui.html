@@ -789,8 +789,9 @@ async function rules(view) {
       try { const r = await api("/api/rules", {text: text.value}); tell(r.ok ? ["Saved. Commit rules.toml in the private repo."] : r.problems); }
       catch (e) { tell([e.message]); }
     }}, "Check and save")), said,
-    h("h2", {}, "The dev rule"), h("p", {class: "mute"}, "From dev/audit.toml (public): code no audit has seen may wait " + (got.dev.grace_days ?? 7) +
-      " days, or until it's " + (got.dev.grace_share ?? 10) + "% of the app code."));
+    h("h2", {}, "The dev rule"), h("p", {class: "mute"}, got.dev.grace_days == null && got.dev.grace_share == null ? "From devtools.toml ([audit], the " + (got.dev.role || "feature") + " role): no grace window is set, so code no audit has seen is only listed." :
+      "From devtools.toml ([audit], the " + (got.dev.role || "feature") + " role): code no audit has seen may wait " + (got.dev.grace_days ?? "any number of") +
+      " days" + (got.dev.grace_share != null ? ", or until it's " + got.dev.grace_share + "% of the app code" : "") + " (then held as " + (got.dev.level || "warn") + ")."));
 }
 
 // ---------------------------------------------------------------- open while the page is (dev/devpage.py's beat: "stale" says the server runs old code, no answer that it's gone)

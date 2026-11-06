@@ -54,12 +54,59 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 os.chdir(ROOT)
 
-from dev import coverage  # noqa: E402 — (--coverage: what the tests ran, for dev/coverage.py)
+from dev import coverage, policy  # noqa: E402 — (--coverage: what the tests ran, for dev/coverage.py; policy: what the run is held to)
 from dev.progress import FEED as FEED_MARK  # noqa: E402 — (a record's mark: run's FEED says whether there's a board)
 from dev.progress import OFF, RED, Progress, detail, drawn, feeding, short_version, tell, tested, timed  # noqa: E402 — the bar the dev tools share (dev/upkeep.py's too)
 from dev.progress import result as result_line  # noqa: E402 — (``result`` is run's: the result line every dev tool says)
 
 FEED = feeding()  # (read before main() takes PLEXCACHE_PROGRESS out of the tests' environment)
+# What devtools told this run (the integration that runs the suite, the project's devtools.toml, the code's role and the
+# rest of its context), taken here and then out of the environment (main): the tests, and every tool they run, see none
+# of it — a tool a test runs reads its own rules as it would by hand, and the suite's verdict is the same wherever
+# it's run. The verdict reads what was taken.
+CONTEXT_KEYS = ("DEVTOOLS_INTEGRATION", "DEVTOOLS_CONFIG", "DEVTOOLS_ROLE", "DEVTOOLS_PHASE", "DEVTOOLS_TAG", "DEVTOOLS_BRANCH",
+                "DEVTOOLS_DIFF", "DEVTOOLS_GATE", "DEVTOOLS_BASE", "DEVTOOLS_CODE", "DEVTOOLS_COPY", "DEVTOOLS_COMMIT",
+                "DEVTOOLS_REPO", "DEVTOOLS_HEAD")
+CONTEXT = {k: os.environ[k] for k in CONTEXT_KEYS if k in os.environ}
+CONFIG = policy.find_file()   # (DEVTOOLS_CONFIG's, or this folder's; "" when there's none: nothing held)
+# The rules (devtools.toml's [unit], [future]…: the integration that runs this suite, DEVTOOLS_INTEGRATION): what a failed
+# test, a warning the run printed and a skipped test are held as. Read through dev/policy.py; nothing here decides.
+SCHEMA = policy.Schema("tests", "Tests", {
+    "failures": policy.Setting("level", "a test that failed (or errored)"),
+    "warnings": policy.Setting("level", "a warning the run printed"),
+    "skipped": policy.Setting("level", "a test skipped"),
+}, "A run of the test suite.")
+SKIPPED = [0]   # (the tests skipped this run: the verdict's)
+
+
+# A block of the checks' kind that runs tests (DHTML: the web's build tests): its findings' rules, a failed test held as an
+# error is, a printed warning as a warning, a skipped test as information.
+CHECKS_AS = {"failures": "errors", "warnings": "warnings", "skipped": "information"}
+
+
+def verdict(failed: int, warned: int, skipped: int) -> int:
+    """The run's exit code, from what it's held to (dev/policy.py's: 0 passed, 1 a failure, 3 only notes, 4 warnings held
+    as such); without a devtools.toml, 1 when anything failed. Says the note the board shows (progress.status)."""
+    from dev.progress import counted, status
+    id_ = CONTEXT.get("DEVTOOLS_INTEGRATION", "") or "unit"
+    if not CONFIG:
+        return 1 if failed else 0
+    try:
+        cfg = policy.Config(CONFIG)
+        if cfg.integration(id_)["kind"] not in ("tests", "checks"):   # (another kind's block: the first tests integration's rules)
+            id_ = next((i["id"] for i in cfg.integrations(all_=True) if i["kind"] == "tests"), id_)
+        r = policy.rules(id_, policy.context(env=CONTEXT, cfg=cfg), cfg)
+    except policy.ConfigError as e:
+        print(f"    devtools.toml: {e}")
+        return 2
+    held = {k: r.level(CHECKS_AS.get(k, k) if r.schema.kind == "checks" else k) for k in ("failures", "warnings", "skipped")}
+    levels = [held["failures"]] * failed + [held["warnings"]] * warned + [held["skipped"]] * skipped
+    rc = policy.exit_code(levels)
+    worst = policy.worst([lv for lv in levels if lv != "off"])
+    if worst in ("warn", "info"):
+        said = [counted(n, w) for n, w, lv in ((failed, "failure", held["failures"]), (warned, "warning", held["warnings"]), (skipped, "skipped test", held["skipped"])) if n and lv == worst]
+        status(" · ".join(said) if FEED else "")
+    return rc
 # (dev/future.py's run: the image build's steps, before the tests on the board's one bar — not the tests' own)
 BEFORE = int(os.environ.pop("PLEXCACHE_BAR_BEFORE", "") or 0) if FEED else 0
 PINS = json.loads(os.environ.get("PLEXCACHE_PINS") or "{}")  # (dev/future.py's run: the app image's pins, to say only what's ahead)
@@ -216,13 +263,13 @@ def run_here(module: str, suite, total: int, tty: bool, started: float) -> int:
     bad = len(result.failures) + len(result.errors)
     blocks = [f"{result.separator1}\nFAIL: {result.getDescription(t)}\n{result.separator2}\n{text}" for t, text in result.failures]
     blocks += [f"{result.separator1}\nERROR: {result.getDescription(t)}\n{result.separator2}\n{text}" for t, text in result.errors]
-    detailed(result.testsRun - bad, blocks, WARNED[0], total, took, 1)
+    detailed(result.testsRun - bad, blocks, WARNED[0], total, took, 1, skipped=len(result.skipped))
     if bad:
         result.printErrors()
         print(f"\n    {RED if tty else ''}{result_line(tested(result.testsRun, bad, WARNED[0], feed=FEED), *ran_on())}{OFF if tty else ''}{timed(f'{took:.0f} s', feed=FEED)}")
-        return 1
+        return verdict(bad, WARNED[0], len(result.skipped))
     print(f"    {result_line(tested(result.testsRun, 0, WARNED[0], feed=FEED), *ran_on())}{timed(f'{took:.0f} s', feed=FEED)}")
-    return 0
+    return verdict(0, WARNED[0], len(result.skipped))
 
 
 # ----------------------------------------------------------------- workers
@@ -329,10 +376,10 @@ def failure_name(text: str) -> tuple[str, str]:
 
 
 def detailed(passed: int, failed: list[str], warned: int, total: int, took: float, workers: int, stopped: bool = False,
-             times: dict | None = None) -> None:
+             times: dict | None = None, skipped: int = 0) -> None:
     """The run's page in the devtools UI (dev/progress.py's detail): the counts, each failure as unittest printed it, what
     the suite ran on, and the slowest classes (the times run_parallel keeps for its sharing-out)."""
-    detail({"kind": "tests", "passed": passed, "failed": len(failed), "warnings": warned, "total": total, "not_run": max(0, total - passed - len(failed)),
+    detail({"kind": "tests", "passed": passed, "failed": len(failed), "warnings": warned, "skipped": skipped, "total": total, "not_run": max(0, total - passed - len(failed)),
             "took": round(took, 1), "workers": workers, "stopped": stopped, "ran_on": ran_on(),
             "failures": [{"kind": failure_name(t)[0], "test": failure_name(t)[1], "text": t} for t in failed],
             "times": sorted(((k, v) for k, v in (times or {}).items()), key=lambda kv: -kv[1])[:25]})
@@ -377,7 +424,7 @@ def run_parallel(module: str, units: list, total: int, jobs: int, tty: bool, sta
             for block in failures:
                 print(block)
         took = time.time() - started
-        detailed(progress.done - bad, failures, progress.warned, total, took, started_workers, stopped, times)
+        detailed(progress.done - bad, failures, progress.warned, total, took, started_workers, stopped, times, SKIPPED[0])
         if stopped:
             print(f"\n    {result_line('stopped', tested(progress.done, bad, progress.warned, total, feed=FEED), f'{total - progress.done} not run')}")
         elif bad:
@@ -385,7 +432,9 @@ def run_parallel(module: str, units: list, total: int, jobs: int, tty: bool, sta
         else:
             print(f"    {result_line(tested(progress.done, 0, progress.warned, feed=FEED), *ran_on())}{timed(f'{took:.0f} s', f'{started_workers} workers', feed=FEED)}")
         sys.stdout.flush()
-        return code
+        if stopped:
+            return code
+        return verdict(bad, progress.warned, SKIPPED[0])
 
     def stop(*_):
         # devtools's Enter: every worker ends now, mid-test (they have the signal too, as its process group); the
@@ -429,6 +478,7 @@ def run_parallel(module: str, units: list, total: int, jobs: int, tty: bool, sta
                     line, w.buf = w.buf.split(b"\n", 1)
                     msg = json.loads(line)
                     progress.warned += msg.get("w", 0)   # (the warnings it has printed since it last said)
+                    SKIPPED[0] += msg.get("skipped", 0)
                     if msg["t"] == "want":
                         if w.unit is not None:
                             times[w.unit[0]] = round(time.time() - unit_started[w.unit[0]], 2)
@@ -488,12 +538,12 @@ def worker(module: str) -> int:
             if isinstance(test, unittest.TestCase):
                 say(t="start", name=_name(test))
 
-        def _said(self, test, flavour=None, err=None):
+        def _said(self, test, flavour=None, err=None, skipped: int = 0):
             text = None
             if err is not None:
                 text = f"{self.separator1}\n{flavour}: {self.getDescription(test)}\n{self.separator2}\n{self._exc_info_to_string(err, test)}"  # pyright: ignore[reportAttributeAccessIssue] — unittest's own way of saying a failure, not in its stubs
             counted = isinstance(test, unittest.TestCase)  # (a setUpClass/tearDownModule error isn't a test)
-            say(t="test", id=test.id() if counted else None, name=_name(test), text=text)
+            say(t="test", id=test.id() if counted else None, name=_name(test), text=text, skipped=skipped)
 
         def addSuccess(self, test):
             super().addSuccess(test)
@@ -509,7 +559,7 @@ def worker(module: str) -> int:
 
         def addSkip(self, test, reason):
             super().addSkip(test, reason)
-            self._said(test)
+            self._said(test, skipped=1)
 
         def addExpectedFailure(self, test, err):
             super().addExpectedFailure(test, err)
@@ -605,6 +655,8 @@ def _run(module: str, jobs_n: int, excluded: set[str], started: float) -> int:
     total = suite.countTestCases()
     tty = drawn(sys.stdout)
     os.environ.pop("PLEXCACHE_PROGRESS", None)  # (this run's, not the tests': one that runs tests/run.py itself says its own)
+    for k in CONTEXT_KEYS:   # (devtools's context: this run's, taken above — not the tests')
+        os.environ.pop(k, None)
     units = _units(suite) if jobs_n > 1 else None
     if not units or len(units) < 2:
         return run_here(module, suite, total, tty, started)

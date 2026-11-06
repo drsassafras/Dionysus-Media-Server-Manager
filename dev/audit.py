@@ -2,8 +2,8 @@
 """Security audits, line by line (devtools's Security Audit block): which app code an audit has seen, what's stale or never
 audited, and the release rules.
 
-    python3 dev/audit.py                 # the checks (devtools: TN_AUDIT=python3 dev/audit.py)
-    python3 dev/audit.py --release       # the release rules too (devtools --release: their failure is red)
+    python3 dev/audit.py                 # the checks (devtools's Security Audit block: devtools.toml's audit integration)
+    python3 dev/audit.py                 # the rules devtools.toml sets for this code's role (DEVTOOLS_ROLE), the release's among them
     python3 dev/audit.py next            # what most needs an audit, grouped into batches by file
     python3 dev/audit.py start [PATH…]   # the standard prompt, filled in (no paths: a full audit; paths: a partial)
     python3 dev/audit.py record FILE     # a filled-in templates/audit.toml, checked, split and saved
@@ -52,7 +52,7 @@ from dataclasses import dataclass, field
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-from dev import checks  # noqa: E402 — the check tools' shared code
+from dev import checks, policy  # noqa: E402 — the check tools' shared code, and the rules (devtools.toml)
 from dev.checks import Check, Finding, Outcome  # noqa: E402
 from dev.checks import repo_at as _repo  # noqa: E402 — where git knows these lines (this checkout, or devtools's copy's)
 from dev.progress import counted  # noqa: E402
@@ -65,6 +65,19 @@ SEVERITIES = ("info", "low", "medium", "high", "critical")
 STATUSES = ("open", "fixed", "mitigated", "accepted", "false-positive")   # (mitigated: lived with for now, kept for a proper fix later)
 DONE = ("fixed", "mitigated")   # (the statuses a fix closes it with: Confirm, Mark as fixed, a re-check)
 MAIN = ("affected", "not-affected", "fixed")
+
+# The rules (devtools.toml's [audit], read through dev/policy.py). The private rules.toml keeps what names an auditor
+# (who's accepted, how old a full audit may be, the soak, what blocks): these say what each of its rules is held as.
+SCHEMA = policy.Schema("audit", "Security Audit", {
+    "grace_days": policy.Setting("window", "code no audit has seen may wait this many days", unit="days"),
+    "grace_share": policy.Setting("threshold", "…or until it's this share of the app code", unit="%"),
+    "unaudited": policy.Setting("level", "code no audit has seen, past its grace (and sensitive code, at once)"),
+    "findings": policy.Setting("level", "an open finding"),
+    "config": policy.Setting("level", "the private rules.toml's requirements missing or unreadable"),
+    "release_rules": policy.Setting("level", "the release rules (a full audit accepted and fresh, the candidate soaked, nothing open that blocks)", full_only=True),
+    "unknown": policy.Setting("level", "a rule that needs the private audits repo, where there isn't one"),
+    "changed": policy.Setting("level", "changed lines no audit has seen (diff mode)"),
+}, "Which app code the security audits have seen, and the release rules.")
 TYPES = ("vulnerability", "hardening")   # (exploitable, CVSS scored; or hardening, not exploitable: a priority, never a release block)
 PRIORITIES = ("low", "medium", "high")   # (a hardening finding's)
 CODE = ("there", "changed", "gone", "unknown")   # (a finding's lines in the code now: see code_state)
@@ -518,23 +531,35 @@ def _pct(n: int, of: int) -> float:
     return 100.0 * n / of if of else 100.0
 
 
-def _by_file(spots: list[tuple[str, int]], what: str, severity: str) -> list[Finding]:
+def _by_file(spots: list[tuple[str, int]], what: str, severity: str, level: str = "") -> list[Finding]:
     by: dict[str, list[int]] = {}
     for rel, n in spots:
         by.setdefault(rel, []).append(n)
     order = sorted(by, key=lambda r: -len(by[r]))
-    out = [Finding("Audit", rel, min(by[rel]), 0, severity, f"{counted(len(by[rel]), 'line')} {what}", "unaudited") for rel in order[:TOP]]
+    out = [Finding("Audit", rel, min(by[rel]), 0, severity, f"{counted(len(by[rel]), 'line')} {what}", "unaudited", level=level) for rel in order[:TOP]]
     if len(order) > TOP:
         rest = sum(len(by[r]) for r in order[TOP:])
-        out.append(Finding("Audit", "app code", 0, 0, severity, f"{counted(rest, 'more line')} {what}, in {counted(len(order) - TOP, "more file")}", "unaudited"))
+        out.append(Finding("Audit", "app code", 0, 0, severity, f"{counted(rest, 'more line')} {what}, in {counted(len(order) - TOP, "more file")}", "unaudited", level=level))
     return out
 
 
-def coverage_check(m: Map, audits: list[Audit], now: float, sensitive: list[str]) -> Outcome:
+def changed_check(m: Map, base: str, level: str = "warn") -> Outcome:
+    """Diff mode: the lines changed since ``base`` that no audit has seen (a partial audit of the change covers them)."""
+    at = _repo()
+    lines = policy.changed_lines(base, at[0] if at else ROOT)
+    short = [(rel, n) for rel, n, ln in m.all() if n in lines.get(rel, set()) and not ln.seen]
+    total = sum(1 for rel, n, _ in m.all() if n in lines.get(rel, set()))
+    found = _by_file(short, "changed, no audit has seen", "warning", level)
+    facts = ["changed lines audited" if not short else f"{counted(len(short), 'changed line')} unaudited (of {total} since {base})"]
+    return Outcome("Changed code", "", found, facts=facts)
+
+
+def coverage_check(m: Map, audits: list[Audit], now: float, sensitive: list[str], grace_days: float | None = None,
+                   grace_share: float | None = None, level: str = "warn") -> Outcome:
     """The dev rule: what no audit has seen waits no longer than the grace window (its oldest line, or its share of the
-    code), and sensitive code (the private rules.toml) doesn't wait at all."""
-    dev = config().get("dev", {})
-    grace_days, grace_share = float(dev.get("grace_days", 7)), float(dev.get("grace_share", 10))
+    code; None: no such limit), and sensitive code (the private rules.toml) doesn't wait at all."""
+    grace_days = float("inf") if grace_days is None else float(grace_days)
+    grace_share = float("inf") if grace_share is None else float(grace_share)
     rows = list(m.all())
     total = len(rows)
     seen = sum(1 for *_, ln in rows if ln.seen)
@@ -553,10 +578,10 @@ def coverage_check(m: Map, audits: list[Audit], now: float, sensitive: list[str]
         if big:
             why.append(f"they're {_pct(len(waiting), total):.1f}% of the app code (grace {grace_share:g}%)")
         found.append(Finding("Audit", "app code", 0, 0, "warning",
-                             f"{counted(len(waiting), 'line')} no audit has seen: {", ".join(why)}", "unaudited"))
-        found += _by_file([(rel, n) for rel, n, _ in waiting], "no audit has seen", "warning")
+                             f"{counted(len(waiting), 'line')} no audit has seen: {", ".join(why)}", "unaudited", level=level))
+        found += _by_file([(rel, n) for rel, n, _ in waiting], "no audit has seen", "warning", level)
     elif touchy:
-        found += _by_file(touchy, "of sensitive code no audit has seen", "warning")
+        found += _by_file(touchy, "of sensitive code no audit has seen", "warning", level)
     fulls = [a for a in audits if a.kind == "full"]
     facts = [f"audited {_pct(seen, total):.1f}%", f"full {_pct(full, total):.1f}%",
              f"last full {fulls[-1].date.isoformat()}" if fulls else "no full audit yet"]
@@ -575,7 +600,7 @@ def _spot(spot: str) -> tuple[str, int]:
     return rel, int(nums.split("-")[0]) if nums.split("-")[0].isdigit() else 0
 
 
-def findings_check(audits: list[Audit]) -> Outcome:
+def findings_check(audits: list[Audit], level: str = "warn") -> Outcome:
     """The open findings (the private half), each on its line: a warning, as they're being worked on."""
     found, gone, cache = [], 0, {}
     for a in audits:
@@ -587,7 +612,7 @@ def findings_check(audits: list[Audit]) -> Outcome:
                     gone += 1
                     continue
                 said = " (some of its code has changed)" if code == "changed" else ""
-                found.append(Finding("Audit", rel, n, 0, "warning", f"{f.get('id')} {_rated(f)}: {f.get('title')}{said}", "finding"))
+                found.append(Finding("Audit", rel, n, 0, "warning", f"{f.get('id')} {_rated(f)}: {f.get('title')}{said}", "finding", level=level))
     facts = [counted(len(found), "open finding") if found else "no open findings"]
     for word in DONE:
         confirm = sum(1 for a in audits for f in a.findings if f.get("status") == "open" and f.get("reported") == word)
@@ -656,7 +681,7 @@ def valid_accept(entry: str) -> bool:
     return who in ("any", "human") or bool(re.match(r"^([a-z]+(>=[\d.]+|-[\d.]+)?|human:\S+)$", who))
 
 
-def config_check(have_private: bool, rule: dict, release: bool) -> Outcome:
+def config_check(have_private: bool, rule: dict, level: str = "warn", unknown: str = "info") -> Outcome:
     """Whether the auditor and thoroughness requirements are set (the private repo's rules.toml). Without the private
     repo (anyone's clone, GitHub) that's a notice, never a failure: the public records stand on their own, and what's
     required of who audits stays private. With it, rules that are missing or can't be read are a warning (at release:
@@ -664,24 +689,24 @@ def config_check(have_private: bool, rule: dict, release: bool) -> Outcome:
     if not have_private:
         return Outcome("Audit config", "", [Finding("Audit", "dev/audit.toml", 0, 0, "information",
                        f"no private audit config at {private_root()}: auditor and thoroughness requirements, findings and "
-                       "the release rules aren't checked (the public records only)", "config")],
-                       facts=["public records only"], failed=False)
-    sev = "error" if release else "warning"
+                       "the release rules aren't checked (the public records only)", "unknown", level=unknown)],
+                       facts=["public records only"])
+    sev = "error" if level == "fail" else "warning"
     found = []
     release_rule = rule.get("release", {})
     if not release_rule.get("accept"):
-        found.append(Finding("Audit", "rules.toml", 0, 0, sev, "the private rules.toml has no [release] accept: no auditor is required", "config"))
+        found.append(Finding("Audit", "rules.toml", 0, 0, sev, "the private rules.toml has no [release] accept: no auditor is required", "config", level=level))
     for entry in release_rule.get("accept", []):
         if not valid_accept(str(entry)):
-            found.append(Finding("Audit", "rules.toml", 0, 0, sev, f"the private rules.toml's accept entry {entry!r} can't be read", "config"))
+            found.append(Finding("Audit", "rules.toml", 0, 0, sev, f"the private rules.toml's accept entry {entry!r} can't be read", "config", level=level))
     return Outcome("Audit config", "", found, facts=["auditor requirements set"] if not found else [counted(len(found), "config problem")])
 
 
-def release_check(m: Map, audits: list[Audit], have_private: bool, rule: dict, now: float, release: bool) -> Outcome:
+def release_check(m: Map, audits: list[Audit], have_private: bool, rule: dict, now: float, level: str = "fail", freeze: bool = True) -> Outcome:
     """The release rules (the private rules.toml's [release]): a full audit by an auditor it accepts, no older than
-    max_age_days, and every line since seen by one it accepts; the RC soaked soak_days; no open finding at block_open or
-    above; every finding's answer for main. Errors at release (red); warnings on dev once an RC is tagged."""
-    sev = "error" if release else "warning"
+    max_age_days, and every line since seen by one it accepts; the RC soaked soak_days (``freeze``: one has to be
+    tagged); no open finding at block_open or above; every finding's answer for main. Each held at ``level``."""
+    sev = "error" if level == "fail" else "warning"
     accept = list(rule.get("accept", []))
     max_age = float(rule.get("max_age_days", 180))
     today = datetime.date.fromtimestamp(now)
@@ -689,24 +714,24 @@ def release_check(m: Map, audits: list[Audit], have_private: bool, rule: dict, n
     ok = lambda a: not a.author and fresh(a) and any(accepts(e, a.auditor, a.thoroughness) for e in accept)   # noqa: E731
     found = []
     if not any(a.kind == "full" and ok(a) for a in audits):
-        found.append(Finding("Audit", "app code", 0, 0, sev, f"no full audit the release rules accept in the last {max_age:g} days", "release"))
+        found.append(Finding("Audit", "app code", 0, 0, sev, f"no full audit the release rules accept in the last {max_age:g} days", "release", level=level))
     short = [(rel, n) for rel, n, ln in m.all() if not any(ok(a) for a in ln.seen)]
-    found += _by_file(short, "not seen by an audit the release rules accept", sev)
+    found += _by_file(short, "not seen by an audit the release rules accept", sev, level)
     tag, made = _rc(_repo())
     soak = float(rule.get("soak_days", 7))
-    if release and not tag:
-        found.append(Finding("Audit", "git tags", 0, 0, sev, "no release candidate tagged (vX.Y.Z-rc.N) on this code", "release"))
+    if freeze and not tag:
+        found.append(Finding("Audit", "git tags", 0, 0, sev, "no release candidate tagged (vX.Y.Z-rc.N) on this code", "release", level=level))
     elif tag and made is not None and now - made < soak * DAY:
-        found.append(Finding("Audit", "git tags", 0, 0, sev, f"{tag} has soaked {max(0.0, now - made) / DAY:.1f} of {soak:g} days", "release"))
+        found.append(Finding("Audit", "git tags", 0, 0, sev, f"{tag} has soaked {max(0.0, now - made) / DAY:.1f} of {soak:g} days", "release", level=level))
     block = rule.get("block_open", "high")
     for a in audits:
         for f in a.findings:
             rel, n = _spot((f.get("lines") or ["?:0"])[0])
             if (f.get("status") == "open" and f.get("type") != "hardening"
                     and SEVERITIES.index(f.get("severity", "info")) >= SEVERITIES.index(block)):
-                found.append(Finding("Audit", rel, n, 0, sev, f"{f.get('id')} is open at {_rated(f)}", "release"))
+                found.append(Finding("Audit", rel, n, 0, sev, f"{f.get('id')} is open at {_rated(f)}", "release", level=level))
             if f.get("main") not in MAIN:
-                found.append(Finding("Audit", rel, n, 0, sev, f"{f.get('id')} has no answer for main", "release"))
+                found.append(Finding("Audit", rel, n, 0, sev, f"{f.get('id')} has no answer for main", "release", level=level))
     facts = ["release rules met"] if not found else [f"{counted(len(found), 'release rule')} not met"]
     return Outcome("Release rules", "", found, facts=facts)
 
@@ -1415,23 +1440,33 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {rel}{mark}: {counted(n, 'line')}, waiting since {datetime.date.fromtimestamp(when).isoformat()}")
         print(f"\n  to start a partial audit of the first batch: python3 dev/audit.py start {' '.join(r for r, *_ in rows[:5])}")
         return 0
-    release = "--release" in args or os.environ.get("DEVTOOLS_RELEASE") == "1"
+    r = checks.levels("audit")
     for line in bad:
         print(f"  {line}")
     m = measure(audits)
     for note in m.notes:
         print(f"  ({note})")
-    outcomes = [coverage_check(m, audits, now, sensitive), config_check(have_private, rule, release)]
+    if r is None:   # (no devtools.toml: the dev rule as the records tell it, nothing held as a failure)
+        outcomes = [coverage_check(m, audits, now, sensitive, level="warn"), config_check(have_private, rule, "warn")]
+        if have_private:
+            outcomes.insert(0, findings_check(audits))
+        rc = checks.run([Check(o.tool, (lambda o=o: o)) for o in outcomes], bar="audit")
+        return 2 if bad and rc == 0 else rc
+    outcomes = [coverage_check(m, audits, now, sensitive, r.value("grace_days"), r.value("grace_share"), r.level("unaudited")),
+                config_check(have_private, rule, r.level("config"), r.level("unknown"))]
     if have_private:   # (first: how many are open leads the block's line, never the fact left off when it's too long)
-        outcomes.insert(0, findings_check(audits))
-        tag, _ = _rc(_repo())
-        if release or tag:
-            outcomes.append(release_check(m, audits, have_private, rule.get("release", {}), now, release))
-    if release:
-        for o in outcomes:
-            if o.tool not in ("Release rules", "Audit config"):
-                o.failed = False   # (at release, the release rules are what hold it up)
-    rc = checks.run([Check(o.tool, (lambda o=o: o)) for o in outcomes], bar="audit")
+        outcomes.insert(0, findings_check(audits, r.level("findings")))
+        if r.level("release_rules") != "off":
+            outcomes.append(release_check(m, audits, have_private, rule.get("release", {}), now, r.level("release_rules"), freeze=r.ctx.phase == "freeze" or r.ctx.role == "release"))
+    elif r.level("release_rules") != "off":   # (the release rules need the private repo: without it, that's all that can be said)
+        outcomes.append(Outcome("Release rules", "", [Finding("Audit", "app code", 0, 0, "warning",
+                                f"the release rules can't be checked without the private audits repo ({private_root()})", "unknown", level=r.level("unknown"))],
+                                facts=["release rules unknown"]))
+    if r.level("changed") != "off" and r.ctx.base:
+        outcomes.append(changed_check(m, r.ctx.base, r.level("changed")))
+    if r.skipped("release_rules"):
+        print("  (the release rules are skipped in diff mode: they hold for the whole codebase)")
+    rc = checks.run([Check(o.tool, (lambda o=o: o)) for o in outcomes], bar="audit", rules=r, notes={"warn": "code to audit"})
     return 2 if bad and rc == 0 else rc
 
 

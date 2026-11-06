@@ -35,7 +35,16 @@ from dataclasses import asdict, dataclass, field
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-from dev.progress import Progress, counted, detail, feeding, result, said, tell  # noqa: E402 — the dev tools' bar and result line
+from dev import policy  # noqa: E402 — what each finding is held to (devtools.toml), and the exit code that says it
+from dev.progress import Progress, counted, detail, feeding, result, said, status, tell  # noqa: E402 — the dev tools' bar and result line
+
+# The checks (DHTML, Python Validation, Build Validation: dev/typecheck.py, dev/buildcheck.py…): what a finding of each
+# severity is held as. Every check's tool follows this one schema; its rules are the integration's in devtools.toml.
+SCHEMA = policy.Schema("checks", "Checks", {
+    "errors": policy.Setting("level", "a finding the tool calls an error"),
+    "warnings": policy.Setting("level", "a finding the tool calls a warning"),
+    "information": policy.Setting("level", "a finding the tool calls information (a note)"),
+}, "What each finding's severity is held as: fail (red), warn (orange), info (grey) or off (not shown).")
 
 TOOLS = os.path.join(ROOT, "dev", "tools.toml")
 CACHE = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "plex-cache", "tools")
@@ -214,6 +223,7 @@ class Finding:
     message: str
     code: str = ""     # the tool's own name for the rule (F401, SC2034, reportArgumentType)
     fixable: bool = False   # the tool's --fix makes it
+    level: str = ""    # what it's held as (devtools.toml: fail, warn, info, off); "" until run() sets it from its severity
 
 
 def rel(path: str) -> str:
@@ -222,14 +232,20 @@ def rel(path: str) -> str:
     return r if not r.startswith("..") else path
 
 
+WORD_OF = {"fail": "error", "warn": "warning", "info": "information"}   # (a finding's word, from what it's held as)
+
+
 def say(f: Finding) -> str:
     code = f" ({f.tool} {f.code})" if f.code else f" ({f.tool})"
-    return f"  {rel(f.path)}:{f.line}:{f.col} - {f.severity}: {f.message}{code}{' [*]' if f.fixable else ''}"
+    where = f"{rel(f.path)}:{f.line}:{f.col} - " if f.path else ""
+    word = WORD_OF.get(f.level, f.severity) if f.level else f.severity   # (as the rules hold it: a preview's error is a warning)
+    return f"  {where}{word}: {f.message}{code}{' [*]' if f.fixable else ''}"
 
 
 def annotate(f: Finding) -> str:
     """The line GitHub reads as an annotation on the finding's line."""
-    kind = {"error": "error", "warning": "warning"}.get(f.severity, "notice")
+    word = WORD_OF.get(f.level, f.severity) if f.level else f.severity
+    kind = {"error": "error", "warning": "warning"}.get(word, "notice")
     msg = f.message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
     title = f"{f.tool} {f.code}".strip()
     return f"::{kind} file={rel(f.path)},line={f.line},col={f.col},title={title}::{msg}"
@@ -242,17 +258,22 @@ class Outcome:
     findings: list[Finding] | None = None   # None: it couldn't say (``why``)
     why: str = ""
     facts: list[str] = field(default_factory=list)   # its part of the result line; empty: "N <tool> findings"
-    failed: bool | None = None   # whether what it found fails the check; None: anything found does
+    failed: bool | None = None   # (no longer read: what fails is each finding's level, devtools.toml's; kept for callers)
 
     def said(self) -> list[str]:
         if self.findings is None:
             return [f"{self.tool} didn't run"]
         return self.facts or [counted(len(self.findings), f"{self.tool} finding")]
 
+    def level(self) -> str:
+        """The worst level among what it found ("off" of nothing)."""
+        return policy.worst([f.level for f in self.findings or [] if f.level])
+
     def bad(self) -> bool:
+        """Whether what it found fails the check: a finding held as fail."""
         if self.findings is None:
             return False
-        return bool(self.findings) if self.failed is None else self.failed
+        return self.level() == "fail"
 
 
 @dataclass
@@ -284,10 +305,55 @@ def project_files(*patterns: str, under: tuple[str, ...] = ("",), skip: tuple[st
                   and any(fnmatch.fnmatch(os.path.basename(p), pat) for pat in patterns))
 
 
-def run(checks: list[Check], bar: str = "main", stream=None, more: dict | None = None) -> int:
-    """Every check at once; what each found, in their order, then the result line. The exit code (above). ``more``: what
-    the tool adds to its page's detail beyond the checks (dev/coverage.py's files; its "kind" names the page)."""
+def levels(integration: str = "", rules: policy.Rules | None = None) -> policy.Rules | None:
+    """The rules a tool's findings are held to: ``rules`` as given, else the integration's (DEVTOOLS_INTEGRATION, what
+    devtools names each block's command; ``integration`` when the tool knows its own), from the project's devtools.toml.
+    None when there's no file (a tool run outside a project: every finding as its severity says)."""
+    if rules is not None:
+        return rules
+    id_ = os.environ.get("DEVTOOLS_INTEGRATION", "") or integration
+    if not id_ or not policy.find_file():
+        return None
+    try:
+        cfg = policy.Config(policy.find_file())
+        if integration and id_ != integration and cfg.integration(id_)["kind"] != integration:
+            # the block's integration is another tool's (this tool run from inside it, as the unit tests run the others):
+            # its own rules, not the block's — the first integration of its kind, else the one named like it
+            id_ = next((i["id"] for i in cfg.integrations(all_=True) if i["kind"] == integration), integration)
+        return policy.rules(id_, cfg=cfg)
+    except policy.ConfigError as e:
+        raise SystemExit(f"devtools.toml: {e}") from None
+
+
+SEVERITY_RULE = {"error": "errors", "warning": "warnings", "information": "information"}
+
+
+def held(f: Finding, rules: policy.Rules | None) -> str:
+    """What a finding is held as: its own level when the tool set one (a rule's), else its severity's rule in the
+    integration's config (the checks schema); with no config, as its severity says (error fail, warning warn, else info)."""
+    if f.level:
+        return f.level
+    if rules is not None and rules.schema.kind == "checks":
+        return rules.level(SEVERITY_RULE.get(f.severity, "information"))
+    return {"error": "fail", "warning": "warn"}.get(f.severity, "info")
+
+
+def run(checks: list[Check], bar: str = "main", stream=None, more: dict | None = None, rules: policy.Rules | None = None,
+        notes: dict[str, str] | None = None, met: str = "", facts: list[str] | None = None) -> int:
+    """Every check at once; what each found, in their order, then the result line. The exit code: dev/policy.py's, from
+    the level each finding is held at (``held``: a level the tool set on it, else its severity's rule in the integration's
+    config, ``rules`` or levels()) — 0 nothing, 1 a fail, 2 a check couldn't run, 3 only notes, 4 warnings; a finding held
+    off isn't shown. ``notes``: the note the board shows beside the title per level ({"warn": "tests to add"}); else a
+    count. ``more``: what the tool adds to its page's detail beyond the checks (dev/coverage.py's files; its "kind"
+    names the page). ``met``: each check is a requirement (dev/release.py's, a language of dev/i18n.py's), and once they're
+    done the bar counts the ones met, in that unit ("requirements met"): a check that found nothing is met, one whose miss
+    is held as fail counts failed, as warn a warning, as info neither (the bar's grey rest). ``facts``: the result line's
+    facts, in place of each check's own (each requirement's own line is its finding)."""
     stream = stream or sys.stdout
+    rules = levels(rules=rules)
+    changed = None   # (diff mode, for the checks: the lines changed since the gate's base, per file)
+    if rules is not None and rules.ctx.diff and rules.ctx.base and rules.schema.kind == "checks":
+        changed = policy.changed_lines(rules.ctx.base, ROOT)
     # what the bar counts: the files the checks read (each once), when every check says which; else the checks
     read = [c.files() if c.files else None for c in checks] if feeding() else []
     readers: dict[str, set[int]] = {}
@@ -316,6 +382,15 @@ def run(checks: list[Check], bar: str = "main", stream=None, more: dict | None =
             got = c.run()
         except Exception as e:   # noqa: BLE001 — one tool falling over is said as that, the others still report
             got = Outcome(c.name, "", None, f"{c.name} fell over: {e!r}")
+        if got.findings is not None:   # (each finding held at its level; one held off isn't a finding)
+            for f in got.findings:
+                f.level = held(f, rules)
+            got.findings = [f for f in got.findings if f.level != "off"]
+            if changed is not None:   # (diff mode: a finding on a line that didn't change isn't this change's)
+                kept = [f for f in got.findings if f.line == 0 or f.line in changed.get(rel(f.path), set())]
+                if len(kept) != len(got.findings):
+                    got.facts = [*got.facts, f"{len(got.findings) - len(kept)} outside the change"]
+                got.findings = kept
         with lock:
             outcomes[i] = got
             # a check that failed (or couldn't run) says what it found now, not once the slowest is done: on the board,
@@ -340,22 +415,37 @@ def run(checks: list[Check], bar: str = "main", stream=None, more: dict | None =
     for i, o in enumerate(outcomes):
         if o is not None and not told[i]:
             stream.write(found(o))
+    if progress and met:   # (each requirement: met, or missed at its level)
+        missed = [o.level() if o.findings else ("fail" if o.findings is None else "") for o in done]
+        progress.warned = sum(1 for lv in missed if lv == "warn")
+        progress.bad = sum(1 for lv in missed if lv == "fail")
+        progress.unit = met
+        progress.at(sum(1 for lv in missed if not lv) + progress.bad, len(checks), met)
     if progress:
         _BAR.remove(progress)
-        progress.finished = " · ".join(f"{o.tool} {o.version}".strip() for o in done)
+        progress.finished = met or " · ".join(f"{o.tool} {o.version}".strip() for o in done)
         progress.clear()
-    line = result(*(fact for o in done for fact in o.said()))
+    line = result(*(facts if facts is not None else [fact for o in done for fact in o.said()]))
     stream.write(line + "\n")
     stream.flush()
     said(line, stream)
+    findings = [f for o in done for f in o.findings or []]
+    rc = policy.exit_code([f.level for f in findings], broken=any(o.findings is None for o in done))
+    worst = policy.worst([f.level for f in findings])
+    note = (notes or {}).get(worst, "")
+    if not note and worst in ("warn", "info"):
+        note = counted(sum(1 for f in findings if f.level == worst), "warning" if worst == "warn" else "note")
+    if note:
+        status(note, stream)
     # (its page in the devtools UI: each tool, what it found, and the files the checks read)
-    detail({"kind": "checks", "result": line, "files": sorted(readers), "tools": [
+    detail({"kind": "checks", "result": line, "files": sorted(readers), "level": worst, "rc": rc, "note": note,
+            "context": policy.context().__dict__ if rules is not None else {},
+            "rules": rules.said() if rules is not None else [], "skipped": list(rules.skipped_rules) if rules is not None else [],
+            "tools": [
         {"name": checks[i].name, "tool": o.tool, "version": o.version, "ran": o.findings is not None, "why": o.why, "facts": [f for f in o.said() if f.strip()],
-         "failed": o.bad(), "findings": [asdict(f) for f in o.findings or []]}
+         "failed": o.bad(), "level": o.level(), "findings": [asdict(f) for f in o.findings or []]}
         for i, o in enumerate(outcomes) if o is not None], **(more or {})})
-    if any(o.findings is None for o in done):
-        return 2
-    return 1 if any(o.bad() for o in done) else 0
+    return rc
 
 
 def repo_at() -> tuple[str, str] | None:

@@ -8,7 +8,10 @@
 #                             running the code from before is no push), the checks running alongside
 #   devtools restart          restart the app, copying nothing
 #   devtools status [<code>]  how the NAS stands beside that code, as JSON (the devtools UI's Connected to): nothing run
-#   devtools init             set up devtools for the project you're in
+#   devtools init             set up devtools for the project you're in (devtools.toml and .devtools, where there's none)
+#   devtools gate <name>      the checks as that gate holds them (push, merge, release: dev/gate.py), the same as GitHub runs
+#   devtools hook install     a pre-push hook that runs the push gate (devtools hook remove takes it out)
+#   devtools config show      every integration's rules as they stand for this code (dev/policy.py show)
 #   devtools ui               the devtools UI in your browser: the last run's board, each block's page, Push, Restart
 #                             and Run again
 #
@@ -23,48 +26,47 @@
 #   -n, --dry-run    show what a push would copy and run the tests; change nothing
 #   --tests-first    push nothing until the checks have passed (with push, or p on the board)
 #   --skip-tests     don't run the project's tests and checks at all (nor install the packages they use)
-#   --skip-future    run the current tests only, not the future ones (TN_FUTURE)
-#   --release        the release checks too (TN_RELEASE), and the tests as for a release: for dev before it's released
+#   --skip-future    run the unit tests only, not the future ones
+#   --gate <name>    the checks as that gate runs them (push, merge, release: devtools.toml's [gates]), diff mode where
+#                    the gate says so: only what changed since the gate's base
+#   --diff           diff mode on its own: only what changed since the branch's upstream
 #   --no-sample      Style Approval only checks: no sample made of the looks waiting, and no review opened once the
 #                    rest is done (r makes the sample first then)
 #   --checks-only    the checks alone: nothing copied, no NAS asked (the UI's Run again)
-#   --only <id>      one block alone (current, future, validate, types, build, coverage, audit, i18n, release, upkeep,
-#                    style), nothing copied (the UI's Run again on a block)
+#   --only <id>      one block alone (an integration's id in devtools.toml: unit, future, dhtml, types, build, coverage,
+#                    audit, i18n, release, upkeep, style…), nothing copied (the UI's Run again on a block)
 #   --sync-only      with push: the push alone, no checks, no dependencies (the UI's Push button)
 #   -h, --help       this help
 #
 # Everything runs at once, on a board of sections redrawn as they go (dev/board.py):
-# the Sync block (a push: the copy to TrueNAS and the restart; a check: how the NAS stands, and p to push), and each of
-# these that .devtools sets, in the code being checked — TN_TEST (the current tests), TN_FUTURE (the suite on the
-# next Python, say: stopped if the current tests fail), TN_VALIDATE (the HTML,
-# scripts and CSS checked), TN_TYPES (the Python validation: the type check),
-# TN_BUILD (the build validation: the shell script, the workflows, the Dockerfile),
-# TN_I18N (how far the translation catalogs are, overall: grey between releases, where they may lag; on master and on a
-# --release run a check like the tests — main must ship complete — red when any text is untranslated),
-# TN_RELEASE (everything that has to be true before dev is released, every run, as an overall readiness: grey between
-# releases, saying what's still to go; with --release the blocking check it always was),
-# TN_COVERAGE (what of the code the current tests reach, once they've passed: orange when there's a test to add, never red
-# but on a --release run, where its release bar is a check like the others),
-# TN_AUDIT (the security audits: which code no audit has seen, past its grace window: orange; red only on a --release
-# run, where the release rules are a check like the others),
-# TN_STYLE (the looks waiting for your approval: orange, a line that says how many and where to see them;
-# it neither blocks the copy nor counts as a failure) — and TN_UPKEEP (the
-# dependencies), in your folder. Each section is blue while it runs, then green,
+# the Sync block (a push: the copy to TrueNAS and the restart; a check: how the NAS stands, and p to push), and each
+# integration the project's devtools.toml turns on and has set up (dev/plan.py puts them on the board in the file's
+# order; one that's off or not set up isn't shown anywhere but the UI's Integrations page), in the code being checked:
+# the unit tests, the future tests (the suite on the next Python, say: stopped if the unit tests fail), DHTML (the
+# HTML, scripts and CSS checked), the Python validation (the type check), the build validation (the shell script, the
+# workflows, the Dockerfile), the coverage (what of the code the unit tests reach, once they've passed), the security
+# audits (which code no audit has seen), the translations (how far the catalogs are), the release checks (what has to
+# be true before the code is released) — and, in your folder, the dependencies and the looks waiting for your approval.
+# What each one is held to — a failure (red), a warning (orange) or only told (grey) — is devtools.toml's for the code's
+# role: the branch it's on (main releases, dev develops, the rest are features: [branches]), or the phase its newest
+# tag puts it in (a beta previews, a release candidate freezes: [tags], [phases]). dev/policy.py works that out once
+# and every check reads it there (DEVTOOLS_ROLE and the rest of its context in each block's environment), so the board,
+# the UI and GitHub can't disagree: a check exits 0 passed, 1 failed, 2 couldn't run, 3 only telling, 4 a warning, 5
+# not set up. A normal run on dev can't fail on what only a release needs; the same code on main, or tagged as a
+# release candidate, is held to the release's rules.
+# Each section is blue while it runs, then green,
 # orange, red or grey (for the record: skipped, already in sync), its result in its own block (each block keeps its three lines
 # from the start, so nothing moves); what a failed one printed goes above the
 # board as it ends (scroll up to read it), so the board stays at the bottom. Each block's title has a letter underlined:
-# pressed, it opens the devtools UI (dev/devui.py) at that block's page; u opens the UI at its hub. Every run is kept
+# pressed, it opens the devtools UI (dev/devui.py) at that block's page; h opens the UI at its hub (the letters follow
+# the menu: the first free letter of each title). Every run is kept
 # as a record (~/.local/state/devtools/runs/<when>/: the plan, each block's output, how the board stood), which the
 # UI shows: the last run as it was, and a new one as it goes.
 # With --tests-first the copy waits for the checks, and happens only if they pass.
 # Pressing Enter while they run stops the checks (their blocks say so; nothing is
 # recorded; a copy under way finishes), so a newer version can be uploaded
 # without waiting: run devtools again.
-# DEVTOOLS_MODE (local, master, dev, release, beta) tells the tests which was asked for.
-# With --release, a check of its own too: TN_RELEASE (what has to be true before dev is released: the version, the
-# translations…), red when it fails, as any check; and the checks get DEVTOOLS_RELEASE=1 and PLEXCACHE_I18N_RELEASE=1 (the
-# suite as GitHub runs it for main). Without it, none of that: a normal run can't fail on what only a release needs.
-# The dependencies: TN_UPKEEP looks while the rest runs (DEVTOOLS_UPKEEP=look:
+# The dependencies look while the rest runs (DEVTOOLS_UPKEEP=look:
 # nothing moved), then again once the checks are done (DEVTOOLS_UPKEEP=move: a pin
 # it moves can't change the code under the tests) — its first line "current"
 # (green), "behind" or "cves" (yellow: new versions upstream, or none but CVEs to
@@ -75,16 +77,18 @@
 # When the last tests devtools ran there passed, it just says so (green banner);
 # otherwise it runs the tests again (yellow banner first).
 #
-# Settings come from two files (KEY=value lines):
-#   ~/.config/devtools/config   shared:      TN_HOST, TN_USER, TN_PORT
-#   <project>/.devtools         per project: TN_APP, TN_WEB_PORT (the app's web port, 8642 if not set), TN_DEST, TN_PATHS, TN_EXCLUDE, TN_TEST, TN_VALIDATE, TN_TYPES,
-#                              TN_BUILD, TN_COVERAGE, TN_AUDIT, TN_FUTURE, TN_STYLE, TN_RELEASE, TN_UPKEEP (and may override any shared setting)
+# Settings come from three files:
+#   ~/.config/devtools/config   shared, KEY=value lines:      TN_HOST, TN_USER, TN_PORT
+#   <project>/.devtools         this computer's, KEY=value:  TN_APP, TN_WEB_PORT (the app's web port, 8642 if not set), TN_DEST,
+#                              TN_PATHS, TN_EXCLUDE (and may override any shared setting); never committed
+#   <project>/devtools.toml     the project's, committed: the integrations (each block's command), the branches' roles,
+#                              the tags, the gates, and every rule (dev/policy.py; dev/starter.toml is what init writes)
 #
 # Written for the bash 3.2 that ships with macOS.
 
 set -eo pipefail
 
-DEVTOOLS_VERSION="2.0.0"
+DEVTOOLS_VERSION="3.0.0"
 GLOBAL_CONF="${DEVTOOLS_CONFIG:-$HOME/.config/devtools/config}"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/devtools"   # last test result per app, and the runs' records (the UI reads them)
 # (devtools was tnsync: its settings and state are read where tnsync kept them until they're moved — ~/.config/tnsync/config,
@@ -143,13 +147,33 @@ RESTART="no"   # yes: a push (it always restarts the app) | no
 SKIP_TESTS=0
 SKIP_FUTURE=0
 TESTS_FIRST=0
-RELEASE=0
+GATE=""     # (--gate: the checks as that gate runs them)
+DIFF=0      # (--diff: only what changed)
 NO_SAMPLE=0
 CHECKS_ONLY=0   # (--checks-only, --only: nothing copied, the NAS not asked)
 SYNC_ONLY=0
 ONLY=""
 UI_ARGS=()      # (devtools ui: what follows goes to dev/devui.py)
 if [ "${1:-}" = "ui" ]; then MODE="ui"; shift; UI_ARGS=("$@"); set --; fi
+# (the gates, the hook and the rules: Python's, next to this script; they read devtools.toml, not .devtools)
+case "${1:-}" in
+    gate) shift; exec python3 "$(cd "$(dirname "$0")" && pwd -P)/gate.py" "$@" ;;
+    config) shift; exec python3 "$(cd "$(dirname "$0")" && pwd -P)/policy.py" "${1:-show}" "${@:2}" ;;
+    hook)
+        top="$(git rev-parse --show-toplevel 2>/dev/null)" || die "devtools hook: not in a git repository"
+        hook="$(git -C "$top" rev-parse --git-path hooks)/pre-push"
+        case "${2:-}" in
+            install)
+                mkdir -p "$(dirname "$hook")"
+                # (the hook's own line: expanded when git runs it, not here)
+                # shellcheck disable=SC2016
+                printf '#!/bin/sh\n# devtools: the push gate (devtools.toml [gates.push]) before each push. devtools hook remove takes this out.\nexec python3 "$(git rev-parse --show-toplevel)/dev/gate.py" push\n' > "$hook"
+                chmod +x "$hook"
+                printf '%s\n' "wrote $hook: the push gate runs before each push"; exit 0 ;;
+            remove) rm -f "$hook"; printf '%s\n' "removed $hook"; exit 0 ;;
+            *) printf '%s\n' "usage: devtools hook install|remove" >&2; exit 2 ;;
+        esac ;;
+esac
 case "${1:-}" in push|restart|status) ACTION="$1"; shift ;; check) shift ;; esac
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -159,7 +183,9 @@ while [ $# -gt 0 ]; do
         --skip-tests)    SKIP_TESTS=1 ;;
         --skip-future)   SKIP_FUTURE=1 ;;
         --tests-first)   TESTS_FIRST=1 ;;
-        --release)       RELEASE=1 ;;
+        --release)       die "--release is gone: a release starts with a tag (devtools.toml's [tags]: a beta previews, a release candidate freezes), and the checks hold the code to the release's rules from then on; --gate release runs the release gate" ;;
+        --gate)          [ -n "${2:-}" ] || die "--gate takes a gate's name (push, merge, release)"; GATE="$2"; shift ;;
+        --diff)          DIFF=1 ;;
         --no-sample)     NO_SAMPLE=1 ;;
         --checks-only)   CHECKS_ONLY=1 ;;
         --sync-only)     SYNC_ONLY=1; SKIP_TESTS=1; [ "$ACTION" = "push" ] || die "--sync-only goes with push: devtools push <code> --sync-only" ;;
@@ -183,13 +209,14 @@ esac
 # devtools status: its JSON the only thing on stdout (what it says as it goes, git's fetch say, to stderr)
 if [ "$ACTION" = "status" ] && [ -z "${DEVTOOLS_STEP:-}" ]; then exec 3>&1 1>&2; fi
 if [ "$ACTION" = "restart" ] || [ "$ACTION" = "status" ]; then SKIP_TESTS=1; SYNC_ONLY=1; fi   # (no checks, no dependencies)
-case "$ONLY" in ""|current|future|validate|types|build|coverage|audit|i18n|release|upkeep|style) ;;
-    *) die "--only $ONLY: not a block (current, future, validate, types, build, coverage, audit, i18n, release, upkeep, style)" ;; esac
+[[ "$ONLY" =~ ^[a-z0-9_]*$ ]] || die "--only $ONLY: not a block (an integration's id in devtools.toml)"
+case "$GATE" in ""|push|merge|release) ;; *) die "--gate $GATE: not a gate (push, merge, release)" ;; esac
 [ "$CHECKS_ONLY$SYNC_ONLY" != 11 ] || die "--sync-only and --checks-only (or --only) can't go together"
 
 # ----------------------------------------------------------------- config
 TN_HOST=""; TN_USER="truenas_admin"; TN_PORT="22"
-TN_APP=""; TN_WEB_PORT="8642"; TN_DEST=""; TN_PATHS="."; TN_EXCLUDE=".git .DS_Store __pycache__ *.pyc"; TN_TEST=""; TN_VALIDATE=""; TN_TYPES=""; TN_BUILD=""; TN_COVERAGE=""; TN_I18N=""; TN_AUDIT=""; TN_FUTURE=""; TN_STYLE=""; TN_RELEASE=""; TN_UPKEEP=""
+TN_APP=""; TN_WEB_PORT="8642"; TN_DEST=""; TN_PATHS="."; TN_EXCLUDE=".git .DS_Store __pycache__ *.pyc"
+MOVED_KEYS=""   # (the old check keys met in .devtools: they live in devtools.toml now — move_old_keys takes them out)
 
 # Read KEY=value lines. The file is parsed, never executed.
 load_conf() {
@@ -210,7 +237,8 @@ load_conf() {
             \'*\') val="${val#\'}"; val="${val%\'}" ;;
         esac
         case "$key" in
-            TN_HOST|TN_USER|TN_PORT|TN_APP|TN_WEB_PORT|TN_DEST|TN_PATHS|TN_EXCLUDE|TN_TEST|TN_VALIDATE|TN_TYPES|TN_BUILD|TN_COVERAGE|TN_I18N|TN_AUDIT|TN_FUTURE|TN_STYLE|TN_RELEASE|TN_UPKEEP) printf -v "$key" '%s' "$val" ;;
+            TN_HOST|TN_USER|TN_PORT|TN_APP|TN_WEB_PORT|TN_DEST|TN_PATHS|TN_EXCLUDE) printf -v "$key" '%s' "$val" ;;
+            TN_TEST|TN_VALIDATE|TN_TYPES|TN_BUILD|TN_COVERAGE|TN_I18N|TN_AUDIT|TN_FUTURE|TN_STYLE|TN_RELEASE|TN_UPKEEP) MOVED_KEYS="${MOVED_KEYS:+$MOVED_KEYS }$key" ;;
             *) warn "$file line $n: unknown setting $key" ;;
         esac
     done < "$file"
@@ -218,7 +246,7 @@ load_conf() {
 
 # The project's .devtools: in this folder or one above it, but no higher than the repository's top (or your home folder,
 # outside a repository), so one someone else left in a folder above (/tmp, say) is never taken; and only one that's
-# your own file, that nobody else may change (what it sets runs as you: TN_TEST, …). Said as the folder really is (pwd -P),
+# your own file, that nobody else may change (what it sets devtools acts on, as you). Said as the folder really is (pwd -P),
 # however it was reached: the same path from a shell or from a program (on a Mac, /var is /private/var), and git's.
 find_project_root() {
     local dir="$PWD" top here perms
@@ -257,7 +285,12 @@ do_init() {
         printf '# devtools shared settings\nTN_HOST=%s\nTN_USER=%s\nTN_PORT=22\n' "$host" "$user" > "$GLOBAL_CONF"
         ok "wrote $GLOBAL_CONF"
     fi
+    if [ ! -f "$root/devtools.toml" ]; then   # (the project's: the integrations, the branches' roles, the rules — dev/starter.toml)
+        python3 "$(self_dir)/policy.py" init --repo "$root" || die "couldn't write $root/devtools.toml"
+        ok "wrote $root/devtools.toml: the integrations and their rules (edit it, or the UI's Config tabs)"
+    fi
     if [ -f "$root/.devtools" ]; then
+        move_old_keys "$root/.devtools"
         ok "$root/.devtools already exists"
         return 0
     fi
@@ -278,41 +311,21 @@ TN_DEST=$dest
 TN_PATHS=$paths
 # Patterns never copied.
 TN_EXCLUDE=.git .DS_Store __pycache__ *.pyc
-# The tests, run in the code being copied while it's copied (or first, with --tests-first).
-# e.g. TN_TEST=python3 -m unittest   or   TN_TEST=npm test
-TN_TEST=
-# Checks of their own, each in a section beside the tests: the HTML, scripts and CSS; the types; the build's files.
-# e.g. TN_VALIDATE=npx eslint .   TN_TYPES=npx pyright   TN_BUILD=shellcheck *.sh
-TN_VALIDATE=
-TN_TYPES=
-TN_BUILD=
-# What of the code the tests reach, once they've passed (the coverage TN_TEST saved): exit 0 enough, 1 a test to add,
-# 3 nothing measured (TN_TEST without --coverage) (orange; red only with --release). e.g. TN_COVERAGE=python3 dev/coverage.py --devtools
-TN_COVERAGE=
-# How far the translation catalogs are, overall. The tool decides from DEVTOOLS_MODE and DEVTOOLS_RELEASE: exit 0 complete,
-# 3 in progress (grey — between releases they may lag); on master (main must ship complete) and on a --release run,
-# red when any text is untranslated, and the run fails. e.g. TN_I18N=python3 dev/i18n.py --devtools
-TN_I18N=
-
-# The security audits: which code no audit has seen past its grace window (orange; with --release, the release rules: red).
-# e.g. TN_AUDIT=python3 dev/audit.py
-TN_AUDIT=
-# The suite on the next Python, say: alongside, stopped if TN_TEST fails.
-# e.g. TN_FUTURE=python3 dev/future.py
-TN_FUTURE=
-# Looks waiting for approval (a style guide), in a section of their own: exit 0 all approved, 1 some wait (orange,
-# its output not printed: its last line, or what it sends with dev/progress.said, says how many and where to see them).
-# e.g. TN_STYLE=python3 dev/style.py check
-TN_STYLE=
-# The release checks, every run, as an overall readiness. The tool decides from DEVTOOLS_RELEASE: exit 0 ready, 3 getting
-# there (grey — "4 of 7 ready", and what's still to go); with --release, the blocking check it always was (red when it
-# fails). e.g. TN_RELEASE=python3 dev/release.py --devtools
-TN_RELEASE=
-# The dependencies, shown in a last box: a command whose first line is current, behind, cves (or else: not checked),
-# the rest the box's lines. e.g. TN_UPKEEP=python3 dev/upkeep.py --devtools
-TN_UPKEEP=
+# (The tests and checks, and what they're held to, are the project's devtools.toml: committed, shared by everyone.)
 EOF
-    ok "wrote $root/.devtools"
+    ok "wrote $root/.devtools (this computer's settings: never committed)"
+}
+
+# A .devtools from before devtools.toml: its check keys (MOVED_KEYS: the integrations' commands now, in devtools.toml). Kept
+# aside in .devtools.before-toml, so nothing of yours is lost, and taken out of .devtools, which keeps this computer's
+# settings alone. Done on any run that meets them (the file is your own: never committed, nobody else's to write).
+move_old_keys() {
+    local file="$1" old='^[[:space:]]*TN_(TEST|VALIDATE|TYPES|BUILD|COVERAGE|I18N|AUDIT|FUTURE|STYLE|RELEASE|UPKEEP)='
+    grep -qE "$old" "$file" || return 0
+    cp "$file" "$file.before-toml" || die "couldn't keep $file aside as $file.before-toml"
+    grep -E "$old" "$file.before-toml" | sed 's/^/  /' || true
+    grep -vE "$old" "$file.before-toml" > "$file" || true   # (grep -v: 1 when nothing is left, still written)
+    ok "moved the checks' settings out of $file (the lines above; kept in $file.before-toml): they're devtools.toml's [integrations] now"
 }
 
 self_dir() {   # the folder this script is really in (through any symlink: devtools on your PATH)
@@ -338,6 +351,10 @@ ROOT="$(find_project_root)" || exit 1
 load_conf "$GLOBAL_CONF"
 load_conf "$ROOT/$PROJECT_FILE"
 
+[ -z "$MOVED_KEYS" ] || [ -n "${DEVTOOLS_STEP:-}" ] || move_old_keys "$ROOT/$PROJECT_FILE"   # (met: taken out now, once)
+POLICY="$(self_dir)/policy.py"   # (devtools.toml, read: the context each check is told, the integrations on the board)
+PLAN="$(self_dir)/plan.py"       # (the board's plan from it)
+[ -f "$ROOT/devtools.toml" ] || die "no devtools.toml in $ROOT: the integrations and their rules. In your project, run: devtools init"
 [ -n "$TN_HOST" ] || die "TN_HOST isn't set: put it in $GLOBAL_CONF, or run: devtools init"
 [ -n "$TN_APP" ]  || die "TN_APP isn't set in $ROOT/$PROJECT_FILE"
 [ -n "$TN_DEST" ] || die "TN_DEST isn't set in $ROOT/$PROJECT_FILE"
@@ -376,8 +393,28 @@ ensure_packages() {
     info "Installing the packages in dev (npm ci: its package-lock.json has changed)…"
     npm ci --prefix "$dir" --ignore-scripts --no-audit --no-fund >/dev/null || die "npm ci --prefix dev failed (see the error above)"
 }
+# Playwright's Chromium, for the checks that draw the pages (dev/web.js's accessibility check, dev/icons.js, the style
+# sample): each Playwright version wants a build of its own, so when npm ci brings in a new Playwright, its Chromium is
+# installed here too (playwright install chromium), as the packages are, rather than each check failing on it. Asked
+# once per Playwright version (its --dry-run says where its builds go; a build is there once it has INSTALLATION_COMPLETE);
+# a failed install is said, and tried again next run. Without Playwright in dev, nothing to do.
+ensure_browser() {
+    local pw="$ROOT/dev/node_modules/.bin/playwright" pkg="$ROOT/dev/node_modules/playwright/package.json" stamp="$STATE_DIR/browser"
+    local version where d missing=0
+    [ -x "$pw" ] && [ -f "$pkg" ] || return 0
+    version="$(sed -n 's/^ *"version": *"\([^"]*\)".*/\1/p' "$pkg" | head -n 1)"
+    [ "$(cat "$stamp" 2>/dev/null)" != "$version" ] || return 0
+    where="$("$pw" install --dry-run chromium 2>/dev/null | sed -n 's/^ *Install location: *//p')" || return 0
+    [ -n "$where" ] || return 0
+    while IFS= read -r d; do [ -f "$d/INSTALLATION_COMPLETE" ] || missing=1; done <<< "$where"
+    if [ "$missing" = 1 ]; then
+        info "Installing Playwright's Chromium (Playwright $version's build isn't on this computer yet)…"
+        "$pw" install chromium || { warn "Playwright's Chromium couldn't be installed (see above): the checks that draw the pages will fail until it is (npx --prefix dev playwright install chromium)"; return 0; }
+    fi
+    mkdir -p "$STATE_DIR" && printf '%s\n' "$version" > "$stamp"
+}
 # (the copy's section: the run that started it has seen to them)
-[ -n "${DEVTOOLS_STEP:-}" ] || [ "$SKIP_TESTS" = 1 ] || ensure_packages
+[ -n "${DEVTOOLS_STEP:-}" ] || [ "$SKIP_TESTS" = 1 ] || { ensure_packages; ensure_browser; }
 
 # ----------------------------------------------------------------- source
 TMP=""
@@ -393,7 +430,7 @@ SSH_CTL="$SSH_CTL_DIR/%C"
 BOARD_DIR=""   # the run's record: the board's plan, results and logs (dev/board.py), and how it stood (state.json); kept
 RUNS_DIR="$STATE_DIR/runs"   # (the records, newest last by name; the UI reads them — KEEP_RUNS of them kept)
 KEEP_RUNS="${DEVTOOLS_KEEP_RUNS:-30}"   # (a test keeps fewer)
-# The last box: the dependencies (TN_UPKEEP), from your folder — where a version it moves belongs — not the copy. Once a
+# The last box: the dependencies (the upkeep integration), from your folder — where a version it moves belongs — not the copy. Once a
 # run, at its end, whatever the tests did; not when devtools was interrupted (Ctrl-C) or stopped before it got going.
 # UPKEEP_OUT: what the board's Dependencies section said (else the command is run here, now).
 UPKEEP_READY=0
@@ -401,21 +438,21 @@ UPKEEP_OUT=""
 # shellcheck disable=SC2329 # (run from cleanup, the exit trap)
 upkeep_banner() {
     local out status line lines=()
-    [ -n "$TN_UPKEEP" ] && [ "$UPKEEP_READY" = 1 ] || return 0
+    [ -n "$UPKEEP_CMD" ] && [ "$UPKEEP_READY" = 1 ] || return 0
     [ -z "$ONLY" ] || [ "$ONLY" = upkeep ] || return 0   # (one other block alone: the dependencies weren't asked)
     UPKEEP_READY=0
     if [ -n "$UPKEEP_OUT" ]; then
         return 0   # (the board said it: in its block, and what more there was above the board)
     else
-        info "Checking the dependencies: $TN_UPKEEP"
-        out="$( cd "$ROOT" && PYTHONDONTWRITEBYTECODE=1 bash -c "$TN_UPKEEP" < /dev/null 2>&1 )" || true
+        info "Checking the dependencies: $UPKEEP_CMD"
+        out="$( cd "$ROOT" && PYTHONDONTWRITEBYTECODE=1 DEVTOOLS_INTEGRATION=upkeep bash -c "$UPKEEP_CMD" < /dev/null 2>&1 )" || true
     fi
     status="$(printf '%s\n' "$out" | head -n 1)"
     while IFS= read -r line; do lines+=("$line"); done < <(printf '%s\n' "$out" | tail -n +2)
     case "$status" in
         current) green_banner "${lines[@]}" ;;
         behind|cves) yellow_banner "${lines[@]}" ;;
-        *)       banner "$C_GREY" "DEPENDENCIES NOT CHECKED" "" "$TN_UPKEEP said:" "${status:0:66}" "${lines[@]}" ;;
+        *)       banner "$C_GREY" "DEPENDENCIES NOT CHECKED" "" "$UPKEEP_CMD said:" "${status:0:66}" "${lines[@]}" ;;
     esac
 }
 # shellcheck disable=SC2329 # (run by the trap below, when devtools exits)
@@ -435,7 +472,7 @@ SRC_COMMIT=""   # (the commit checked, on the board's header after the label: "a
 export_ref() {   # export_ref <ref> <label> — the label the board's header shows
     local ref="$1"
     git -C "$ROOT" rev-parse --verify --quiet "$ref^{commit}" >/dev/null || die "can't find $ref in this repository"
-    SRC_SHA="$(git -C "$ROOT" rev-parse "$ref^{commit}")"   # (the copy's lines, as git knows them: TN_AUDIT's blame, TN_COVERAGE's fresh and settled)
+    SRC_SHA="$(git -C "$ROOT" rev-parse "$ref^{commit}")"   # (the copy's lines, as git knows them: the audit's blame, coverage's fresh and settled)
     TMP="$(mktemp -d "${TMPDIR:-/tmp}/devtools.XXXXXX")"
     git -C "$ROOT" archive "$ref" | tar -x -C "$TMP"
     # The packages installed in your folder (npm ci: node_modules, never in git) linked in, so the tests that use them
@@ -511,6 +548,58 @@ case "$MODE" in
 esac
 fi
 
+# ----------------------------------------------------------------- the integrations, and the context
+# What's on the board (devtools.toml's [integrations], the ones on and set up, in order: dev/policy.py), one a line:
+# id, title, letter, kind, after, cmd. And the context every check is told (DEVTOOLS_ROLE, the branch's or the tag's
+# phase's, DEVTOOLS_DIFF, DEVTOOLS_GATE…: KEY=value lines), which dev/policy.py works out once, here, from the code
+# asked for — so a copy of main is held to main's rules wherever it's checked.
+INT_IDS=(); INT_TITLES=(); INT_KINDS=(); INT_CMDS=()
+HAS_TESTS=0   # (an integration whose pass is kept for the code: the tests and checks)
+FUTURE_CMD=""; UPKEEP_CMD=""
+json_str() {   # json_str <text> — as a JSON string
+    local s
+    s="$(printf '%s' "$1" | tr -d '\000-\037')"
+    s="${s//\\/\\\\}"; s="${s//\"/\\\"}"
+    printf '"%s"' "$s"
+}
+policy_lines() {   # policy_lines <command> [args] — what dev/policy.py says, or die with what it said
+    local out
+    out="$(python3 "$POLICY" "$@" --repo "$ROOT" 2>&1)" || die "$out"
+    printf '%s\n' "$out"
+}
+load_integrations() {
+    local id title kind cmd found=0
+    while IFS=$'\t' read -r id title _ kind _ cmd; do
+        [ -n "$id" ] || continue
+        INT_IDS+=("$id"); INT_TITLES+=("$title"); INT_KINDS+=("$kind"); INT_CMDS+=("$cmd")
+        case "$kind" in tests|checks) HAS_TESTS=1 ;; esac
+        case "$id" in future) FUTURE_CMD="$cmd" ;; esac
+        case "$kind" in upkeep) UPKEEP_CMD="$cmd" ;; esac
+        [ "$id" != "$ONLY" ] || found=1
+    done < <(policy_lines integrations)
+    [ -z "$ONLY" ] || [ "$found" = 1 ] || die "--only $ONLY: not an integration that's on and set up in $ROOT/devtools.toml"
+}
+CONTEXT_ENV=""; CONTEXT_SIG=""   # (the context, as JSON fields for each section's env)
+CONTEXT_HEAD=""  # ("Dev · freeze (v0.17.0-rc.2)")
+load_context() {
+    local line key val args=(env --code "$MODE")
+    [ -z "$GATE" ] || args+=(--gate "$GATE")
+    [ "$DIFF" != 1 ] || args+=(--diff)
+    while IFS= read -r line; do
+        key="${line%%=*}"; val="${line#*=}"
+        case "$key" in
+            DEVTOOLS_HEAD) CONTEXT_HEAD="$val" ;;
+            DEVTOOLS_COMMIT_REF) ;;
+            DEVTOOLS_*) CONTEXT_ENV="${CONTEXT_ENV:+$CONTEXT_ENV, }$(json_str "$key"): $(json_str "$val")"
+                        case "$key" in DEVTOOLS_ROLE|DEVTOOLS_PHASE|DEVTOOLS_TAG) CONTEXT_SIG="${CONTEXT_SIG:+$CONTEXT_SIG }$key=$val" ;; esac ;;
+        esac
+    done < <(policy_lines "${args[@]}")
+}
+if [ -z "${DEVTOOLS_STEP:-}" ]; then
+    load_integrations
+    [ "$ACTION" = "restart" ] || load_context
+fi
+
 # ----------------------------------------------------------------- copy
 REMOTE="$TN_USER@$TN_HOST"
 # (ConnectTimeout: a NAS that doesn't answer is said so in seconds, not after the system's own minutes-long wait. devtools
@@ -558,7 +647,7 @@ record_tests() {   # record_tests pass|fail|aborted — only if the tests actual
     if [ "$TESTS_RAN" != 1 ]; then state_clear; return 0; fi
     mkdir -p "$STATE_DIR" 2>/dev/null || return 0
     {
-        printf 'result=%s\nmode=%s\nwhen=%s\nat=%s\ntest=%s\ncode=%s\nfuture=%s\nfuture_test=%s\nrelease=%s\n' "$1" "$MODE" "$(date '+%Y-%m-%d %H:%M')" "$(date +%s)" "$TEST_SIG" "$CODE_SIG" "$FUTURE_RESULT" "$FUTURE_CMD" "$RELEASE"
+        printf 'result=%s\nmode=%s\nwhen=%s\nat=%s\ntest=%s\ncode=%s\nfuture=%s\nfuture_test=%s\ngate=%s\ndiff=%s\nrole=%s\n' "$1" "$MODE" "$(date '+%Y-%m-%d %H:%M')" "$(date +%s)" "$TEST_SIG" "$CODE_SIG" "$FUTURE_RESULT" "$FUTURE_CMD" "$GATE" "$DIFF" "$CONTEXT_SIG"
         # each check's result line, for its block next time while the code stays the same (what it ran on, what it found)
         local id
         for id in "${CHECK_IDS[@]}"; do [ -z "$RES" ] || printf 'last_%s=%s\n' "$id" "$(res_get "${id}_last")"; done
@@ -589,15 +678,20 @@ code_sig() {
     (cd "$ROOT" && git ls-files -z -co --exclude-standard | { xargs -0 "$sum" 2>/dev/null || true; } | "$sum" | cut -d' ' -f1)
 }
 CODE_SIG="$(code_sig)"
-TEST_SIG="$TN_TEST"
-[ -z "$TN_VALIDATE$TN_TYPES$TN_BUILD" ] || TEST_SIG="$TN_TEST | $TN_VALIDATE | $TN_TYPES"
-[ -z "$TN_BUILD" ] || TEST_SIG="$TEST_SIG | $TN_BUILD"   # (as it was without it: a .devtools without TN_BUILD isn't tested again)
-[ -z "$TN_COVERAGE" ] || TEST_SIG="$TEST_SIG | coverage: $TN_COVERAGE"
-[ -z "$TN_RELEASE" ] || TEST_SIG="$TEST_SIG | release: $TN_RELEASE"
-[ -z "$TN_I18N" ] || TEST_SIG="$TEST_SIG | i18n: $TN_I18N"
-# The future tests asked for this run: TN_FUTURE, or nothing with --skip-future (or no tests at all).
-FUTURE_CMD=""
-[ "$SKIP_TESTS" = 1 ] || [ "$SKIP_FUTURE" = 1 ] || FUTURE_CMD="$TN_FUTURE"
+# The checks this run, as one line: each integration's id and command but the future tests' (theirs is FUTURE_CMD), and
+# the rules they're held to (devtools.toml's text: a rule changed means testing again).
+TEST_SIG=""
+for i in "${!INT_IDS[@]}"; do
+    case "${INT_KINDS[$i]}" in upkeep|style) continue ;; esac
+    [ "${INT_IDS[$i]}" != future ] || continue
+    TEST_SIG="${TEST_SIG:+$TEST_SIG | }${INT_IDS[$i]}: ${INT_CMDS[$i]}"
+done
+if [ -f "$ROOT/devtools.toml" ]; then
+    _sum=shasum; command -v shasum >/dev/null 2>&1 || _sum=sha256sum
+    TEST_SIG="$TEST_SIG | rules: $("$_sum" < "$ROOT/devtools.toml" | cut -c1-12)"
+fi
+# The future tests asked for this run: the future integration's, or nothing with --skip-future (or no tests at all).
+if [ "$SKIP_TESTS" = 1 ] || [ "$SKIP_FUTURE" = 1 ]; then FUTURE_CMD=""; fi
 # Prints why the last result doesn't count for this run; prints nothing if it passed.
 last_tests_not_passed() {
     local result when
@@ -608,16 +702,18 @@ last_tests_not_passed() {
         say "The last test run was stopped with Enter ($when)."
     elif [ "$result" != "pass" ]; then
         say "The last test run failed ($when)."
-    elif [ "$RELEASE" = 1 ] && [ "$(state_get release)" != 1 ]; then
-        say "The last tests weren't a release run (--release)."
+    elif [ "$(state_get gate)" != "$GATE" ] || [ "$(state_get diff)" != "$DIFF" ]; then
+        say "The last tests weren't run as this gate or mode (--gate, --diff)."
+    elif [ "$(state_get role)" != "$CONTEXT_SIG" ]; then
+        say "The last tests weren't run for this code's role or phase ($CONTEXT_HEAD): its rules differ."
     elif [ "$(state_get test)" != "$TEST_SIG" ]; then
-        say "TN_TEST, TN_VALIDATE, TN_TYPES, TN_BUILD or TN_COVERAGE has changed since the last test run."
+        say "An integration's command, or a rule in devtools.toml, has changed since the last test run."
     elif [ -n "$CODE_SIG" ] && [ "$(state_get code)" != "$CODE_SIG" ]; then
         say "The code has changed since the last test run (the tests or the dev tools, if not the app)."
     elif [ "$(state_get mode)" != "$MODE" ]; then
         say "The last tests ran for 'devtools $(state_get mode)', not 'devtools $MODE'."
     elif [ "$(state_get future_test)" != "$FUTURE_CMD" ]; then
-        say "TN_FUTURE has changed since the last test run."
+        say "The future tests' command has changed since the last test run."
     fi
 }
 
@@ -657,12 +753,6 @@ resolve_path() {   # resolve_path <TN_PATHS entry> — sets from, to, parent
 
 # ----------------------------------------------------------------- the copy (its section on the board)
 files_n() { if [ "$1" = 1 ]; then printf '1 file'; else printf '%s files' "$1"; fi; }   # files_n <n> — "1 file", "2 files"
-json_str() {   # json_str <text> — as a JSON string
-    local s
-    s="$(printf '%s' "$1" | tr -d '\000-\037')"
-    s="${s//\\/\\\\}"; s="${s//\"/\\\"}"
-    printf '"%s"' "$s"
-}
 # feed <done> <total> <label> [ticking] — the copy's bar, as dev/progress.py sends one to the board (PLEXCACHE_PROGRESS=feed)
 feed() {
     local label ticking=false
@@ -827,37 +917,11 @@ pending_changes() {
 # in sync) and one for each check .devtools sets, the dependencies last. Then the boxes that say where that leaves the NAS.
 SELF="$(self_dir)/$(basename "$0")"
 BOARD="$(self_dir)/board.py"
-PLAN=""
-plan_add() {   # (with --only, the one block asked for: the rest left off the plan)
-    case "$1" in "{\"id\": \"$ONLY\""*) ;; *) [ -z "$ONLY" ] || return 0 ;; esac
-    PLAN="${PLAN:+$PLAN,
-}$1"
-}
-CHECK_IDS=()   # the checks on the board, in order
-# What every check is told: which command this is, the repository (the code may be a copy from git), and a release run
-CHECK_ENV="\"DEVTOOLS_MODE\": $(json_str "$MODE"), \"DEVTOOLS_REPO\": $(json_str "$ROOT")"
+CHECK_IDS=()   # the checks on the board, in order (dev/plan.py's: the sections whose result the run's outcome is)
+# What every check is told beyond the context (CONTEXT_ENV): the repository (the code may be a copy from git), the commit
+CHECK_ENV="${CONTEXT_ENV:+$CONTEXT_ENV, }\"DEVTOOLS_REPO\": $(json_str "$ROOT")"   # (a restart: no context, nothing checked)
 [ -z "$SRC_SHA" ] || CHECK_ENV="$CHECK_ENV, \"DEVTOOLS_COMMIT\": $(json_str "$SRC_SHA")"
-[ "$RELEASE" != 1 ] || CHECK_ENV="$CHECK_ENV, \"DEVTOOLS_RELEASE\": \"1\", \"PLEXCACHE_I18N_RELEASE\": \"1\""
-# Each block's letter, underlined in its title on the board: pressed, the UI opens at its page (dev/devui.py). The Security
-# Audit and Style Approval blocks have keys of their own (a, r: their pages as they were) — page_of says nothing for them.
-page_of() {   # page_of <id>
-    case "$1" in sync) printf s ;; current) printf c ;; future) printf f ;; validate) printf h ;; types) printf p ;;
-        build) printf b ;; coverage) printf o ;; i18n) printf t ;; release) printf e ;; upkeep) printf d ;; esac
-}
-page_field() {   # page_field <id> — the section's "page" field, with its comma; nothing for a block without one
-    local k; k="$(page_of "$1")"
-    [ -z "$k" ] || printf ', "page": "%s"' "$k"
-}
-check_section() {   # check_section <id> <title> <command> [extra JSON fields]
-    [ -n "$3" ] || return 0
-    CHECK_IDS+=("$1")
-    plan_add "{\"id\": \"$1\", \"title\": $(json_str "$2"), \"cmd\": $(json_str "$3"), \"cwd\": $(json_str "$SRC"), \"stoppable\": true, \"env\": {$CHECK_ENV}$(page_field "$1")${4:+, $4}}"
-}
-json_ids() {   # json_ids <id>... — as a JSON list
-    local out="" id
-    for id in "$@"; do out="${out:+$out, }\"$id\""; done
-    printf '[%s]' "$out"
-}
+json_bool() { if [ "$1" = 1 ]; then printf true; else printf false; fi; }
 RES=""
 res_get() { sed -n "s/^$1=//p" "$RES" | head -n 1; }
 # The Sync block when there's nothing to copy, or no NAS to copy to: a section that only tells (info: grey when it's done,
@@ -933,55 +997,8 @@ told_out() {
     told_sync "out of sync" 0 "$said · $(push_hint "push and restart $TN_APP")"
     [ "$DRY_RUN" = 1 ] || TOLD_SYNC="${TOLD_SYNC%\}}$(go_key sync "Push and restart" "pushing" "$CHANGES_N")}"
 }
-# A block that only tells, grey: told_section <id> <title> <header> <line>
-told_section() {
-    plan_add "{\"id\": \"$1\", \"title\": $(json_str "$2"), \"cmd\": $(json_str "printf '%s\\n' $(printf '%q' "$4")"), \"info\": $(json_str "$3")$(page_field "$1")}"
-}
-# A check that already passed on this code: its block says so, grey, and nothing runs. passed_section <id> <title> <cmd> <line>
-# The Security Audit block: which app code no audit has seen, past its grace window — a warning (orange) that neither blocks
-# the copy nor fails the run; on a --release run its release rules are a check like the others (red when they aren't
-# met). It reads the audits and git, not the tests, so it runs straight away, even on code that already passed. audit_section
-audit_section() {
-    [ -n "$TN_AUDIT" ] || return 0
-    local warn=", \"warn\": {\"rc\": 1, \"note\": \"code to audit\"}"
-    # a, once it says there's code to audit and while the board runs: the audits page (dev/auditgui.py), in your
-    # folder, where an audit can be started; it stays open after the board, until its page is closed
-    warn="$warn, \"key\": {\"key\": \"a\", \"cmd\": $(json_str "$TN_AUDIT gui"), \"cwd\": $(json_str "$ROOT"), \"does\": \"Open Audits\", \"opens\": \"the audits page\", \"line\": \"press a to open the audits page\"}"
-    if [ "$RELEASE" = 1 ]; then warn=""; CHECK_IDS+=("audit"); fi
-    plan_add "{\"id\": \"audit\", \"title\": \"Security Audit\", \"cmd\": $(json_str "$TN_AUDIT"), \"cwd\": $(json_str "$SRC"), \"stoppable\": true, \"env\": {$CHECK_ENV}$warn}"
-}
-passed_section() {
-    [ -n "$3" ] || return 0
-    plan_add "{\"id\": \"$1\", \"title\": $(json_str "$2"), \"cmd\": $(json_str "printf '%s\\n' $(printf '%q' "$4")"), \"info\": \"already passed\"$(page_field "$1")}"
-}
-# The Coverage block: once the current tests have passed (they saved what they reached), what's still to add — a warning
-# (orange) that neither blocks the copy nor fails the run; but on a --release run its release bar is a check like the
-# others (red when it isn't met). coverage_section <the sections it waits for, as JSON>
-coverage_section() {
-    [ -n "$TN_COVERAGE" ] || return 0
-    local warn=", \"warn\": {\"rc\": 1, \"note\": \"tests to add\", \"more\": {\"3\": \"not measured\"}}"   # (3: nothing saved, TN_TEST without --coverage)
-    if [ "$RELEASE" = 1 ]; then warn=""; CHECK_IDS+=("coverage"); fi
-    plan_add "{\"id\": \"coverage\", \"title\": \"Coverage\", \"cmd\": $(json_str "$TN_COVERAGE"), \"cwd\": $(json_str "$SRC"), \"stoppable\": true, \"after\": $1, \"env\": {$CHECK_ENV}, \"page\": \"o\"$warn}"
-}
-# The Translations and Release blocks run every time, and their tool is the one place that decides how strict they
-# are, from DEVTOOLS_MODE and DEVTOOLS_RELEASE (so the board, and anything else that reads them, can't disagree): exit 0
-# passed, 3 only telling (grey — the catalogs lagging between releases, the readiness still building), 1 a failure
-# (red — untranslated texts on master or a --release run, a release check not met on a --release run).
-# The Translations block: how far the catalogs are, overall (TN_I18N). i18n_section
-i18n_section() {
-    [ -n "$TN_I18N" ] || return 0
-    CHECK_IDS+=("i18n")
-    plan_add "{\"id\": \"i18n\", \"title\": \"Translations\", \"cmd\": $(json_str "$TN_I18N"), \"cwd\": $(json_str "$SRC"), \"stoppable\": true, \"env\": {$CHECK_ENV}, \"page\": \"t\", \"tell\": {\"rc\": 3, \"note\": \"in progress\"}}"
-}
-# The Release block: everything that has to be true before dev is released (TN_RELEASE), as an overall readiness,
-# its line saying what's still to go. release_section <the sections it waits for, as JSON>
-release_section() {
-    [ -n "$TN_RELEASE" ] || return 0
-    CHECK_IDS+=("release")
-    plan_add "{\"id\": \"release\", \"title\": \"Release checks\", \"cmd\": $(json_str "$TN_RELEASE"), \"cwd\": $(json_str "$SRC"), \"stoppable\": true, \"after\": $1, \"env\": {$CHECK_ENV}, \"page\": \"e\", \"tell\": {\"rc\": 3, \"note\": \"in progress\"}}"
-}
 run_board() {   # run_board copy|insync|passed|nothing|unreachable — sets RES (the results file)
-    local want_copy="$1" after="[]" cmd
+    local want_copy="$1"
     command -v python3 >/dev/null 2>&1 || die "python3 isn't installed: devtools's board (dev/board.py) needs it"
     [ -f "$BOARD" ] || die "$BOARD isn't there: devtools's board lives next to devtools"
     # the run's record: a folder of its own under the runs, named by when it started and a count within that second
@@ -999,108 +1016,43 @@ run_board() {   # run_board copy|insync|passed|nothing|unreachable — sets RES 
         [ "$n" -le "$KEEP_RUNS" ] || [ ! -d "$RUNS_DIR/$old" ] || rm -rf "${RUNS_DIR:?}/$old"
     done
     RES="$BOARD_DIR/results"
-    PLAN=""; CHECK_IDS=()
+    CHECK_IDS=()
+    # the request: what this run is, for dev/plan.py, which puts the integrations devtools.toml turns on on the board
+    # (the Sync block as it was built here: told, the copy, or the restart), and says which are the checks
+    local sync="null" passed="{}" last="" id l cmd
+    if [ "$want_copy" = "copy" ]; then   # (first on the board: the copy, then the checks)
+        cmd="$(printf '%q ' "$SELF" "${ORIG_ARGS[@]}")"
+        sync="{\"id\": \"sync\", \"title\": $(json_str "Sync to $TN_HOST"), \"cmd\": $(json_str "$cmd"), \"cwd\": $(json_str "$ROOT"), \"after\": \"__AFTER__\", \"doing\": \"copying\", \"page\": \"s\", \"env\": {\"DEVTOOLS_STEP\": \"sync\", \"DEVTOOLS_SRC\": $(json_str "$SRC"), \"DEVTOOLS_TOTAL\": \"$(printf '%s\n' "$CHANGES" | grep -c . || true)\"}}"
+    elif [ -n "$TOLD_SYNC" ]; then
+        sync="$TOLD_SYNC"
+    fi
     if [ "$want_copy" = "passed" ]; then
         # (each block's line: when it passed, then its result line from then — what it ran on, what it found)
         # ("Passed 4 minutes ago (2026-11-03 13:51)"; a result kept before devtools kept its time in seconds: "Passed 2026-11-03 13:51")
         local when at; when="$(state_get when)"; at="$(state_get at)"
         case "$at" in ''|*[!0-9]*) ;; *) when="$(ago "$at") ($when)" ;; esac
-        was() { local l; l="$(state_get "last_$1")"; printf '%s' "Passed $when${l:+ · $l}"; }
-        passed_section current "Current Tests" "$TN_TEST" "$(was current)"
-        [ -z "$FUTURE_CMD" ] || [ "$(state_get future)" != pass ] || passed_section future "Future Tests" "$FUTURE_CMD" "$(was future)"
-        passed_section validate "HTML/JS/CSS Validation" "$TN_VALIDATE" "$(was validate)"
-        passed_section types "Python Validation" "$TN_TYPES" "$(was types)"
-        passed_section build "Build Validation" "$TN_BUILD" "$(was build)"
-        coverage_section "[]"   # (from the coverage the tests that passed saved: quick, and it says what's still to add)
-        audit_section
-        i18n_section
-        release_section "[]"   # (readiness moves between runs of the same code only by what git keeps, so it's run again)
-    elif [ "$SKIP_TESTS" != 1 ] && [ "$want_copy" != "nothing" ]; then
-        check_section current "Current Tests" "$TN_TEST"
-        [ -n "$TN_TEST" ] || told_section current "Current Tests" "not set up" "No TN_TEST in .devtools, so no tests were run."
-        [ -z "$FUTURE_CMD" ] || check_section future "Future Tests" "$FUTURE_CMD" "\"stop_with\": [\"current\"], \"not_run_rc\": 3"
-        [ -n "$FUTURE_CMD" ] || [ -z "$TN_FUTURE" ] || told_section future "Future Tests" "skipped" "TN_FUTURE wasn't run: devtools $MODE --skip-future."
-        check_section validate "HTML/JS/CSS Validation" "$TN_VALIDATE"
-        check_section types "Python Validation" "$TN_TYPES"
-        check_section build "Build Validation" "$TN_BUILD"
-        audit_section
-        [ "$RELEASE" != 1 ] || [ -n "$TN_RELEASE" ] || told_section release "Release checks" "not set up" "No TN_RELEASE in .devtools, so no release checks were run."
-        [ -z "$TN_TEST" ] || coverage_section "[\"current\"]"
-        i18n_section
-        # (after the tests when they run: they save the coverage its readiness reads)
-        if [ -n "$TN_TEST" ]; then release_section "[\"current\"]"; else release_section "[]"; fi
-    elif [ "$SKIP_TESTS" = 1 ] && [ "$SYNC_ONLY" != 1 ]; then
-        told_section checks "Tests and checks" "skipped" "None of TN_TEST, TN_VALIDATE, TN_TYPES, TN_BUILD, TN_COVERAGE, TN_AUDIT or TN_FUTURE was run (--skip-tests)."
+        for id in "${INT_IDS[@]}"; do
+            l="$(state_get "last_$id")"
+            [ -z "$l" ] || last="${last:+$last, }$(json_str "$id"): $(json_str "$l")"
+        done
+        passed="{\"when\": $(json_str "$when"), \"last\": {$last}}"
     fi
-    if [ -n "$ONLY" ]; then   # (one block alone: the checks this run are that one, if it is one)
-        local kept=() id
-        for id in "${CHECK_IDS[@]}"; do [ "$id" != "$ONLY" ] || kept+=("$id"); done
-        CHECK_IDS=("${kept[@]}")
-    fi
-    local checks="[]"
-    [ "${#CHECK_IDS[@]}" = 0 ] || checks="$(json_ids "${CHECK_IDS[@]}")"
-    if [ "$want_copy" = "copy" ]; then   # (first on the board: the copy, then the checks)
-        local checks_plan="$PLAN"
-        [ "$TESTS_FIRST" != 1 ] || after="$checks"
-        cmd="$(printf '%q ' "$SELF" "${ORIG_ARGS[@]}")"
-        PLAN=""
-        plan_add "{\"id\": \"sync\", \"title\": $(json_str "Sync to $TN_HOST"), \"cmd\": $(json_str "$cmd"), \"cwd\": $(json_str "$ROOT"), \"after\": $after, \"doing\": \"copying\", \"page\": \"s\", \"env\": {\"DEVTOOLS_STEP\": \"sync\", \"DEVTOOLS_SRC\": $(json_str "$SRC"), \"DEVTOOLS_TOTAL\": \"$(printf '%s\n' "$CHANGES" | grep -c . || true)\"}}"
-        [ -z "$checks_plan" ] || plan_add "$checks_plan"
-    elif [ -n "$TOLD_SYNC" ]; then
-        local checks_plan="$PLAN" go_after="[]"
-        [ "$TESTS_FIRST" != 1 ] || go_after="$checks"
-        PLAN=""
-        plan_add "${TOLD_SYNC//\"__AFTER__\"/$go_after}"
-        [ -z "$checks_plan" ] || plan_add "$checks_plan"
-    fi
-    if [ -n "$TN_UPKEEP" ] && [ "$SYNC_ONLY" != 1 ]; then
-        # (in your folder, where its pins move; its CVEs are of the copy being checked: DEVTOOLS_COPY, dev/cves.py)
-        plan_add "{\"id\": \"upkeep\", \"title\": \"Dependencies\", \"cmd\": $(json_str "export DEVTOOLS_UPKEEP=look; $TN_UPKEEP"), \"cwd\": $(json_str "$ROOT"), \"env\": {$CHECK_ENV, \"DEVTOOLS_COPY\": $(json_str "$SRC")}, \"upkeep\": true, \"page\": \"d\", \"then\": {\"cmd\": $(json_str "export DEVTOOLS_UPKEEP=move; $TN_UPKEEP"), \"after\": $checks}}"
-    fi
-    # the looks to approve, the last block: every time (it's quick, and approving them changes no code tested), on their own — not a
-    # check the copy waits for, nor one whose warning fails the run
-    if [ -n "$TN_STYLE" ] && [ "$SKIP_TESTS" != 1 ] && [ "$want_copy" != "nothing" ]; then
-        # r, once it says looks are waiting and while the board runs: their review page (TN_STYLE's "check" made
-        # "review --board"), in your folder, where approving them writes the guide; it stays open after the board.
-        # Once the board is done, its line says the command instead
-        local key=""
-        if [ -t 0 ] && [[ "$TN_STYLE" == *" check" ]]; then
-            key=", \"key\": {\"key\": \"r\", \"cmd\": $(json_str "${TN_STYLE% check} review --board"), \"cwd\": $(json_str "$ROOT"), \"does\": \"Review Style Changes\", \"opens\": \"the review page\", \"line\": \"press r to review them\"}"
-        fi
-        # and, once it says looks wait, their sample made there and then (TN_STYLE's "check" made "sample"), in your
-        # folder, so r opens the page at once; not with --no-sample (r makes it first then)
-        local then=", \"env\": {\"DEVTOOLS_SAMPLE\": \"0\"}"   # (--no-sample: the check as it was, nothing of a sample on it)
-        if [ "$NO_SAMPLE" != 1 ] && [[ "$TN_STYLE" == *" check" ]]; then
-            then=", \"then\": {\"cmd\": $(json_str "${TN_STYLE% check} sample"), \"cwd\": $(json_str "$ROOT"), \"after\": [], \"doing\": \"looks waiting: making sample\", \"fail_note\": \"looks waiting: no sample\"}"
-            # and, once every other block is done (none failed) with looks still waiting, their review there and then,
-            # on the board (blue while its page is open; Enter skips it), then the check again: green once all are
-            # approved. Not on a dry run.
-            if [ "$DRY_RUN" != 1 ]; then
-                then="$then, \"finale\": {\"cmd\": $(json_str "${TN_STYLE% check} review --step"), \"check\": $(json_str "$TN_STYLE"), \"cwd\": $(json_str "$ROOT"), \"env\": {\"DEVTOOLS_SAMPLE\": \"0\", \"DEVTOOLS_RECHECK\": \"1\"}, \"doing\": \"in review\", \"checking\": \"checking again\", \"label\": \"looks · review page open\", \"enter\": \"Skip review\", \"pass_note\": \"all approved\"}"
-            fi
-        fi
-        plan_add "{\"id\": \"style\", \"title\": \"Style Approval\", \"cmd\": $(json_str "$TN_STYLE"), \"cwd\": $(json_str "$SRC"), \"stoppable\": true, \"warn\": {\"rc\": 1, \"note\": \"looks waiting\"}$key$then}"
-    fi
-    # the board's header: what's sent and tested (where it goes is the Sync block's to say), the run's modes, the
-    # commit, and how to stop it
-    local head="$SRC_LABEL" keys="" kind="run"
-    [ "$RELEASE" != 1 ] || head="$head · Release"
-    [ "$TESTS_FIRST" != 1 ] || head="$head · Tests first"
-    [ "$DRY_RUN" != 1 ] || head="$head · Dry run"
-    [ "$NO_SAMPLE" != 1 ] || [ -z "$TN_STYLE" ] || head="$head · No sample"
-    if [ -n "$ONLY" ]; then head="$head · One block again"; kind="only"
-    elif [ "$CHECKS_ONLY" = 1 ]; then head="$head · Checks only"; kind="checks"
-    elif [ "$ACTION" = "restart" ]; then head="Restart $TN_APP"; kind="restart"
-    elif [ "$SYNC_ONLY" = 1 ]; then head="$head · Push only"; kind="sync"
-    elif [ "$ACTION" = "push" ]; then head="$head · Push"; fi
-    if [ -t 0 ] && [ "${#CHECK_IDS[@]}" != 0 ]; then keys="{\"key\": \"Enter\", \"does\": \"Cancel\"}"; fi
-    # (the plan is the record's first file: what this run is — its mode and kind, for the UI's Run again and Sync — and
-    # the UI the board's keys open, dev/devui.py next to this script, in your folder)
-    printf '{"header": [%s], "commit": %s, "keys": [%s], "mode": %s, "kind": %s, "only": %s, "release": %s, "started": %s, "project": %s, "ui": {"cmd": %s, "cwd": %s}, "sections": [%s]}\n' \
-        "$(json_str "$head")" "$(json_str "$SRC_COMMIT")" "$keys" "$(json_str "$MODE")" "$(json_str "$kind")" "$(json_str "$ONLY")" "$RELEASE" "$(date +%s)" \
-        "$(json_str "$ROOT")" "$(json_str "python3 $(printf '%q' "$(self_dir)/devui.py")")" "$(json_str "$ROOT")" "$PLAN" > "$BOARD_DIR/plan.json"
+    local future_passed=false
+    [ "$(state_get future)" != pass ] || future_passed=true
+    printf '{"want": %s, "code": %s, "src": %s, "root": %s, "config": %s, "self": %s, "orig_args": [%s], "env": {%s}, "tty": %s, "dry_run": %s, "tests_first": %s, "no_sample": %s, "skip_tests": %s, "skip_future": %s, "only": %s, "sync": %s, "changes": %s, "passed": %s, "future_passed": %s, "label": %s, "commit": %s, "action": %s, "sync_only": %s, "checks_only": %s, "ui": {"cmd": %s, "cwd": %s}}\n' \
+        "$(json_str "$want_copy")" "$(json_str "$MODE")" "$(json_str "$SRC")" "$(json_str "$ROOT")" "$(json_str "$ROOT/devtools.toml")" "$(json_str "$SELF")" \
+        "$(local a o=""; for a in "${ORIG_ARGS[@]}"; do o="${o:+$o, }$(json_str "$a")"; done; printf '%s' "$o")" "$CHECK_ENV" \
+        "$([ -t 0 ] && printf true || printf false)" "$(json_bool "$DRY_RUN")" "$(json_bool "$TESTS_FIRST")" "$(json_bool "$NO_SAMPLE")" \
+        "$(json_bool "$SKIP_TESTS")" "$(json_bool "$SKIP_FUTURE")" "$(json_str "$ONLY")" "$sync" "${CHANGES_N:-0}" "$passed" "$future_passed" \
+        "$(json_str "$SRC_LABEL")" "$(json_str "$SRC_COMMIT")" "$(json_str "$ACTION")" "$(json_bool "$SYNC_ONLY")" "$(json_bool "$CHECKS_ONLY")" \
+        "$(json_str "python3 $(printf '%q' "$(self_dir)/devui.py")")" "$(json_str "$ROOT")" > "$BOARD_DIR/request.json"
+    # (the plan is the record's first file: what this run is — its mode and kind, for the UI's Run again and Sync, the
+    # code's role — and the UI the board's keys open, dev/devui.py next to this script, in your folder)
+    local ids
+    ids="$(python3 "$PLAN" "$BOARD_DIR/request.json" "$BOARD_DIR/plan.json")" || die "the board's plan couldn't be made (see above)"
+    read -r -a CHECK_IDS <<< "$ids"
     python3 "$BOARD" "$BOARD_DIR/plan.json" "$RES"
-    if [ -n "$TN_UPKEEP" ]; then UPKEEP_OUT="$(res_get upkeep_log)"; fi
+    if [ -n "$UPKEEP_CMD" ]; then UPKEEP_OUT="$(res_get upkeep_log)"; fi
 }
 # What the board leaves: each section said its own result in its own block (and what a failed one printed came under
 # the board), so nothing is said again here: the result is kept for next time, and the exit code says how it went.
@@ -1125,7 +1077,7 @@ finish_board() {
     for id in "${CHECK_IDS[@]}"; do
         case "$id" in
             future) case "$(res_get future)" in pass) FUTURE_RESULT="pass" ;; fail) FUTURE_RESULT="fail" ;; esac ;;
-            *) case "$(res_get "$id")" in pass|info) ;; *) current_ok=0 ;; esac ;;   # (info: its tool only told, grey)
+            *) case "$(res_get "$id")" in pass|info|warn) ;; *) current_ok=0 ;; esac ;;   # (info: its tool only told, grey; warn: orange, said, never a failure)
         esac
     done
     if [ "$current_ok" = 1 ] && [ "$FUTURE_RESULT" != "fail" ]; then
@@ -1151,9 +1103,9 @@ status_json() {
         if [ "$CHANGES" = "?" ]; then known=false; else changes_said "$CHANGES"; fi
     fi
     since="$(owed_restart)"
-    printf '{"host": %s, "user": %s, "app": %s, "web_port": %s, "dest": %s, "mode": %s, "label": %s, "commit": %s, "reachable": %s, "error": %s, ' \
+    printf '{"host": %s, "user": %s, "app": %s, "web_port": %s, "dest": %s, "mode": %s, "label": %s, "commit": %s, "head": %s, "reachable": %s, "error": %s, ' \
         "$(json_str "$TN_HOST")" "$(json_str "$TN_USER")" "$(json_str "$TN_APP")" "$TN_WEB_PORT" "$(json_str "$TN_DEST")" "$(json_str "$MODE")" \
-        "$(json_str "$SRC_LABEL")" "$(json_str "$SRC_COMMIT")" "$reach" "$(json_str "$err")"
+        "$(json_str "$SRC_LABEL")" "$(json_str "$SRC_COMMIT")" "$(json_str "$CONTEXT_HEAD")" "$reach" "$(json_str "$err")"
     printf '"changes": {"known": %s, "total": %s, "changed": %s, "new": %s, "deleted": %s}, "owed": %s, ' \
         "$known" "$CHANGES_N" "$CHANGES_CHANGED" "$CHANGES_NEW" "$CHANGES_GONE" "$(json_str "$since")"
     printf '"pushed": {"at": %s, "mode": %s, "commit": %s}, "restarted_at": %s}\n' \
@@ -1187,7 +1139,7 @@ if [ "$ACTION" = "restart" ]; then
 fi
 CHANGES="$(pending_changes)" || exit 1
 if [ -z "$CHANGES" ]; then
-    if [ -z "$TN_TEST$TN_VALIDATE$TN_TYPES$TN_BUILD" ] || [ "$SKIP_TESTS" = 1 ]; then
+    if [ "$HAS_TESTS" != 1 ] || [ "$SKIP_TESTS" = 1 ]; then
         told_insync "already in sync" "Nothing copied · $TN_HOST already has these files · $TN_APP not restarted"
         run_board nothing
         [ "$(res_get sync)" != "fail" ] || exit 4

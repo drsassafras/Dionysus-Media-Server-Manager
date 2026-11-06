@@ -14,7 +14,13 @@ next to this file: Run again is ``--checks-only``, a block's Run again ``--only 
 where devtools pushes and how the NAS stands beside the code picked (``devtools status <code>``), and which Dionysus answers
 there: its fingerprint and identicon, as its own pages show them (its open /peer/v1/hello, at TN_WEB_PORT; the identicon
 drawn by app.js's own stIdenticon, put in the page). Opened with nothing under way, it starts a fresh scan of the checks
-(``--checks-only``, as the last run was: its mode, --release), unless --no-scan.
+(``--checks-only``, as the last run was: its code), unless --no-scan.
+
+Besides the board: the Integrations page (every integration devtools.toml lists, on the board or hidden, and its letter),
+a Config tab per integration (its rules as they stand for each role — dev/policy.py's reading — and the file's own
+tables, saved back to devtools.toml from the page unless [config] read_only: the whole file written again, never
+committed), and the Gates page (the gates and what GitHub runs of them, the tags and phases, the change notes written
+since the last release, and the manual release items, ticked here: python3 dev/release.py tick).
 
 The board opens it too (u, or a block's letter: --record is that run's, --open the block; --from-board: what it says
 goes to ui.log in the record, the terminal being the board's), and tells an open page which block to show ("wanted" in
@@ -30,14 +36,16 @@ import subprocess
 import sys
 import threading
 import time
+import tomllib
 import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from dev import devpage  # noqa: E402
+from dev import devpage, gate, policy, release  # noqa: E402
 from plexcache import themes  # noqa: E402
+from plexcache.i18n import LANGUAGES  # noqa: E402
 
 SCRIPT = os.path.join(ROOT, "dev", "devtools")
 PAGE = os.path.join(ROOT, "dev", "devui.html")
@@ -121,8 +129,9 @@ class Run:
 class Data:
     """The records, read anew at each request (the board writes them as it goes), and the runs started from the page."""
 
-    def __init__(self, runs: str | None = None, record: str | None = None, script: str = SCRIPT):
+    def __init__(self, runs: str | None = None, record: str | None = None, script: str = SCRIPT, root: str = ROOT):
         self.runs_dir = runs or runs_dir()
+        self.root = root   # (the project: its devtools.toml, for the Config tabs and the Gates page)
         self.record = record   # (the board's own run, when it opened the page: where "wanted" is written)
         self.script = script
         self.job: subprocess.Popen | None = None   # (the one run of devtools started here, while it runs)
@@ -186,9 +195,13 @@ class Data:
                 os.unlink(path)
             except OSError:
                 pass
-        return {"header": (base.state or {}).get("header") if base and base.state else (base.plan.get("header") if base else []),
-                "commit": ((base.state or {}).get("commit") or base.plan.get("commit", "")) if base else "", "mode": base.mode if base else "local",
-                "release": bool(base.plan.get("release")) if base else False, "run": base.name if base else "",
+        plan = base.plan if base else {}
+        return {"header": (base.state or {}).get("header") if base and base.state else (plan.get("header") if base else []),
+                "commit": ((base.state or {}).get("commit") or plan.get("commit", "")) if base else "", "mode": base.mode if base else "local",
+                "run": base.name if base else "",
+                # the code's context, as the plan held it (dev/plan.py: the role its branch or tag's phase gives it, the gate, diff mode)
+                "context": {k: plan.get(k) or ("" if k != "diff" else False) for k in ("role", "phase", "tag", "gate", "diff", "branch")},
+                "hub_key": str(plan.get("hub_key") or "h"), "letters": plan.get("letters") or {},
                 "started": base.started if base else None, "ended": (base.state or {}).get("ended") if base else None,
                 "live": {"run": live.name, "kind": live.kind, "header": (live.state or {}).get("header") or live.plan.get("header")} if live else None,
                 "blocks": blocks, "job": job, "wanted": wanted, "history": [r.summary() for r in runs[:20]],
@@ -256,10 +269,7 @@ class Data:
             runs = self.runs()
             base = next((r for r in runs if r.kind in ("run", "checks")), None) or (runs[0] if runs else None)
             mode = base.mode if base and base.mode in MODES else "local"   # (a restart's record has no code)
-            release = bool(base.plan.get("release")) if base else False
-        else:
-            release = bool(q.get("release"))
-        return [mode] + (["--release"] if release else [])
+        return [mode]
 
     def scan(self, q: dict) -> dict:
         return self.start([*self._mode(q), "--checks-only"], "the checks")
@@ -306,6 +316,118 @@ class Data:
                     os.killpg(self.job.pid, 15)
                 except OSError:
                     pass
+
+    # ------------------------------------------------------------- devtools.toml: the Integrations page, the Config tabs, the Gates page
+    def _cfg(self) -> policy.Config:
+        path = policy.find_file(self.root)
+        if not path:
+            raise ValueError(f"no {policy.FILE} in {self.root} (devtools init writes one)")
+        try:
+            cfg = policy.Config(path)
+            cfg.check()
+        except policy.ConfigError as e:
+            raise ValueError(f"{policy.FILE}: {e}") from None
+        return cfg
+
+    def config(self, q: dict) -> dict:
+        """devtools.toml as the page shows it: the file's tables (``data``), every integration (on the board or hidden, with
+        its letter), and each integration's rules as they stand for each role (dev/policy.py's reading: ``said``, by
+        role, full and diff mode) — what the Config tab shows beside the tables it edits."""
+        cfg = self._cfg()
+        said: dict[str, dict] = {}
+        for i in cfg.integrations(all_=True):
+            said[i["id"]] = {}
+            for role in cfg.roles:
+                try:
+                    said[i["id"]][role] = {"full": cfg.rules(i["id"], policy.Context(role=role)).said(),
+                                           "diff": cfg.rules(i["id"], policy.Context(role=role, diff=True)).said()}
+                except policy.ConfigError as e:
+                    said[i["id"]][role] = {"full": [f"({e})"], "diff": []}
+        tools: list[dict] = []
+        try:   # the check tools (dev/tools.toml): pinned there, fetched by dev/checks.py — shown, not edited here
+            with open(os.path.join(self.root, "dev", "tools.toml"), "rb") as fh:
+                for key, t in tomllib.load(fh).items():
+                    tools.append({"id": key, "name": str(t.get("name") or key), "version": str(t.get("version") or ""),
+                                  "get": str(t.get("get") or ""), "package": str(t.get("package") or ""),
+                                  "config": str(t.get("config") or ""), "upstream": str(t.get("upstream") or "")})
+        except OSError:
+            pass
+        return {"path": cfg.path, "read_only": cfg.read_only, "data": cfg.data, "integrations": cfg.integrations(all_=True),
+                "roles": cfg.roles, "hub_key": policy.letters(["Hub"])[0], "said": said,
+                "kinds": list(policy.KIND_FILES), "tools": tools,
+                "languages": [{"code": c, "name": n} for c, n in LANGUAGES if c not in ("en", "en-US", "en-GB")],   # (what a target may name)
+                "schemas": {k: {"title": policy.schema(k).title, "doc": policy.schema(k).doc,
+                                "settings": {n: dict(st.__dict__) for n, st in policy.schema(k).settings.items()}}
+                            for k in {i["kind"] for i in cfg.integrations(all_=True)}}}
+
+    def save_config(self, q: dict) -> dict:
+        """The file written again from the page's tables (policy.save: checked first; refused when [config] read_only).
+        Nothing is committed: the change is in the folder, to look at and commit as any other."""
+        cfg = self._cfg()
+        data = q.get("data")
+        if not isinstance(data, dict):
+            raise ValueError("no data to save")
+        try:
+            text = policy.save(cfg, data)
+        except policy.ConfigError as e:
+            raise ValueError(f"{policy.FILE}: {e}") from None
+        return {"ok": True, "path": cfg.path, "text": text}
+
+    def gates(self, q: dict) -> dict:
+        """The Gates page: each gate as devtools.toml holds it and whether GitHub runs it ([github], [gates]), the tags and
+        the phases, the version and the change notes written since the last release (dev/release.py), and the manual
+        release items with what's ticked of them for this version."""
+        cfg = self._cfg()
+        env = dict(os.environ, DEVTOOLS_REPO=self.root, DEVTOOLS_CONFIG=cfg.path)
+        with _env(env):
+            try:
+                with open(os.path.join(self.root, "plexcache", "__init__.py"), encoding="utf-8") as fh:
+                    version = release.version_of(fh.read()) or ""
+            except OSError:
+                version = ""
+            tag = release.last_release_tag()
+            notes = release.change_notes()
+            ticked = release.manual_state(version)
+            try:
+                r = cfg.rules("release", policy.Context(role="release"))
+                items = r.items("manual_items")
+                notes_dir = r.text("notes_dir") or "changes"
+            except policy.ConfigError:
+                items, notes_dir = [], "changes"
+        gh = gate.github_config(cfg)
+        return {"github": gh, "gates": {g: {"diff": bool(cfg.table("gates", g).get("diff")), "github": gh[g]} for g in gate.GATES},
+                "tags": cfg.table("tags"), "phases": {p: cfg.phase_role(p) for p in cfg.table("phases")},
+                "branches": {b: spec.get("role", "") for b, spec in cfg.table("branches").items() if isinstance(spec, dict)},
+                "version": version, "last_release": tag, "notes_dir": notes_dir, "notes": notes,
+                "manual": [{"item": i, "done": bool(ticked.get(i))} for i in items]}
+
+    def tick(self, q: dict) -> dict:
+        """A manual release item ticked (or unticked: done = false) for this version: python3 dev/release.py tick."""
+        item = str(q.get("item") or "")
+        if not item:
+            raise ValueError("no item")
+        cfg = self._cfg()
+        args = [sys.executable, os.path.join(ROOT, "dev", "release.py"), "tick", item] + ([] if q.get("done", True) else ["--undo"])
+        got = subprocess.run(args, cwd=self.root, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL,
+                             env=dict(os.environ, DEVTOOLS_REPO=self.root, DEVTOOLS_CONFIG=cfg.path))
+        if got.returncode != 0:
+            raise ValueError((got.stdout + got.stderr).strip() or f"release.py tick exited {got.returncode}")
+        return {"ok": True, "said": got.stdout.strip()}
+
+
+class _env:
+    """The environment set for a while (the project the page serves, told to dev/release.py's functions)."""
+
+    def __init__(self, env: dict[str, str]):
+        self.env, self.saved = env, dict(os.environ)
+
+    def __enter__(self):
+        os.environ.clear()
+        os.environ.update(self.env)
+
+    def __exit__(self, *_):
+        os.environ.clear()
+        os.environ.update(self.saved)
 
 
 def hello(host: str, port, timeout: float = 4.0) -> dict:
@@ -371,8 +493,10 @@ def serve(data: Data, open_browser: bool = True, port: int = 0, ready=None, firs
 
     def served(token: str) -> str:
         return html.replace("__TOKEN__", token, 1).replace("/*BEAT*/", devpage.beat(token, 5), 1)
-    routes_get = {"/api/run": lambda q: data.view(), "/api/log": data.log, "/api/detail": data.detail, "/api/status": data.status}
-    routes_post = {"/api/scan": data.scan, "/api/rerun": data.rerun, "/api/push": data.push, "/api/restart": data.restart}
+    routes_get = {"/api/run": lambda q: data.view(), "/api/log": data.log, "/api/detail": data.detail, "/api/status": data.status,
+                  "/api/config": data.config, "/api/gates": data.gates}
+    routes_post = {"/api/scan": data.scan, "/api/rerun": data.rerun, "/api/push": data.push, "/api/restart": data.restart,
+                   "/api/config": data.save_config, "/api/tick": data.tick}
     devpage.serve("devtools", served, routes_get, routes_post, files=files(), gone=(3.0, 30.0), busy=data.busy,
                   idle=(idle, "devtools ui"), port=port, open_browser=open_browser, ready=ready,
                   note="Ctrl-C to stop; it stops by itself once the page is closed and nothing is running")

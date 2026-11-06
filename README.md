@@ -375,7 +375,7 @@ docker build -t plex-cache .
 
 Each language has a catalog in `plexcache/web/i18n/<code>.json`, keyed by the English text. Texts are marked in the code with `T()`, `H()`, `P()` and `N()` in JavaScript, `data-i18n` attributes in HTML and `M()` in Python. You translate in place: a text with no translation yet is in the catalog as `null`, and the app shows the English until it's filled in.
 
-**When to translate:** only when a release is being made, and only when the maintainer asks for the release. Day to day, a change that adds or changes texts leaves the catalogs alone: a new text isn't in them yet (the app shows the English) and an old one lingers until the release. `devtools dev --release` checks that it's been done, with the version ([`dev/README.md`](dev/README.md)). Making the release, run `python3 dev/i18n.py sync` to bring every catalog in step (new texts as `null`, unused ones dropped), then translate.
+**When to translate:** only when a release is being made, and only when the maintainer asks for the release. Day to day, a change that adds or changes texts leaves the catalogs alone: a new text isn't in them yet (the app shows the English) and an old one lingers until the release. The release checks (devtools on `main`, or the code tagged a release candidate: `devtools.toml`'s release rules) check that it's been done, with the version ([`dev/README.md`](dev/README.md)). Making the release, run `python3 dev/i18n.py sync` to bring every catalog in step (new texts as `null`, unused ones dropped), then translate.
 
 ```sh
 python3 dev/i18n.py status      # how much of each language is translated

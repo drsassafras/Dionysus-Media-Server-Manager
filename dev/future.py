@@ -25,10 +25,11 @@ ahead of the stable release; the choice is kept for a day (like dev/upkeep.py's 
 on), and upstream not reached means the pin.
 
 The image route needs only Docker with a running engine (Docker Engine or Docker Desktop; on a Mac: brew install docker colima,
-then colima start): the image carries MKVToolNix and ffmpeg, so the optimizer's tests run too. The build is shown as one
-line that moves (its full output is kept in a log, shown when it fails, or on the terminal with -v); it uses BuildKit when
-Docker has it (docker buildx), else the legacy builder, saying how to get BuildKit (brew install docker-buildx, and its
-cliPluginsExtraDirs line in ~/.docker/config.json). The local route needs the interpreter: python3.<next> on PATH, or uv,
+then colima start). An engine that isn't running is started (docker_up: Docker Desktop, OrbStack or colima, whichever is
+here) and waited for, said on the way: the image carries MKVToolNix and ffmpeg, so the optimizer's tests run too. The build is shown as one
+line that moves (its full output is kept in a log, shown when it fails, or on the terminal with -v); it needs BuildKit
+(docker buildx: the Dockerfile's RUN --mount caches), and a Docker without it is said, with how to get it (brew install
+docker-buildx, and its cliPluginsExtraDirs line in ~/.docker/config.json), the run not run. The local route needs the interpreter: python3.<next> on PATH, or uv,
 which fetches prerelease builds."""
 
 import argparse
@@ -50,7 +51,7 @@ from dataclasses import dataclass
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-from dev import upkeep  # noqa: E402 — the pins, the stable releases and the version arithmetic are its
+from dev import policy, upkeep  # noqa: E402 — the exit codes; the pins, the stable releases and the version arithmetic are its
 from dev.progress import Progress, detail, feeding, record, result, said, timed  # noqa: E402 — the bar the dev tools share (on devtools's board: sent to it)
 
 WARN = ["-X", "dev", "-W", "error::DeprecationWarning", "-W", "error::PendingDeprecationWarning", "-W", "error::SyntaxWarning"]
@@ -65,6 +66,36 @@ WEB_VOLUME = "plexcache-future-web"
 BROWSERS_VOLUME = "plexcache-future-browsers"
 # The web checks a year ahead: dev/web.js takes dev/package.json's "futureBrowserslist" (one year less of browsers)
 WEB_TARGETS = ["-e", "PLEXCACHE_WEB_TARGETS=future"]
+# devtools's context, told to the suite in the container (tests/run.py's CONTEXT_KEYS): its exit code is what this
+# block's rules hold its failures, warnings and skipped tests as — the Future Tests' own, not a guess from a checkout
+# git can't read there (/src is the host's, owned by another user)
+CONTEXT_KEYS = ("DEVTOOLS_ROLE", "DEVTOOLS_PHASE", "DEVTOOLS_TAG", "DEVTOOLS_BRANCH", "DEVTOOLS_DIFF", "DEVTOOLS_GATE",
+                "DEVTOOLS_BASE", "DEVTOOLS_CODE")
+
+
+def suite_context() -> list[str]:
+    """The docker run -e arguments that tell the suite inside whose rules it's held to: this block's integration (Future
+    Tests: ``future`` unless devtools named another), the project's file as the container sees it, the role and the rest."""
+    env = {"DEVTOOLS_INTEGRATION": os.environ.get("DEVTOOLS_INTEGRATION") or "future", "DEVTOOLS_CONFIG": "/src/devtools.toml",
+           "DEVTOOLS_REPO": "/src", **{k: os.environ[k] for k in CONTEXT_KEYS if k in os.environ}}
+    return [a for k, v in env.items() for a in ("-e", f"{k}={v}")]
+
+
+def combined(codes: list[int]) -> int:
+    """The run's exit code from its parts' (tests/run.py's, each as its rules hold it): a failure if any part failed (or
+    couldn't run), else the worst of a warning and a note, else passed."""
+    states = [policy.state_of(rc) for rc in codes]
+    if "fail" in states:
+        return policy.FAIL
+    if states and all(st == "notrun" for st in states):
+        return policy.NOTRUN
+    return policy.WARN if "warn" in states else policy.INFO if "info" in states else policy.PASS
+
+
+def verdict_line(tag: str, rc: int) -> str:
+    return f"\nPython {tag}, inside the image: " + {
+        policy.PASS: "clean.", policy.WARN: "passes, with warnings its rules hold as such.", policy.INFO: "passes, with notes (skipped tests or warnings told).",
+    }.get(rc, "the suite fails — what it deprecates or removes needs a look before the image moves to it.")
 # the build's lines that say where it is: the legacy builder's "Step 8/31 : RUN …", BuildKit's "#8 [ffmpeg 2/3] RUN …"
 STEP_LEGACY = re.compile(r"^Step (\d+)/(\d+) : (.*)")
 STEP_BUILDKIT = re.compile(r"^#(\d+) \[([^\]]+)\] (.*)")
@@ -111,12 +142,127 @@ def cores_hint(docker: int, host: int) -> str:
             f"colima stop && colima start --cpu {want} (Docker Desktop: Settings → Resources → CPUs: {want}).")
 
 
+# (what to say when Docker has no BuildKit: the legacy builder can't build the Dockerfile, whose RUN --mount caches need it)
+NO_BUILDKIT = ("this Docker has no BuildKit (docker buildx), which the Dockerfile needs (its RUN --mount caches). "
+               "Get it: brew install docker-buildx, then add the cliPluginsExtraDirs line brew prints to ~/.docker/config.json")
+
+
 def has_buildkit() -> bool:
     """Whether this Docker builds with BuildKit (the buildx plugin); the legacy builder prints a deprecation notice instead."""
     try:
         return subprocess.run(["docker", "buildx", "version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
     except OSError:
         return False
+
+
+def engine_answers(timeout: float = 15, host: str = "") -> bool:
+    """Whether Docker's engine answers (docker info: the client reaches the daemon), where docker looks or at ``host``."""
+    try:
+        return subprocess.run(["docker", *(["-H", host] if host else []), "info"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                              timeout=timeout).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def sockets(home: str = "") -> list[str]:
+    """The sockets an engine on this machine listens on, beside where docker looks by default: colima's (each profile's,
+    under COLIMA_HOME or ~/.colima), OrbStack's, Docker Desktop's own."""
+    home = home or os.path.expanduser("~")
+    colima = os.environ.get("COLIMA_HOME") or os.path.join(home, ".colima")
+    found = sorted(os.path.join(colima, d, "docker.sock") for d in (os.listdir(colima) if os.path.isdir(colima) else []))
+    found.sort(key=lambda p: os.path.basename(os.path.dirname(p)) != "default")   # (colima's default profile first)
+    found += [os.path.join(home, ".orbstack", "run", "docker.sock"), os.path.join(home, ".docker", "run", "docker.sock")]
+    return [p for p in found if os.path.exists(p)]
+
+
+def tell(text: str) -> None:
+    """A word on the way (Docker's engine found or started), indented under the run's own lines."""
+    print(f"    {text}", flush=True)
+
+
+def reachable(step: float = 5, say: Callable[[str], None] | None = None) -> bool:
+    """Docker's engine answering, where docker looks or at one of ``sockets()``: one that answers only at its own socket
+    (colima running, docker's context still the default) is used for this run (DOCKER_HOST, which every docker command
+    here inherits), and said, with how to make it docker's default."""
+    say = say or tell
+    if engine_answers(timeout=step):
+        return True
+    for sock in sockets():
+        host = f"unix://{sock}"
+        if engine_answers(timeout=step, host=host):
+            os.environ["DOCKER_HOST"] = host
+            name = os.path.basename(os.path.dirname(sock)) if ".colima" in sock else ""
+            say(f"Docker's engine answers at {sock}, not where docker looks: using it for this run"
+                + (f" (docker context use colima{'' if name in ('', 'default') else '-' + name} makes it docker's default)." if ".colima" in sock else "."))
+            return True
+    return False
+
+
+# (the engines that can be started from here, first found first: a Mac's apps, opened in the background; colima, started)
+APPS = ("/Applications/Docker.app", "/Applications/OrbStack.app")
+
+
+def starters(home: str = "") -> list[tuple[str, list[str]]]:
+    """What can start Docker's engine on this machine: (its name, the command), in the order tried."""
+    got: list[tuple[str, list[str]]] = []
+    if sys.platform == "darwin":
+        for app in (*APPS, *(os.path.join(home or os.path.expanduser("~"), a.lstrip("/")) for a in APPS)):
+            if os.path.isdir(app) and shutil.which("open"):
+                got.append((os.path.basename(app)[: -len(".app")], ["open", "-g", "-a", app]))
+                break
+    if shutil.which("colima"):
+        got.append(("colima", ["colima", "start"]))
+    return got
+
+
+def started(cmd: list[str], wait: float, say: Callable[[str], None] | None = None) -> tuple[int | None, str]:
+    """A starter run, what it prints passed on as it comes (indented: colima says each step of making its VM); its exit
+    code (None when it took longer than ``wait`` seconds, and was stopped) and the last line it printed."""
+    last, say = "", say or tell
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, text=True, errors="replace")
+    except OSError as e:
+        return 1, str(e)
+    timer = threading.Timer(wait, proc.kill)
+    timer.start()
+    with proc:   # (its pipe closed however it ends)
+        try:
+            for line in proc.stdout or []:
+                text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", line).strip()   # (its colours: not for a log)
+                if text:
+                    last = text
+                    say(f"  {text}")
+            rc = proc.wait()
+        finally:
+            expired = not timer.is_alive() and proc.returncode not in (0, None)
+            timer.cancel()
+    return (None if expired else rc), last
+
+
+def docker_up(wait: float = 300, step: float = 2, say: Callable[[str], None] | None = None) -> str:
+    """Docker's engine running: "" when it answers (already, or once started and waited for, up to ``wait`` seconds);
+    otherwise what to say of why not. Said on the way through ``say`` (tell: indented on stdout; a tool whose output has a
+    first line that counts, the Dependencies' word, passes its own)."""
+    say = say or tell
+    if reachable(say=say):
+        return ""
+    found = starters()
+    if not found:
+        return "Docker's engine isn't running, and nothing here starts it (Docker Desktop, OrbStack or colima): start it, then run this again."
+    for name, cmd in found:
+        say(f"Docker's engine isn't running: starting {name} (up to {int(wait)} seconds; a first start makes its VM, which takes longest)…")
+        rc, last = started(cmd, wait, say)
+        if rc != 0:
+            say(f"{name} didn't start: {last or ('it took longer than ' + str(int(wait)) + ' seconds' if rc is None else f'exit {rc}')}")
+            continue
+        end = time.time() + wait
+        while time.time() < end:
+            if reachable(step + 5, say):
+                say(f"{name} is up.")
+                return ""
+            time.sleep(step)
+        say(f"{name} was started, but Docker's engine didn't answer within {int(wait)} seconds.")
+    return "Docker's engine isn't running and didn't start: start Docker, then run this again."
 
 
 # ---------------------------------------------------------------- the channels
@@ -527,7 +673,7 @@ class Line:
 
 
 # A build step that couldn't fetch what it needed (a download refused, DNS, a tag not published yet): not a failure of the
-# code, so the run says "not run, try again" (exit 3: devtools shows it grey) rather than red
+# code, so the run says "not run, try again" (exit 5, dev/policy.py's NOTRUN: devtools shows it grey) rather than red
 FETCH_FAILED = re.compile(r"curl: \(\d+\)|TLS connect error|Connection reset by peer|Could not resolve host|failed to fetch|manifest unknown|manifest for .* not found|"
                           r"TLS handshake timeout|unexpected EOF|i/o timeout|Temporary failure in name resolution|Hash Sum mismatch|Failed to fetch", re.I)
 
@@ -666,9 +812,14 @@ def parallel_route(tag: str, args: list[str], picks: list[Pick], node_pick: Pick
     results: dict[str, tuple[int, str]] = {}
     page = Detail()
 
+    given_up = threading.Event()   # (the image didn't build: the run's result is known, the plain part stopped)
+    named = f"plex-cache-future-{os.getpid()}"
+
     def part(name: str, image: str, leave: list[str]) -> None:
+        if given_up.is_set():
+            return
         suite = f"python {' '.join(WARN)} tests/run.py" + "".join(f" --exclude {c}" for c in leave) + f" -j{jobs}"
-        cmd = ["docker", "run", "--rm", "-e", "PLEXCACHE_PROGRESS=feed", "-e", "CI=1", "-e", f"PLEXCACHE_PINS={json.dumps(pins)}", *WEB_TARGETS,
+        cmd = ["docker", "run", "--rm", "--name", f"{named}-{name}", "-e", "PLEXCACHE_PROGRESS=feed", "-e", "CI=1", "-e", f"PLEXCACHE_PINS={json.dumps(pins)}", *WEB_TARGETS, *suite_context(),
                "--user", "0", "-v", f"{ROOT}:/src:ro", *mount, *page.mount(name), "-w", "/src", "--entrypoint", "sh", image, "-c", f"{NODE_SETUP}; {BROWSER_SETUP}; exec {suite}"]
         last = ""
         with subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True, errors="replace") as proc:
@@ -704,12 +855,22 @@ def parallel_route(tag: str, args: list[str], picks: list[Pick], node_pick: Pick
         ONE[0] = None
         page.write(tag, picks, None, results, f"a download the build needs failed ({e})")
         print(f"\nNot run: a download the build needs failed ({e}). Nothing is known about python:{tag} from this — run it again.")
-        return 3
+        return policy.NOTRUN
+    if not built:   # (a failure whatever the plain part finds: said now, not once every test has run on it)
+        given_up.set()
+        subprocess.run(["docker", "kill", f"{named}-plain"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        early_run.join(timeout=60)
+        ONE[0] = None
+        page.write(tag, picks, False, results, "")
+        said(result(""))
+        print(f"\nThe image doesn't build on python:{tag} (no such tag yet, or the build fails there): the build's log is above."
+              " The tests that need no tools were stopped, as the run fails either way.")
+        return 1
     zstd = built and subprocess.run(["docker", "run", "--rm", "--entrypoint", "python", IMAGE, "-c", "import compression.zstd"],
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
     if zstd and in_image:
         ready.wait()
-        part("image", IMAGE, [c for c in classes if c not in in_image])
+        part("image", IMAGE, [*(exclude or []), *(c for c in classes if c not in in_image)])   # (what the run leaves out, left out here too)
     early_run.join()
     ONE[0] = None
     page.write(tag, picks, built, results, "" if zstd or not built else "the image's Python lacks the stdlib zstd")
@@ -720,9 +881,9 @@ def parallel_route(tag: str, args: list[str], picks: list[Pick], node_pick: Pick
     if not zstd:
         print("\nThe image's Python lacks the stdlib zstd the block estimates use.")
         return 1
-    bad = any(rc for rc, _ in results.values())
-    print(f"\nPython {tag}, inside the image: " + ("the suite fails — what it deprecates or removes needs a look before the image moves to it." if bad else "clean."))
-    return 1 if bad else 0
+    rc = combined([got for got, _ in results.values()])
+    print(verdict_line(tag, rc))
+    return rc
 
 
 def image_route(python: str, tag: str | None, tests: list[str], verbose: bool, stable: bool, fresh: bool, exclude: list[str] | None = None) -> int:
@@ -731,6 +892,10 @@ def image_route(python: str, tag: str | None, tests: list[str], verbose: bool, s
     if not shutil.which("docker"):
         print("No docker here: install Docker Engine or Docker Desktop (on a Mac: brew install docker colima; colima start).")
         return 2
+    why = docker_up() or ("" if has_buildkit() else NO_BUILDKIT)
+    if why:   # (nothing is known of the next Python from this: not run, not failed)
+        print(f"\nNot run: {why}.".replace("..", "."))
+        return policy.NOTRUN
     debian = upkeep.debian_of_tag()
     picks: list[Pick] = []
     args: list[str] = []
@@ -752,7 +917,7 @@ def image_route(python: str, tag: str | None, tests: list[str], verbose: bool, s
         built = build_image(tag, args, verbose)
     except FetchFailed as e:
         print(f"\nNot run: a download the build needs failed ({e}). Nothing is known about python:{tag} from this — run it again.")
-        return 3
+        return policy.NOTRUN
     if not built:
         print(f"\nThe image doesn't build on python:{tag} (no such tag yet, or the build fails there).")
         return 1
@@ -788,7 +953,7 @@ def image_route(python: str, tag: str | None, tests: list[str], verbose: bool, s
     pins = {"Python": upkeep._arg("PYTHON_TAG")().split("-")[0], "Node": upkeep._arg("NODE_TAG")().split("-")[0],
             "MKVToolNix": upkeep._arg("MKVTOOLNIX")(), "ffmpeg": upkeep._arg("FFMPEG")()}
     page = Detail()
-    run = ["docker", "run", "--rm", *tty, "-e", "CI=1", "-e", f"PLEXCACHE_BAR_BEFORE={BUILD_STEPS[0]}", "-e", f"PLEXCACHE_PINS={json.dumps(pins)}", *WEB_TARGETS, "--user", "0", "-v", f"{ROOT}:/src:ro", *mount, *page.mount("image"), "-w", "/src", "--entrypoint", "sh", IMAGE, "-c",
+    run = ["docker", "run", "--rm", *tty, "-e", "CI=1", "-e", f"PLEXCACHE_BAR_BEFORE={BUILD_STEPS[0]}", "-e", f"PLEXCACHE_PINS={json.dumps(pins)}", *WEB_TARGETS, *suite_context(), "--user", "0", "-v", f"{ROOT}:/src:ro", *mount, *page.mount("image"), "-w", "/src", "--entrypoint", "sh", IMAGE, "-c",
            f"{node}; exec {suite}"]
     if feeding():   # (on the board: the suite's output passed on as it comes, its result line kept for the block's)
         last = ""
@@ -804,8 +969,9 @@ def image_route(python: str, tag: str | None, tests: list[str], verbose: bool, s
         said(result(last))   # (the suite's result line, what it ran on with it: tests/run.py's ran_on)
     else:
         got = subprocess.run(run).returncode
-    print(f"\nPython {python}, inside the image: " + ("clean." if got == 0 else "the suite fails — what it deprecates or removes needs a look before the image moves to it."))
-    return 1 if got else 0
+    rc = combined([got])
+    print(verdict_line(python, rc))
+    return rc
 
 
 def future_tag(python: str) -> str:
@@ -856,11 +1022,11 @@ def syncthing_route(verbose: bool) -> int:
                 t.extractall(d, filter="data")
     except Exception as e:  # noqa: BLE001 — GitHub, the network: not the code's doing
         print(f"\nNot run: Syncthing couldn't be downloaded ({e}). Run it again.")
-        return 3
+        return policy.NOTRUN
     binary = next((os.path.join(dp, f) for dp, _ds, fs in os.walk(d) for f in fs if f in ("syncthing", "syncthing.exe")), None)
     if not binary:
         print("\nNot run: the archive holds no syncthing binary.")
-        return 3
+        return policy.NOTRUN
     os.chmod(binary, 0o755)  # noqa: S103 — (the binary it runs: executable)
     home = tempfile.mkdtemp(prefix="syncthing-home-")
     subprocess.run([binary, "generate", "--home", home, "--no-default-folder", "--skip-port-probing"], check=True, stdout=None if verbose else subprocess.DEVNULL, stderr=subprocess.STDOUT)
@@ -898,7 +1064,7 @@ def syncthing_route(verbose: bool) -> int:
                 time.sleep(1)
         if not up:
             print("\nNot run: Syncthing didn't come up on its port.")
-            return 3
+            return policy.NOTRUN
         print(f"Syncthing up at {url}; the live tests against it:")
         env = dict(os.environ, SYNCTHING_LIVE_URL=url, SYNCTHING_LIVE_KEY=api_key or "", SYNCTHING_LIVE_SYNC_PORT=str(sync_port), CI="1")
         got = subprocess.run([sys.executable, *WARN, "-m", "unittest", "-v" if verbose else "-q", "tests.test_plexcache.LiveSyncthingTests"], cwd=ROOT, env=env)

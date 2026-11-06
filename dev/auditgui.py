@@ -144,10 +144,14 @@ class Data:
         sensitive = list(rule.get("sensitive", {}).get("paths", []))
         m = audit.measure(audits)
         now = time.time()
-        outcomes: list[Outcome] = [audit.coverage_check(m, audits, now, sensitive), audit.config_check(have_private, rule, False)]
+        from dev import checks
+        r = checks.levels("audit")   # (the rules this checkout's role holds the audits to: devtools.toml)
+        outcomes: list[Outcome] = [audit.coverage_check(m, audits, now, sensitive, r.value("grace_days") if r else None,
+                                                        r.value("grace_share") if r else None, r.level("unaudited") if r else "warn"),
+                                   audit.config_check(have_private, rule, r.level("config") if r else "warn", r.level("unknown") if r else "info")]
         if have_private:
-            outcomes.append(audit.findings_check(audits))
-            outcomes.append(audit.release_check(m, audits, have_private, rule.get("release", {}), now, release=False))
+            outcomes.append(audit.findings_check(audits, r.level("findings") if r else "warn"))
+            outcomes.append(audit.release_check(m, audits, have_private, rule.get("release", {}), now, (r.level("release_rules") if r else "") or "warn", freeze=False))
         rows = list(m.all())
         waiting = [(rel, ln) for rel, _, ln in rows if not ln.seen]
         return {
@@ -468,7 +472,9 @@ class Data:
                 text = fh.read()
         except OSError:
             text = ""
-        dev = audit.config().get("dev", {})
+        from dev import checks
+        r = checks.levels("audit")   # (the dev rule: devtools.toml's [audit] for this checkout's role)
+        dev = {"grace_days": r.value("grace_days"), "grace_share": r.value("grace_share"), "level": r.level("unaudited"), "role": r.ctx.role} if r else {}
         return {"text": text, "path": path, "problems": check_rules(text) if text else ["there's no rules.toml"], "dev": dev}
 
     def save_rules(self, q: dict) -> dict:

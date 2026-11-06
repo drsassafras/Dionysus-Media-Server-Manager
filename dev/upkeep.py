@@ -5,13 +5,13 @@ release upstream — looked up once a day by this script (devtools runs it at th
     python3 dev/upkeep.py            # the report; a pin a minor or patch release behind is moved to it
     python3 dev/upkeep.py --fresh    # asks upstream again rather than using the day's answers
     python3 dev/upkeep.py --report   # looks, changes nothing
-    python3 dev/upkeep.py --devtools   # the same, as the box devtools shows at the end of a run (TN_UPKEEP in .devtools)
+    python3 dev/upkeep.py --devtools   # the same, as the box devtools shows at the end of a run (devtools.toml's upkeep integration)
     python3 dev/upkeep.py --cves plex-cache:test   # GitHub's: the CVEs to act on in that image, as warnings; never fails
 
 With the versions it looks up the CVEs in what the app runs and is built with (dev/cves.py): only what needs doing is
 said, in the box (yellow), and a CVE is never a failure, nor a prompt.
 
-Pins are moved only in a checkout of the dev branch (MOVES_ON), or of main (MINORS_ON): dev carries the newest software,
+Pins are moved only where the checkout's role says so (devtools.toml's [upkeep] move: all on dev, minor on main): dev carries the newest software,
 majors and all; main is kept at the newest minor and patch release of what it has, and never takes a major (those come
 with dev, when it's released): there a major release isn't looked at, nor reported. Anywhere else — another branch, a
 copy that isn't a checkout (devtools's, the image's) — it reports and moves nothing.
@@ -62,6 +62,10 @@ if TYPE_CHECKING:
     from dev.cves import Judged
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT not in sys.path:  # (run as a script: dev/ is on the path, not the project)
+    sys.path.insert(0, ROOT)
+from dev import policy  # noqa: E402 — the rules (devtools.toml)
+
 DOCKERFILE = os.path.join(ROOT, "Dockerfile")
 BUILD = os.path.join(ROOT, ".github", "workflows", "build.yml")
 PACKAGE = os.path.join(ROOT, "dev", "package.json")  # what checks and builds the web app (dev/web.js): Autoprefixer and the rest
@@ -78,8 +82,39 @@ HOLD: dict[str, str] = {}
 
 # The branch pins are moved on (in a checkout of it), and the one only minor and patch releases count on (moved there too;
 # a major is left to dev). Anywhere else upkeep only reports.
-MOVES_ON = "dev"
-MINORS_ON = "main"
+# What upkeep moves itself in this checkout, and what each state is held as: devtools.toml's [upkeep] for the code's role
+# (through dev/policy.py — nothing here decides). move: all (minor and patch releases, and majors prompted), minor (minor
+# and patch; a major is a line, not a prompt: it comes with the development branch) or none (reported only).
+SCHEMA = policy.Schema("upkeep", "Dependencies", {
+    "behind": policy.Setting("level", "new versions upstream"),
+    "cves": policy.Setting("level", "CVEs to act on"),
+    "stale_days": policy.Setting("window", "days a CVE may go without a fix (or a fix without reaching us) before it's ours to act on", unit="days"),
+    "dormant_days": policy.Setting("window", "days without an upstream release: no fix is coming", unit="days"),
+    "debian_grace_days": policy.Setting("window", "days after a Debian fix before an image without it is shown", unit="days"),
+    "review_days": policy.Setting("window", "days a decision on a CVE stands before it's shown again", unit="days"),
+    "move": policy.Setting("text", "what upkeep moves itself here: all, minor or none"),
+}, "The dependencies: what's current, what's behind, and the CVEs.")
+
+
+def moves() -> str:
+    """What this checkout's role lets upkeep move: all, minor or none ([upkeep] move; none without a devtools.toml)."""
+    from dev import checks
+    r = checks.levels("upkeep")
+    return (r.text("move") if r else "none") or "none"
+
+
+def moves_on() -> str:
+    """The branch a pin behind is moved on by itself: the first named in devtools.toml's [branches] whose code's role moves
+    every pin ([upkeep] move = "all"); "" when no branch does (or there's no devtools.toml)."""
+    path = policy.find_file()
+    if not path:
+        return ""
+    cfg = policy.Config(path)
+    for role in cfg.roles:
+        if cfg.rules("upkeep", policy.Context(role=role)).text("move") == "all":
+            for name in cfg.branches_of(role):
+                return name
+    return ""
 WIDTH = 66  # devtools's box: the lines --devtools prints fit it
 
 
@@ -611,7 +646,7 @@ class Report:
     prompts: list[str] = field(default_factory=list)  # what's left to you
     stale: bool = False  # upstream not reached: the last day's answers used
     news: list[tuple[str, str, str, str, str]] = field(default_factory=list)  # what's left to you: name, have, newest, level, what to do
-    moves_on: str = MOVES_ON  # the branch its minor releases move on (where it ran, when that's main)
+    moves_on: str = ""      # the branch a pin behind is moved on by itself (moves_on()), "" when none
     cves: Judged | None = None  # dev/cves.py's Judged: the CVEs that need doing (a warning, never a prompt); None when not looked at
     deps: list[dict] = field(default_factory=list)  # each dependency as a row: name, have, newest, state, level, where — for its page
 
@@ -731,8 +766,8 @@ def branch() -> str | None:
 
 
 def may_move() -> bool:
-    """Whether pins may be moved here: only in a checkout of MOVES_ON or MINORS_ON."""
-    return branch() in (MOVES_ON, MINORS_ON)
+    """Whether pins may be moved here: the role's ``move`` (devtools.toml) all or minor."""
+    return moves() != "none"
 
 
 def _why(e: BaseException) -> str:
@@ -768,14 +803,16 @@ class _Since(threading.Event):
         super().set()
 
 
-def check(apply: bool = True, fresh: bool = False, saved: bool = False, progress=None, where: str | None = MOVES_ON,
-          cves: bool = False, images: list[str] | None = None, local: bool = False) -> Report:
+def check(apply: bool = True, fresh: bool = False, saved: bool = False, progress=None, where: str | None = None,
+          cves: bool = False, images: list[str] | None = None, local: bool = False, move: str | None = None) -> Report:
     """The report: each dependency as it stands; with ``apply``, pins a minor or patch behind moved. ``saved``: from the
     last look's answers only (see lookup). ``progress`` (dev/progress.py's bar): each dependency as it's looked up, then
     each pin as it's moved (npm's installs can take a while), so the look is seen to be going. ``where``: the branch it's
-    for — on MINORS_ON (main) a major release is no one's to do there (it comes with dev): a line, not a prompt.
+    for (said in the box). A major release is for the branch whose role moves every pin ([upkeep] move = "all",
+    moves_on()): where the role moves less, it's a line, not a prompt; a minor or patch one moves by itself wherever the
+    role moves at all.
     ``cves``: the CVEs looked up too (dev/cves.py, alongside the versions; ``images``/``local`` what Trivy looks at), and
-    judged against what's moving — r.cves; a warning, never a prompt."""
+    judged against what's moving — r.cves; a warning, never a prompt. ``move``: all, minor or none (moves(): the role's)."""
     if ROOT not in sys.path:
         sys.path.insert(0, ROOT)
     from dev import cves as cve_check
@@ -806,8 +843,9 @@ def check(apply: bool = True, fresh: bool = False, saved: bool = False, progress
         looking = threading.Thread(target=cve_look, name="upkeep CVEs", daemon=True)
         looking.start()
     found, stale = lookup(fresh, saved, progress, steps, ready)
-    majors = where != MINORS_ON
-    out = Report(stale=stale, moves_on=MINORS_ON if not majors else MOVES_ON)
+    move = moves() if move is None else move
+    majors = move == "all"
+    out = Report(stale=stale, moves_on=(where if move != "none" and where else moves_on()) or "no branch")
     plan = []  # (dep, have, newest, what): what is current, held, move, report or behind
     for d in DEPS:
         have, newest = found[d.name]
@@ -865,7 +903,7 @@ def check(apply: bool = True, fresh: bool = False, saved: bool = False, progress
         elif what == "held":
             out.lines.append(f"{d.name} {have}: {newest} is out, held by choice ({d.where})")
         elif what == "for dev":
-            out.lines.append(f"{d.name} {have}: {newest} is out — a major release, for {MOVES_ON} (never moved on {MINORS_ON})")
+            out.lines.append(f"{d.name} {have}: {newest} is out — a major release, for {moves_on() or 'no branch'} (never moved here)")
         elif what == "move":
             assert d.bump is not None
             if not d.package:
@@ -948,6 +986,23 @@ def _wrap(text: str, indent: str = "") -> list[str]:
     return textwrap.wrap(text, WIDTH, initial_indent=indent, subsequent_indent=indent, break_on_hyphens=False, break_long_words=False) or [indent]
 
 
+def verdict(state: str) -> int:
+    """The box's exit code (dev/policy.py's), from its first line and what [upkeep] holds that as: current 0; behind, cves
+    their level (4 a warning, 3 a note, 1 a failure); anything else (not checked) a note. The note beside the block's
+    title is the state's word."""
+    from dev import checks
+    from dev.progress import status
+    r = checks.levels("upkeep")
+    if state == "current":
+        return 0
+    level = (r.level(state) if r and state in ("behind", "cves") else "info") if r is not None else "warn"
+    if state in ("behind", "cves"):
+        status({"behind": "new versions upstream", "cves": "CVEs to act on"}[state])
+    else:
+        status("not checked")
+    return policy.exit_code([level])
+
+
 def box(r: Report | None, where: str | None, error: str = "") -> list[str]:
     """What devtools shows: a first line it reads — current (a green box), behind (yellow: new versions upstream), cves
     (yellow: every one current, but CVEs to act on), unknown (grey) — then the box's
@@ -1003,7 +1058,7 @@ def page(r: Report | None, where: str | None, error: str = "", step: str = "") -
     lines = box(r, where, error)
     j = r.cves if r is not None else None
     return {"kind": "upkeep", "state": lines[0], "head": lines[1], "lines": lines[2:], "where": where or "", "step": step,
-            "stale": bool(r and r.stale), "moves_on": r.moves_on if r is not None else MOVES_ON, "error": error if r is None else "",
+            "stale": bool(r and r.stale), "moves_on": r.moves_on if r is not None else moves_on(), "error": error if r is None else "",
             "deps": [dict(d) for d in r.deps] if r is not None else [], "bumped": list(r.bumped) if r is not None else [],
             "moved": list(r.moved) if r is not None else [], "prompts": list(r.prompts) if r is not None else [],
             "news": [{"name": n, "have": have, "newest": newest, "level": level, "todo": todo} for n, have, newest, level, todo in r.news] if r is not None else [],
@@ -1097,7 +1152,8 @@ def main() -> int:
         return 0
     where = branch()
     # (devtools's board looks while the tests run, DEVTOOLS_UPKEEP=look, and moves pins only once they're done: =move)
-    move = not args.report and where in (MOVES_ON, MINORS_ON) and os.environ.get("DEVTOOLS_UPKEEP") != "look"
+    allowed = moves()
+    move = not args.report and allowed != "none" and os.environ.get("DEVTOOLS_UPKEEP") != "look"
     bar = _progress(args.devtools)
     from dev.progress import (  # (on the board: the box in a line, under its bar, and what it found; _progress put the project on the path)
         detail,
@@ -1132,7 +1188,7 @@ def main() -> int:
             said(summary(None, str(e)))
             for f in found(None, str(e)):
                 issue(*f)
-            return 0
+            return verdict("not checked")
         print(f"Upstream not reached: {e}")
         return 2
     if args.devtools:
@@ -1140,17 +1196,17 @@ def main() -> int:
         detail(page(r, where, "", step))
         if os.environ.get("DEVTOOLS_UPKEEP") == "look":   # (the board's first step: what its second, once the checks pass, has to move)
             from dev.progress import result, tally, then
-            moves = len([n for n in r.news if n[3] == "minor"]) if where in (MOVES_ON, MINORS_ON) and not args.report else 0
-            then(moves)
-            if moves:
-                said(result(tally(len(DEPS), "dependency", "looked up", "dependencies", of=len(DEPS)), f"{moves} to move once the checks pass"))
+            to_move = len([n for n in r.news if n[3] == "minor"]) if allowed != "none" and not args.report else 0
+            then(to_move)
+            if to_move:
+                said(result(tally(len(DEPS), "dependency", "looked up", "dependencies", of=len(DEPS)), f"{to_move} to move once the checks pass"))
                 return 0
         said(summary(r))
         for f in found(r):   # (what's left, once: the board's Issues — the look's, when there's nothing to move after it)
             issue(*f)
-        return 0
+        return verdict(box(r, where)[0])
     if not args.report and not move:
-        print(f"(on {where or 'a copy that is not a checkout'}: reported only; versions are moved on {MOVES_ON}, and minor ones on {MINORS_ON})")
+        print(f"(on {where or 'a copy that is not a checkout'}: reported only; this role moves nothing — devtools.toml's [upkeep] move)")
     if r.stale:
         print("(upstream not reached now: the last look's answers)")
     print("\n".join(r.lines))

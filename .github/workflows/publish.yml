@@ -1,0 +1,127 @@
+name: Release
+
+# A version tag pushed (devtools.toml's [tags]: vX.Y.Z a release, vX.Y.Z-rc.N a release candidate, vX.Y.Z-beta.N a
+# preview) starts the release process: the release gate (dev/gate.py: the blocks held as the tag's phase holds them —
+# a candidate the freeze, a beta the preview's warnings; nothing runs unless [github] enabled and [gates.release]
+# github say so), then the image at that version, then a GitHub Release whose notes are the change notes written
+# since the last release (python3 dev/release.py notes), a pre-release for a candidate or a preview. After a release
+# proper, a pull request that moves __version__ on to the next X.Y.0 (python3 dev/release.py bump).
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  packages: write
+  pull-requests: write
+
+jobs:
+  gate:
+    # the release gate, as devtools.toml holds it: skipped (and blocking nothing) when the file says it's off
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7
+        with:
+          python-version: "3.15"
+      - run: npm ci --prefix dev --no-audit --no-fund
+      - run: npx --prefix dev playwright install --with-deps chromium
+      - run: python3 dev/gate.py release --ci
+
+  image:
+    needs: gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6  # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302  # v6
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/plex-cache
+          # a release: its version, X.Y and latest; a candidate or a preview: the tag alone (never latest)
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ !contains(github.ref_name, '-') }}
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: plex-cache:test
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            PLEXCACHE_CHANNEL=stable
+            PLEXCACHE_COMMIT=${{ github.sha }}
+          pull: true
+      - name: Optimizer tests inside the image
+        run: >
+          docker run --rm -v "$PWD:/src:ro" -w /src --entrypoint python plex-cache:test
+          -W ignore -m unittest -v tests.test_plexcache.FixtureTests tests.test_plexcache.OptimizerTests
+          tests.test_plexcache.CoverArtTests
+      - name: Push
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          for tag in $TAGS; do
+            docker tag plex-cache:test "$tag"
+            docker push "$tag"
+          done
+
+  release:
+    needs: image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7
+        with:
+          python-version: "3.15"
+      # the GitHub Release: the change notes since the last release as its body (what else changed, GitHub adds);
+      # a candidate or a preview is a pre-release
+      - name: GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          python3 dev/release.py notes > notes.md
+          if [[ "$TAG" == *-* ]]; then pre="--prerelease"; else pre=""; fi
+          # shellcheck disable=SC2086
+          gh release create "$TAG" --title "$TAG" --notes-file notes.md --generate-notes $pre
+
+  next-version:
+    # after a release proper: dev's work goes on as the next X.Y.0, as a pull request to look at
+    needs: release
+    if: ${{ !contains(github.ref_name, '-') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          ref: dev
+          fetch-depth: 0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7
+        with:
+          python-version: "3.15"
+      - name: Next version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          next="$(python3 dev/release.py bump)"
+          branch="next-version/$next"
+          git checkout -b "$branch"
+          git commit -am "Next version: $next (after $TAG)"
+          git push -u origin "$branch"
+          gh pr create --base dev --head "$branch" --title "Next version: $next" \
+            --body "After the release $TAG: dev's work goes on as $next (python3 dev/release.py bump)."

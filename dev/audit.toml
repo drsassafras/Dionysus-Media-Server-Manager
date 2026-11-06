@@ -29,11 +29,8 @@ exclude = []
 # The private audits repo's checkout, from this project's folder (PLEXCACHE_AUDITS, when set, wins).
 private = "../TrueNAS-Plex-Caching-audits"
 
-# The dev rule (orange only): code changed since its last audit, by any auditor, is fine until the oldest of it is
-# grace_days old or it adds up to grace_share % of the app code. Batched that way, one partial audit covers a feature.
-[dev]
-grace_days = 7
-grace_share = 10
+# (The dev rule — how long code changed since its last audit may wait, and what that's held as — is devtools.toml's
+# [audit]: grace_days, grace_share, unaudited; the release rules' level, release_rules.)
 
 # Audits are a person's by default (the audits page). An AI auditor plugin (dev/auditor_*.py) is offered too when it's
 # installed on this computer; its settings, if it needs any, are [auditors.<its id>], here or in the private rules.toml.
