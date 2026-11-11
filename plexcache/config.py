@@ -183,7 +183,7 @@ DEFAULTS: dict = {
         "base_topic": "plexcache",
         "interval": 30,  # seconds between status updates
         "report_period": "week",  # what the "last N days" sensors cover: today | week | month
-        "allow_control": True,  # accept commands (switches, buttons, numbers and selects in Home Assistant)
+        "allow_control": False,  # accept commands (switches, buttons, numbers and selects in Home Assistant): off until turned on, since anyone who can publish to the broker could send them (F-2026-044)
         "language": "en",  # names and text sent to Home Assistant (it doesn't say which language it uses)
     },
 }
@@ -579,6 +579,53 @@ def _coerce(section: str, key: str, value, current):
     raise SettingsError(M("{setting} can’t be changed", setting=where))  # anything not covered above
 
 
+# A saved secret goes only to the host it was saved for. Each keyed service: its address setting, its secret, and its
+# pin's name in tls.pins (a mirror's: plex2.servers[id] and "plex2:<id>", handled apart).
+SECRET_HOMES = (("plex", "url", "token"), ("truenas", "url", "api_key"), ("syncthing", "url", "api_key"), ("mqtt", "host", "password"))
+
+
+def _host_of(section: str, key: str, value: str) -> str:
+    """The host a service's address names, lowercased (an mqtt host as it is; a URL's hostname): "" for none."""
+    if not value:
+        return ""
+    if key == "host":
+        return value.strip("[]").lower()
+    return (urllib.parse.urlsplit(value).hostname or "").lower()
+
+
+def _keep_secrets_home(old: dict, new: dict, patch: dict) -> list[str]:
+    """A service moved to another host (its address's host changed, from blank too) loses its saved secret and its pin,
+    unless the patch gives the secret itself (a sign-in, a key typed with the address, Plex's listing of a mirror: not
+    the page's mask): nothing saved is sent to a host the user hasn't given a secret for (F-2026-035, 036). The same
+    host with another scheme or port keeps them. ``new`` is changed in place; the services moved are returned."""
+    def given(sec: str, key: str, sid: str = "") -> bool:
+        values = (patch.get(sec) or {})
+        if sid:
+            values = ((values.get("servers") or {}).get(sid) or {}) if isinstance(values.get("servers"), dict) else {}
+        v = values.get(key) if isinstance(values, dict) else None
+        return bool(v) and v != SECRET_MASK
+    moved = []
+    for sec, addr, secret in SECRET_HOMES:
+        if _host_of(sec, addr, new[sec][addr]) == _host_of(sec, addr, old[sec][addr]) or not old[sec][secret]:
+            continue
+        if given(sec, secret):
+            continue
+        new[sec][secret] = ""
+        new["tls"]["pins"].pop(sec, None)
+        moved.append(sec)
+    svs, before = new["plex2"]["servers"], old["plex2"]["servers"]
+    for sid, sv in svs.items():
+        was = before.get(sid) or {}
+        if not was.get("token") or _host_of("plex2", "url", sv.get("url") or "") == _host_of("plex2", "url", was.get("url") or ""):
+            continue
+        if given("plex2", "token", sid):
+            continue
+        sv["token"] = ""
+        new["tls"]["pins"].pop(f"plex2:{sid}", None)
+        moved.append(f"plex2:{sid}")
+    return moved
+
+
 class Settings:
     """Thread-safe settings store backed by ``<config_dir>/settings.json``."""
 
@@ -589,6 +636,7 @@ class Settings:
         # bumped by every change: what's worked out from the settings (Library Health's checks and
         # estimates, kept a little while) is worked out again, never kept past a change
         self.rev = 0
+        self.moved: list[str] = []  # (the last update's: the services whose secret it cleared, moved to another host)
         os.makedirs(config_dir, exist_ok=True)
         self._data = self._load()
         changed = False
@@ -795,8 +843,10 @@ class Settings:
             sv["token"] = SECRET_MASK if sv.get("token") else ""
         return data
 
-    def update(self, patch: dict) -> dict:
-        """Apply a partial update like ``{"warmup": {"pacing_percent": 20}}``."""
+    def update(self, patch: dict, *, api: bool = False) -> dict:
+        """Apply a partial update like ``{"warmup": {"pacing_percent": 20}}``. ``api``: the request came from the web
+        API (the page, or anyone who can reach it with the login off): the pins can't be set that way (F-2026-035), and
+        a service moved to another host loses its saved secret and pin (``moved``: see ``_keep_secrets_home``)."""
         if not isinstance(patch, dict):
             raise SettingsError(M("settings update must be an object"))
         with self._lock:
@@ -804,6 +854,8 @@ class Settings:
             for sec, values in patch.items():
                 if sec not in DEFAULTS or not isinstance(values, dict):
                     raise SettingsError(M("unknown settings section: {section}", section=str(sec)))
+                if sec == "tls" and api:  # (app-written: Trust New Certificate is the one way to change a pin, F-2026-035)
+                    raise SettingsError(M("tls.pins can’t be set here: trust a service’s new certificate from its card"))
                 for key, value in values.items():
                     if key.endswith("_set") or key == "client_id":
                         continue
@@ -817,6 +869,7 @@ class Settings:
             for sec in ("plex", "truenas", "syncthing"):  # a key is never sent unverified: the pin stands until full verification does
                 if not new[sec]["pin_tls"] and not new[sec]["verify_tls"]:
                     raise SettingsError(M("{section}: certificate pinning can only be turned off while full certificate verification is on", section=sec))
+            self.moved = _keep_secrets_home(self._data, new, patch)
             if new != self._data:
                 self.rev += 1
             self._data = new

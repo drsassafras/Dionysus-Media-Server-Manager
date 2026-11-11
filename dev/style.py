@@ -5,7 +5,7 @@
     python3 dev/style.py sample    # each of those Before (as approved) and After (now), side by side: dev/style-sample/
     python3 dev/style.py sample --before <folder>   # the Before from a folder of the approved look files
     python3 dev/style.py review    # the maintainer only, at a terminal: the sample's page with Approve buttons
-                                   # (or r on devtools's board: review --board, its output in dev/style-sample/review.log)
+                                   # (or r on callboard's board: review --board, its output in dev/style-sample/review.log)
     python3 dev/style.py approve   # the maintainer only, at a terminal: the sample's looks go into the guide
 
 The guide (dev/style-guide.json) lists each look by what it is, with what it is now:
@@ -22,14 +22,17 @@ The guide (dev/style-guide.json) lists each look by what it is, with what it is 
 * ``file <path>``: an image or font the app ships (plexcache/web's .svg files and fonts/), by its SHA-256.
 
 A look that isn't in the guide, or isn't as the guide has it, or is in the guide but gone from the code, fails
-StyleGuideTests. Only ``approve`` writes the guide, and only for a sample made of exactly the looks that differ now
-(its fingerprint is kept in the guide with the date): the maintainer sees each look before it is allowed. It asks at a
-terminal and won't run without one. Nobody else runs it or edits the guide (CLAUDE.md).
+StyleGuideTests. Only ``approve`` (and the review page's Approve buttons) writes the guide, and only for a sample made
+of exactly the looks that differ now (its fingerprint is kept in the guide with the date): the maintainer sees each look
+before it is allowed. It asks at a terminal and won't run without one. Nobody else runs it or edits the guide (CLAUDE.md).
+The one exception, the maintainer's rule: a look the sample photographed that drew exactly the same Before and After,
+in every theme and mode on every page that draws it, changes nothing anyone sees, so ``sample`` puts it in the guide
+itself (an approval recorded "on": "drew the same"); a look drawn on no demo page still waits for the maintainer.
 
 ``sample`` starts two demos (tests/demo.py, ports of their own): today's app, and the app as approved (today's with the
 approved look files over it: the copies approve keeps in git, their blob ids the guide's ``files``, or --before). It takes the pictures with Playwright (dev/style-sample.js,
 like dev/screenshots.js: ``npm ci --prefix dev && npx --prefix dev playwright install chromium``), with the progress bar the dev
-tools share (dev/progress.py): each look Before and After, cropped alike and compared pixel for pixel. It writes
+tools share (callboard/progress.py): each look Before and After, cropped alike and compared pixel for pixel. It writes
 dev/style-sample/index.html (open it in a browser): what changed on screen side by side, what's judged by its code, and,
 folded away, what drew the same; and sample.json.
 """
@@ -61,13 +64,15 @@ REVIEW = "python3 dev/style.py review"   # the one command to give the maintaine
 # date, opens the page and has the Approve buttons (approve, at a terminal, is the same without the page)
 FORMAT = 1
 sys.path.insert(0, ROOT)
-from dev import devpage, policy  # noqa: E402 — the dev tools' pages' colours, and the rules (devtools.toml)
+import dev  # noqa: E402, F401 — (puts the callboard install on the path: dev/__init__.py)
 
-# The rules (devtools.toml's [style]): what looks waiting for approval are held as.
-SCHEMA = policy.Schema("style", "Style Approval", {
+from callboard import devpage, policy  # noqa: E402 — the dev tools' pages' colours, and the rules (callboard.toml)
+
+# The rules (callboard.toml's [style]): what looks waiting for approval are held as.
+SCHEMA = policy.Schema("style", "Wardrobe", {
     "waiting": policy.Setting("level", "looks not in the style guide, waiting for approval"),
 }, "The looks the app wears, against the style guide.")
-from dev.progress import Progress, feeding, result, said, tally, then  # noqa: E402 — the dev tools' shared progress bar, and devtools's line under it
+from callboard.progress import Progress, feeding, result, said, tally, then  # noqa: E402 — the dev tools' shared progress bar, and callboard's line under it
 
 
 def _dev(name: str, file: str):
@@ -479,10 +484,11 @@ def pending(guide: dict | None = None, now: dict | None = None) -> dict:
 
 # What a sample's pictures are drawn from, besides the looks: the app (all of plexcache/: its pages, scripts and
 # translations, and the server that answers them), the demo and its fakes (the data drawn), and the tools that draw and
-# show them (the sample's code, the review page's). A sample made from any other version of these isn't the one a sample
+# show them (the sample's code, the review page's; MADE_WITH: the part of them that's the callboard install's). A sample made from any other version of these isn't the one a sample
 # made now would be, so it's made again.
 MADE_FROM = ("plexcache", "tests/demo.py", "tests/fakes.py", "tests/fixtures", "dev/style.py", "dev/style-sample.js",
-             "dev/still.js", "dev/devpage.py", "dev/decor-draws.js", "dev/i18n.py", "dev/package-lock.json")
+             "dev/still.js", "dev/decor-draws.js", "dev/i18n.py", "dev/package-lock.json")
+MADE_WITH = (devpage.__file__,)   # (and of the callboard install: the dev pages' shared code, which the review page wears)
 
 
 def made_from(before: str | None = None, root: str = ROOT) -> str:
@@ -507,6 +513,13 @@ def made_from(before: str | None = None, root: str = ROOT) -> str:
                     h.update(hashlib.sha256(f.read()).digest())
             except OSError:
                 h.update(b"-")
+    for path in MADE_WITH:
+        h.update(b"callboard/" + os.path.basename(path).encode() + b"\0")
+        try:
+            with open(path, "rb") as f:
+                h.update(hashlib.sha256(f.read()).digest())
+        except OSError:
+            h.update(b"-")
     return h.hexdigest()
 
 
@@ -565,7 +578,7 @@ def _short(s: str, n: int = 160) -> str:
 
 
 def write_guide(items: dict, approval: dict, path: str = GUIDE, before: dict | None = None):
-    """The guide with these looks, the approval added to its record. Only approve calls it."""
+    """The guide with these looks, the approval added to its record. Only approve (and approve_looks) calls it."""
     old = before if before is not None else (load_guide(path) if os.path.exists(path) else {})
     doc = {
         "about": "The style guide: every look the app may wear, each approved by the maintainer from a sample "
@@ -592,19 +605,65 @@ _STATE = re.compile(r"::?(hover|focus-visible|focus-within|focus|active|visited|
                     r"checked|disabled|first-letter|first-line|-?[a-z-]*scrollbar[a-z-]*)\b")
 
 
+# The states the sample puts an element in for its pictures (style-sample.js force): the browser's forced pseudo-classes,
+# and a form control's own properties. Another state in a selector (visited, placeholder, a scrollbar…) isn't pictured.
+FORCED = ("hover", "focus", "focus-visible", "focus-within", "active")
+PROPERTY_STATES = ("checked", "disabled", "indeterminate")
+# The settings an @media rule can be pictured in (Playwright's context options); a rule for any other isn't.
+MEDIA = {"prefers-reduced-motion:reduce": ("reducedMotion", "reduce"), "forced-colors:active": ("forcedColors", "active")}
+FRAMES = (0, 0.25, 0.5, 0.75)   # how far through each animation or transition the filmstrip's pictures are taken
+_PSEUDO = re.compile(r"::?([a-z-]+)")
+
+
+def _state_target(sel: str) -> tuple[str, list[str]] | None:
+    """A selector's element that a state is on, and the states (the compound with the first pictured state in it, its
+    states taken out: ".card:hover .btn" -> (".card", ["hover"])); None when it names none."""
+    m = re.search(r":(" + "|".join(FORCED + PROPERTY_STATES) + r")\b", sel)
+    if not m:
+        return None
+    end, depth = m.end(), 0
+    while end < len(sel) and (depth or sel[end] not in " >+~"):
+        depth += {"(": 1, ")": -1}.get(sel[end], 0)
+        end += 1
+    compound = sel[:end]
+    states = [s for s in _PSEUDO.findall(compound[compound.rfind(" ") + 1:]) if s in FORCED + PROPERTY_STATES]
+    return _STATE.sub("", compound).strip() or "body", states
+
+
 def finder(look: str, value) -> dict:
-    """How the sample finds a look on the demo's pages: by selector, by style, on the usual pages, or not at all."""
+    """How the sample finds a look on the demo's pages: by selector, by style, by the animation it names, on the usual
+    pages, or not at all; and what it's photographed in: a ``width`` an @media rule takes, the ``media`` settings it
+    takes (reduced motion, forced colours), the ``states`` its selector names (each [element, states]), and ``frames``
+    when it moves (an animation, a transition: a filmstrip of FRAMES)."""
     kind, _, rest = look.partition(" ")
     if kind == "css":
         ctx, _, sel = rest.rpartition(" | ") if " | " in rest else ("", "", rest)
+        if ctx.startswith("@keyframes"):
+            return {"how": "code"}
+        if sel.startswith("@keyframes "):
+            return {"how": "animation", "name": sel.split(" ", 1)[1].strip(), "width": 1280, "frames": list(FRAMES)}
         if sel.startswith("@") or ctx.startswith("@") and not sel:
+            return {"how": "code"}
+        if "print" in ctx:
             return {"how": "code"}
         m = re.search(r"max-width:(\d+)px", ctx)
         width = min(1280, int(m.group(1)) - 10) if m else 1280
-        if "print" in ctx:
-            return {"how": "code"}
+        media = {}
+        for feature in re.findall(r"\(([a-z-]+:[a-z-]+)\)", ctx):
+            if feature in MEDIA:
+                media[MEDIA[feature][0]] = MEDIA[feature][1]
         parts = [_STATE.sub("", p).strip() or "body" for p in sel.split(",")]
-        return {"how": "selector", "selectors": parts, "width": width}
+        out = {"how": "selector", "selectors": parts, "width": width}
+        if media:
+            out["media"] = media
+        states = [t for t in (_state_target(p) for p in sel.split(",")) if t]
+        if states:
+            out["states"] = [list(t) for t in states]
+        if re.search(r"(?:^|;)\s*(?:animation|transition)[\w-]*\s*:", str(value or "")):
+            out["frames"] = list(FRAMES)
+            if not states and re.search(r"(?:^|;)\s*transition", str(value or "")):
+                out["states"] = [[parts[0], ["hover"]]]   # (a transition shows as the element changes: hovered, here)
+        return out
     if kind == "inline":
         pat = re.escape(rest).replace(re.escape(HOLE), ".*")
         return {"how": "style", "pattern": "^" + pat + ";?$"}
@@ -792,11 +851,13 @@ def judged_by(look: str, changed_files: list[str]) -> dict:
     return {"except": ["/static/" + f[len("plexcache/web/"):] for f in changed_files] + WORDS}
 
 
-def cropped_by(look: str) -> dict | None:
-    """What of the Before a look photographed where it is is judged against: a stylesheet's rule, the approved styles
-    over today's pages and words (so the crop shows only the style changing); a look written in a page or script (its
-    markup, an inline style), the whole Before (None), since its words come with it."""
-    return {"except": WORDS} if look.startswith("css ") else None
+def cropped_by(look: str, new: bool = False) -> dict | None:
+    """What of the Before a look photographed where it is is judged against: a stylesheet's rule that was approved
+    before, the approved styles over today's pages and words (so the crop shows only the style changing); a rule that's
+    ``new``, or a look written in a page or script (its markup, an inline style), the whole Before (None). A new rule
+    over today's markup would draw that markup without any style at all (its class names nothing in the approved
+    stylesheet), not what the approved app drew there: a style moved from the markup into a class would show as lost."""
+    return {"except": WORDS} if look.startswith("css ") and not new else None
 
 
 def stands_in(rel: str, tree: str) -> str | None:
@@ -813,11 +874,14 @@ def stands_in(rel: str, tree: str) -> str | None:
     return f"{folder}/{best}" if best else None
 
 
-def _demo(root: str):
-    """The demo (tests/demo.py) of a tree, on a port of its own; (process, url) once it answers, or (process, None)."""
+def _demo(root: str, before: bool = False):
+    """The demo (tests/demo.py) of a tree, on a port of its own; (process, url) once it answers, or (process, None).
+    ``before``: the approved app's, whose policy takes inline styles as the app's did when they were approved (an older
+    approval's look files wrote style="…", which today's policy refuses: the Before would draw them unstyled)."""
     port = _free_port()
+    env = dict(os.environ, DEMO_SHOWCASE="1", **({"DEMO_INLINE_STYLES": "1"} if before else {}))
     proc = subprocess.Popen([sys.executable, os.path.join(root, "tests", "demo.py"), str(port)], cwd=root,
-                            env=dict(os.environ, DEMO_SHOWCASE="1"), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return proc, f"http://127.0.0.1:{port}"
 
 
@@ -831,17 +895,18 @@ def _answers(url: str) -> bool:
     return False
 
 
-def sample(out: str = SAMPLE, before: str | None = None) -> int:
+def sample(out: str = SAMPLE, before: str | None = None, live=None, stop=None) -> int:
     """Each look that differs from the guide, photographed before (as approved) and after (now) on the demo's pages, in
     each theme and mode, side by side; the looks that come out the same are set aside. It's made in a folder of its own
-    (out/making) and only replaces the last sample once it's done: one that fails leaves the last one as it was."""
+    (out/making) and only replaces the last sample once it's done: one that fails leaves the last one as it was.
+    ``live`` is told as it goes (review's page, open while it's made: _sample); ``stop`` set stops it."""
     import fcntl
     os.makedirs(out, exist_ok=True)
     lock = open(os.path.join(out, ".sampling"), "w")  # noqa: SIM115 — (held while it's made: one sample at a time)
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:   # (another is being made — devtools's board makes one: that one, once it's done, not another)
-        print("A sample is already being made (devtools's Style Approval, say): waiting for it.", flush=True)
+    except OSError:   # (another is being made — callboard's board makes one: that one, once it's done, not another)
+        print("A sample is already being made (callboard's Wardrobe, say): waiting for it.", flush=True)
         fcntl.flock(lock, fcntl.LOCK_EX)
         diff = pending()
         if sample_shows(diff, out) or not any(diff.values()):
@@ -851,7 +916,7 @@ def sample(out: str = SAMPLE, before: str | None = None) -> int:
     shutil.rmtree(work, ignore_errors=True)
     os.makedirs(work)
     try:
-        rc = _sample(work, before, out)
+        rc = _sample(work, before, out, live, stop)
         if rc == 0 and os.path.exists(os.path.join(work, "index.html")):
             for f in os.listdir(out):
                 if f.endswith(".png") or f in ("index.html", "sample.json", "plan.json"):
@@ -866,7 +931,10 @@ def sample(out: str = SAMPLE, before: str | None = None) -> int:
         lock.close()
 
 
-def _sample(out: str, before: str | None, shown: str) -> int:
+def _sample(out: str, before: str | None, shown: str, live=None, stop=None) -> int:
+    """The sample, made in ``out``. ``live(state)``, if given, is told what's known as it goes — {"items", "shots", "done"
+    (the ids of the looks with all their pictures), "off", "compared", "source", "fingerprint", "folder" (where their
+    pictures are)} — once the looks are known (no pictures yet), then each time more of them have all their pictures."""
     started = time.time()
     inputs = made_from(before)   # (as they are as it starts: a file changed while it draws makes it out of date)
     approved = load_guide()["looks"] if os.path.exists(GUIDE) else {}
@@ -924,11 +992,21 @@ def _sample(out: str, before: str | None, shown: str) -> int:
                             find["instead"] = was_file
                 if find["how"] == "pages":
                     find["judge"] = judged_by(look, images)
-                elif find["how"] in ("selector", "style"):
-                    find["judge"] = cropped_by(look)
+                elif find["how"] in ("selector", "style", "animation"):
+                    find["judge"] = cropped_by(look, new=state == "new")
                 items.append({"id": len(items), "state": state, "look": look, "was": was, "now": now, "find": find,
                               "side": "before" if state == "gone" and tree else "after"})
-        demos = [_demo(ROOT)] + ([_demo(tree)] if tree else [])
+        fp = fingerprint(diff)
+        source = before or ("the approved files in git (dev/style-guide.json)" if src else None)
+        told = {"items": items, "shots": {}, "done": set(), "off": off, "compared": bool(src), "source": source,
+                "fingerprint": fp, "folder": out}
+        if live:
+            live(dict(told))
+
+        def partial(shots, done):
+            if live:
+                live(dict(told, shots=shots, done=done))
+        demos = [_demo(ROOT)] + ([_demo(tree, before=True)] if tree else [])
         try:
             steps.show(f"starting the demo{'s' if len(demos) != 1 else ''} (tests/demo.py)", ticking=True)
             if not all(_answers(url) for _p, url in demos):   # (each given a minute)
@@ -943,15 +1021,22 @@ def _sample(out: str, before: str | None, shown: str) -> int:
             with open(os.path.join(out, "plan.json"), "w", encoding="utf-8") as f:
                 json.dump(plan, f, ensure_ascii=False)
             pool: list = []
-            shots = _pictures(out, steps, pool)
+            shots = _pictures(out, steps, pool, partial, stop)
             if shots is None:
                 return 1
         finally:
             for proc, _url in demos:
                 proc.terminate()
                 proc.wait(10)
-    fp = fingerprint(diff)
-    counts = _page(out, items, shots, fp, off, bool(src), before or ("the approved files in git (dev/style-guide.json)" if src else None))
+    # a look that drew exactly the same Before and After, in every theme and mode on every page that draws it, changes
+    # nothing anyone sees: it goes into the guide here, with no approval asked (the maintainer's rule); what changed what's
+    # drawn, or isn't drawn on the demo pages, still waits for the review
+    if src:
+        accepted = accept_same(items, shots, looks())
+        if accepted:
+            print(f"  {len(accepted)} look{'s' if len(accepted) != 1 else ''} drew exactly the same before and after: "
+                  "into the style guide, no approval needed.")
+    counts = _page(out, items, shots, fp, off, bool(src), source)
     # (the pictures of what differs only: a pair the same before and after isn't shown, so isn't kept)
     files = {p for ps in shots.values() for pair in ps if not (src and pair.get("same"))
              for p in (pair.get("before"), pair.get("after"), pair.get("diff")) if p}
@@ -964,7 +1049,7 @@ def _sample(out: str, before: str | None, shown: str) -> int:
                    "seen": counts["seen"], "code": counts["code"], "same": counts["same"], "shots": sorted(files),
                    "items": [{k: it[k] for k in ("id", "state", "look", "was", "now")} for it in items]}, f, indent=1)
     os.remove(os.path.join(out, "plan.json"))
-    if feeding() and pool:   # (on devtools's board: its block's bar, full, says how the sample was made)
+    if feeding() and pool:   # (on callboard's board: its block's bar, full, says how the sample was made)
         steps.workers = pool[0]
         steps.finished = f"{count} look{'s' if count != 1 else ''} · sample made with {pool[0]} worker{'s' if pool[0] != 1 else ''}"
         steps.clear()
@@ -991,16 +1076,24 @@ def _no_playwright() -> str:
     return "" if got.returncode == 0 else "node can't find it"
 
 
-def _pictures(out: str, waiting: Progress | None = None, workers: list | None = None):
+def _pictures(out: str, waiting: Progress | None = None, workers: list | None = None, partial=None, stop=None):
     """dev/style-sample.js's pictures, with the dev tools' progress bar (on ``waiting``'s, the steps before them: the
-    pages added to its count once it knows how many, one bar filled once): {item id: [pair, ...]}, or None."""
+    pages added to its count once it knows how many, one bar filled once): {item id: [pair, ...]}, or None.
+    ``partial(shots, done)`` is told each time more looks have all their pictures (review shows them as they come);
+    ``stop`` set (review's page closed while it's made) stops it: None."""
     node = subprocess.Popen(["node", os.path.join(ROOT, "dev", "style-sample.js"), out],
                             cwd=ROOT, env=dict(os.environ, NODE_PATH=_node_path()), stdout=subprocess.PIPE, text=True)
     assert node.stdout
     bar, shots, before = None, {}, 0
     for line in node.stdout:
+        if stop is not None and stop.is_set():
+            node.terminate()
+            break
         msg = json.loads(line)
-        if msg.get("total") is not None:   # (it says again once it knows which pages it needs in each look)
+        if msg.get("partial") is not None:
+            if partial:
+                partial(msg["partial"]["shots"], {int(i) for i in msg["partial"]["done"]})
+        elif msg.get("total") is not None:   # (it says again once it knows which pages it needs in each look)
             if bar:
                 bar.total = before + msg["total"]
             else:
@@ -1021,6 +1114,8 @@ def _pictures(out: str, waiting: Progress | None = None, workers: list | None = 
     code = node.wait()
     for b in {id(b): b for b in (bar, waiting) if b}.values():
         b.clear()
+    if stop is not None and stop.is_set():
+        return None
     if code:
         print("Playwright couldn't take the pictures (see above). It needs: npm ci --prefix dev && npx --prefix dev playwright install chromium",
               file=sys.stderr)
@@ -1043,8 +1138,8 @@ def sort_looks(items: list, shots: dict, compared: bool) -> dict:
             code.append(it)
             continue
         differ = [p for p in pairs if not (compared and p.get("same"))]
-        if not differ:
-            same.append(it)
+        if not differ:   # (a picture that couldn't show what it was for — a state not put on, nothing moving — isn't "the same")
+            (same if all(p.get("caught") is not False for p in pairs) else code).append(it)
             continue
         key = tuple((p["label"], p.get("before"), p.get("after")) for p in differ)
         g = groups.setdefault(key, {"pairs": differ, "items": [], "alike": []})
@@ -1148,8 +1243,25 @@ def _name(it) -> str:
 
 
 def _page(out: str, items: list, shots: dict, fp: str, off: dict | None, compared: bool, source: str | None) -> dict:
+    """The review page (page_html), written to ``out``/index.html: how many looks are seen, judged by code, the same."""
+    html, counts = page_html(items, shots, fp, off, compared, source)
+    with open(os.path.join(out, "index.html"), "w", encoding="utf-8") as f:
+        f.write(html)
+    return counts
+
+
+def _section(tag: str, cls: str, ids: str, inner: str) -> str:
+    """A change on the review page: data-v, what it shows (all but its number), so a page drawn again while the sample is
+    made keeps each change that's the same as it was, as the maintainer has it (its view, its slider: the page's merge)."""
+    v = hashlib.sha256(re.sub(r'<span class="num">\d+</span>', "", inner).encode()).hexdigest()[:12]
+    return f'<{tag} class="{cls}" data-ids="{ids}" data-v="{v}">{inner}</{tag}>'
+
+
+def page_html(items: list, shots: dict, fp: str, off: dict | None, compared: bool, source: str | None,
+              making: str | None = None, total: int | None = None, stuck: bool = False) -> tuple[str, dict]:
     """The review page: what changed on screen, Before and After side by side; then what can only be judged by its
-    code; then, folded away, what drew the same."""
+    code; then, folded away, what drew the same. While the sample is made (review), ``items`` are the looks with all
+    their pictures so far, of ``total``, and ``making`` says how it's going (``stuck``: it couldn't be made)."""
     s = sort_looks(items, shots, compared)
     seen_looks = sum(len(g["items"]) for g in s["seen"])
     parts = []
@@ -1166,8 +1278,11 @@ def _page(out: str, items: list, shots: dict, fp: str, off: dict | None, compare
                 return f'<a href="{_esc(f)}" target="_blank"><img src="{_esc(f)}" alt="{what}" loading="lazy"></a>'
             both = p.get("before") and p.get("after")
             # one view at a time, picked on a toggle: Side by side, Diff (the After with what differs marked, the rest
-            # faded, boxed), Slider (Before over After, a line dragged across) — each only where it can be drawn
-            views = [("side", "Side by side")] + ([("diff", "Diff")] if p.get("diff") else []) + ([("slider", "Slider")] if both else [])
+            # faded, boxed), Slider (Before over After, a line dragged across), Switch (Before and After full width in
+            # turn, one in the other's place: on its own every 2 s, held while the pointer's on it, a click switches) —
+            # each only where it can be drawn
+            views = [("side", "Side by side")] + ([("diff", "Diff")] if p.get("diff") else []) + \
+                ([("slider", "Slider"), ("switch", "Switch")] if both else [])
             tools = ('<span class="views" role="group" aria-label="Show">' + "".join(
                 f'<button type="button" class="vw" data-view="{v}" aria-pressed="{"true" if v == "side" else "false"}">{t}</button>'
                 for v, t in views) + "</span>") if len(views) > 1 else ""
@@ -1179,19 +1294,30 @@ def _page(out: str, items: list, shots: dict, fp: str, off: dict | None, compare
                       # (not lazy: hidden until Slider is pressed, a lazy one never loads, and these are the side by side's own files)
                       f'<img class="slb" src="{_esc(p["before"])}" alt="Before">'
                       '<span class="sll side">Before</span><span class="slr side after">After</span><span class="slx"></span></div></div>') if both else ""
+            switch = (f'<div class="switch" hidden><div class="flp" tabindex="0" role="button" data-on="before" '
+                      'aria-label="Before and After in turn (point at it to stop; click, Enter or Space to switch)">'
+                      # (not lazy, as the slider's; both in one spot, the one not showing kept invisible so nothing moves)
+                      f'<img class="swb" src="{_esc(p["before"])}" alt="Before"><img class="swa" src="{_esc(p["after"])}" alt="After">'
+                      '<span class="swl side">Before</span><span class="swh">Click to switch</span></div></div>') if both else ""
             px = (f'<span class="px">{p["px"]:,} px differ, in {p["areas"]} area{"s" if p.get("areas") != 1 else ""} '
                   '(boxed in Diff)</span>') if p.get("px") else ""
+            # (the crops couldn't be put round the look at the same spot on both sides: dev/style-sample.js shoot)
+            px += ('<span class="px warn">Not lined up: the look isn\'t at the same spot in Before and After, so the '
+                   'difference may be only where it was cropped</span>') if p.get("aligned") is False else ""
             rows.append(f'<div class="pair"><div class="where">{_esc(p["label"])}{px}{tools}</div>'
-                        f'<div class="ba"><figure><figcaption class="side">Before</figcaption>{img(p.get("before"), "Before")}</figure>'
+                        f'<div class="ba" title="Click to swap Before and After (Cmd- or Ctrl-click a picture to open it)">'
+                        f'<span class="bah">Click to swap</span><figure><figcaption class="side">Before</figcaption>{img(p.get("before"), "Before")}</figure>'
                         f'<figure><figcaption class="side after">After</figcaption>{img(p.get("after"), "After")}</figure></div>'
-                        f'{diffview}{slider}</div>')
+                        f'{diffview}{slider}{switch}</div>')
         alike = f'<p class="alike">The same before and after in: {_esc(", ".join(g["alike"]))}.</p>' if g["alike"] else ""
         looks_list = "".join(f'<details class="look"><summary>{_name(it)}</summary>{_code(it)}</details>' for it in g["items"])
-        parts.append(f'<section class="change" data-ids="{_ids(g["items"])}"><h3><span class="num">{n}</span>{title}{_ok(g["items"])}</h3>{"".join(rows)}{alike}'
-                     f'<details class="why"><summary>What changed in the code ({len(g["items"])})</summary>{looks_list}</details></section>')
-    code = "".join(f'<section class="change" data-ids="{it["id"]}"><h3>{_name(it)}{_ok([it])}</h3>{_code(it)}</section>' for it in s["code"])
-    same = "".join(f'<section class="change" data-ids="{it["id"]}"><h3>{_name(it)} <span class="px">No visible change</span>{_ok([it])}</h3>'
-                   f'<details class="why"><summary>What changed in the code</summary>{_code(it)}</details></section>' for it in s["same"])
+        parts.append(_section("section", "change", _ids(g["items"]), f'<h3><span class="num">{n}</span>{title}{_ok(g["items"])}</h3>{"".join(rows)}{alike}'
+                              f'<details class="why"><summary>What changed in the code ({len(g["items"])})</summary>{looks_list}</details>'
+                              # (its Approve again at its foot: once its pictures are looked over, no scrolling back up)
+                              f'<div class="okfoot">{_ok(g["items"])}</div>'))
+    code = "".join(_section("section", "change", str(it["id"]), f'<h3>{_name(it)}{_ok([it])}</h3>{_code(it)}') for it in s["code"])
+    same = "".join(_section("section", "change", str(it["id"]), f'<h3>{_name(it)} <span class="px">No visible change</span>{_ok([it])}</h3>'
+                            f'<details class="why"><summary>What changed in the code</summary>{_code(it)}</details>') for it in s["same"])
     note = ""
     if not compared:
         note = ('<p class="warn">There\'s no Before to compare with, so this shows each look as it is now. approve keeps '
@@ -1208,36 +1334,36 @@ def _page(out: str, items: list, shots: dict, fp: str, off: dict | None, compare
             why = (f"The Before ({_esc(source)}) differs from the style guide in {k} look{'s' if k != 1 else ''}, so those "
                    "may not show exactly as approved.")
         note = f'<details class="warn"><summary>{why}</summary><ul>{listing}</ul></details>'
-    total = len(items)
+    total = len(items) if total is None else total
     n_pics = sum(len(g["pairs"]) for g in s["seen"])
     pics = f" ({n_pics} picture{'s' if n_pics != 1 else ''} to compare)" if n_pics else ""
     summary = (f'<div class="sum"><div><b>{seen_looks}</b> look{"s" if seen_looks != 1 else ""} changed what you see'
                f'{pics}</div>'
                f'<div><b>{len(s["code"])}</b> aren\'t drawn on the demo pages: judge by the code</div>'
                f'<div><b>{len(s["same"])}</b> drew exactly the same before and after</div></div>') if compared else ""
-    body = ("<h1>Style review</h1>"
+    body = ("<h1>Wardrobe</h1>"
             f"<p class=\"lead\">{total} look{'s' if total != 1 else ''} differ from the style guide. Each change is shown "
             "<b>Before</b> (as approved) and <b>After</b> (now), side by side, in Classic and Dionysus, light and dark, "
-            "only where it looks different.</p>" + summary + note + _REVIEW_BAR +
+            "only where it looks different.</p>" +
+            (f'<p class="making{" stuck" if stuck else ""}" role="status">{_esc(making)}</p>' if making else "") + summary + note +
+            _REVIEW_BAR.replace('<div class="bar">', f'<div class="bar" data-all="{total}">', 1) +
             (f"<div class=\"part\"><h2>Changed on screen</h2>{''.join(parts)}</div>" if parts else
-             ("<h2>Changed on screen</h2><p class=\"none\">Nothing on the demo pages looks different.</p>" if compared else "")) +
+             ("<h2>Changed on screen</h2><p class=\"none\">Nothing on the demo pages looks different.</p>" if compared and not making else "")) +
             (f"<div class=\"part\"><h2>Not drawn on the demo pages</h2><p class=\"none\">These only show in a state the demo doesn't open in "
              f"(a hover, a print, an animation). Before and After are their code.</p>{code}</div>" if code else "") +
-            (f"<div class=\"part\"><h2>No visible change</h2><div class=\"change bare\" data-ids=\"{_ids(s['same'])}\">"
+            ("<div class=\"part\"><h2>No visible change</h2>" + _section("div", "change bare", _ids(s['same']),
              f"{_ok(s['same'], 'Approve these ' + str(len(s['same'])))}<details class=\"same\"><summary>{len(s['same'])} look{'s' if len(s['same']) != 1 else ''} "
              "whose code changed but which drew exactly the same, pixel for pixel, everywhere they're seen: nothing to "
-             f"look at, so no pictures.</summary>{same}</details></div></div>" if same else "") +
+             f"look at, so no pictures.</summary>{same}</details>") + "</div>" if same else "") +
             f"<p class=\"foot\">To approve them, the maintainer runs <code>{REVIEW}</code> at a terminal. "
             f"Fingerprint {fp}</p>")
     html = ("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-            "<title>Style review</title><style>" + _CSS + _swatches(body) + "</style></head><body><main>" + body +
+            "<title>Wardrobe</title><style>" + _CSS + _swatches(body) + "</style></head><body><main>" + body +
             "</main><script>" + _JS + "</script></body></html>")
-    with open(os.path.join(out, "index.html"), "w", encoding="utf-8") as f:
-        f.write(html)
-    return {"seen": seen_looks, "code": len(s["code"]), "same": len(s["same"])}
+    return html, {"seen": seen_looks, "code": len(s["code"]), "same": len(s["same"])}
 
 
-_CSS = (devpage.THEME + devpage.BASE +   # (the dev tools' pages' colours: dev/devpage.py)
+_CSS = (devpage.THEME + devpage.BASE +   # (the dev tools' pages' colours: callboard/devpage.py)
         "main{max-width:1500px;margin:0 auto;padding:20px 16px 40px}h1{margin:0 0 6px;font-size:26px}"
         "h2{font-size:19px;margin:28px 0 10px}.lead{margin:0 0 14px;max-width:80ch}"
         ".sum{display:flex;flex-wrap:wrap;gap:10px;margin:0 0 14px}.sum div{background:var(--card);border:1px solid var(--line);"
@@ -1247,7 +1373,10 @@ _CSS = (devpage.THEME + devpage.BASE +   # (the dev tools' pages' colours: dev/d
         ".num{display:inline-grid;place-items:center;min-width:26px;height:26px;border-radius:99px;background:var(--ink);"
         "color:var(--card);font-size:13px}"
         ".pair{margin:0 0 14px}.where{font-weight:600;font-size:13px;color:var(--mute);margin:0 0 6px;display:flex;gap:10px;"
-        "align-items:center;flex-wrap:wrap}.ba{display:grid;grid-template-columns:1fr 1fr;gap:12px}"
+        "align-items:center;flex-wrap:wrap}.ba{position:relative;display:grid;grid-template-columns:1fr 1fr;gap:12px;cursor:pointer}"
+        ".ba.swapped figure:first-of-type{order:2}"
+        ".bah{position:absolute;top:0;right:0;z-index:1;font-size:12px;background:var(--ink);color:var(--card);border-radius:99px;"
+        "padding:2px 10px;opacity:0;transition:opacity .15s;pointer-events:none}.ba:hover .bah{opacity:1}"
         "@media (max-width:760px){.ba{grid-template-columns:1fr}}figure{margin:0;min-width:0}"
         "figure img{display:block;width:100%;height:auto;border:1px solid var(--line);border-radius:6px;background:#fff}"
         ".side{display:inline-block;font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;"
@@ -1255,6 +1384,7 @@ _CSS = (devpage.THEME + devpage.BASE +   # (the dev tools' pages' colours: dev/d
         ".side.after{background:var(--after-bg);color:var(--after)}"
         ".nopic{border:1px dashed var(--line);border-radius:6px;padding:24px;color:var(--mute);text-align:center;font-style:italic}"
         ".px{font-size:12px;color:var(--mute);font-weight:400;margin:0 8px}"
+        ".px.warn{color:var(--gone);font-weight:600}"
         ".views{display:inline-flex;border:1px solid var(--line);border-radius:99px;overflow:hidden}"
         ".vw{font:inherit;font-size:12px;border:0;border-left:1px solid var(--line);background:var(--code);color:var(--ink);"
         "padding:2px 12px;cursor:pointer}.vw:first-child{border-left:0}.vw[aria-pressed=true]{background:var(--ink);color:var(--card)}"
@@ -1264,6 +1394,13 @@ _CSS = (devpage.THEME + devpage.BASE +   # (the dev tools' pages' colours: dev/d
         ".sl img{display:block;width:100%;height:auto;pointer-events:none}.sl .slb{position:absolute;inset:0;clip-path:inset(0 50% 0 0)}"
         ".slx{position:absolute;top:0;bottom:0;left:50%;width:2px;margin-left:-1px;background:var(--ink);box-shadow:0 0 0 1px var(--card);pointer-events:none}"
         ".sll,.slr{position:absolute;top:8px;margin:0;pointer-events:none}.sll{left:8px}.slr{right:8px}"
+        ".flp{position:relative;display:grid;grid-template-columns:minmax(0,1fr);border:1px solid var(--line);border-radius:6px;overflow:hidden;background:#fff;cursor:pointer}"
+        ".flp img{grid-area:1/1;display:block;width:100%;height:auto;pointer-events:none}"
+        ".flp[data-on=before] .swa,.flp[data-on=after] .swb{visibility:hidden}"
+        ".swl{position:absolute;top:8px;left:8px;margin:0;pointer-events:none}"
+        ".swh{position:absolute;top:8px;right:8px;font-size:12px;background:var(--ink);color:var(--card);border-radius:99px;"
+        "padding:2px 10px;opacity:0;transition:opacity .15s;pointer-events:none}"
+        ".flp:hover .swh,.flp:focus-visible .swh,.flp.still .swh{opacity:1}"
         ".stalenote{background:var(--before-bg);color:var(--ink);border-radius:8px;padding:8px 12px;margin:0 0 10px}"
         ".ok{font:inherit;font-size:13px;font-weight:600;border:0;border-radius:99px;padding:4px 14px;cursor:pointer;"
         "background:var(--after);color:var(--card);margin-left:auto}.ok:disabled{opacity:.5}.ok.all{margin:0}"
@@ -1285,37 +1422,47 @@ _CSS = (devpage.THEME + devpage.BASE +   # (the dev tools' pages' colours: dev/d
         "code{font-size:13px;word-break:break-word}.sw{display:inline-block;width:28px;height:28px;border-radius:6px;"
         "border:1px solid var(--mute);vertical-align:middle;margin:0 8px 5px}"
         ".none{color:var(--mute)}.warn{background:var(--before-bg);color:var(--ink);border-radius:10px;padding:10px 14px}"
-        ".foot{color:var(--mute);font-size:13px;margin-top:28px;word-break:break-all}")
+        ".foot{color:var(--mute);font-size:13px;margin-top:28px;word-break:break-all}"
+        # (the sample on its way, review's page open while it's made: what's ready so far, and a spinner — still, with
+        # reduced motion asked for; red once it couldn't be made)
+        ".making{background:var(--after-bg);color:var(--ink);border-radius:10px;padding:10px 14px;font-weight:600;max-width:80ch}"
+        ".making:not(.stuck)::before{content:\"\";display:inline-block;width:12px;height:12px;margin-right:9px;vertical-align:-1px;"
+        "border:2px solid var(--after);border-right-color:transparent;border-radius:50%;animation:making 1s linear infinite}"
+        ".okfoot{display:flex;justify-content:flex-end;margin-top:12px}"
+        ".making.stuck{background:var(--gone-bg);color:var(--gone)}@keyframes making{to{transform:rotate(360deg)}}"
+        "@media (prefers-reduced-motion:reduce){.making::before{animation:none}}")
 
 _JS = ("var R=window.REVIEW;if(R){document.querySelectorAll('.ok,.online').forEach(function(x){x.hidden=false});"
        "document.querySelector('.offline').hidden=true;}"
        # (the tally: green, the looks approved; orange, the ones left; and once none are left, all of it says so in green)
        "function idsOf(cs){var s={};[].forEach.call(cs,function(c){c.dataset.ids.split(',').filter(Boolean).forEach(function(i){s[i]=1})});return s;}"
-       "var ALL=Object.keys(idsOf(document.querySelectorAll('.change[data-ids]'))).length;"
-       "function left(){if(!R)return;var n=Object.keys(idsOf(document.querySelectorAll('.change[data-ids]'))).length;"
+       "var ALL=Object.keys(idsOf(document.querySelectorAll('.change[data-ids]'))).length,DONE={};"
+       # (every look, the bar says: those still on their way too, while the sample's made; the ones approved here, DONE)
+       "function left(){if(!R)return;var b=document.querySelector('.bar[data-all]');if(b)ALL=Number(b.dataset.all);"
+       "var n=Math.max(0,ALL-Object.keys(DONE).length);"
        "document.querySelector('.pill.good').textContent=(ALL-n)+' approved';"
        "var l=document.querySelector('.pill.left');l.textContent=n+' remaining';l.hidden=!n;"
        "document.querySelectorAll('.part').forEach(function(p){p.hidden=!p.querySelector('.change[data-ids]')});"
-       "if(!n){document.querySelector('.alldone b').textContent='All '+ALL+' looks approved.';"
+       "if(!n&&!document.querySelector('.making')){document.querySelector('.alldone b').textContent='All '+ALL+' looks approved.';"
        "document.querySelector('.alldone').hidden=false;"
        "document.querySelectorAll('.online,.lead,.sum,.warn,.foot').forEach(function(x){x.hidden=true});}}"
        "left();"
        "function gone(done){document.querySelectorAll('.change[data-ids]').forEach(function(c){"
        "if(c.dataset.ids.split(',').filter(Boolean).every(function(i){return done[i]}))c.remove();});}"
-       "if(R&&R.done&&R.done.length){var was={};R.done.forEach(function(i){was[i]=1});gone(was);left();}"
+       "if(R&&R.done&&R.done.length){R.done.forEach(function(i){DONE[i]=1});gone(DONE);left();}"
        "document.addEventListener('click',function(e){var a=e.target.closest('.ok');if(!a||!R)return;"
        "var ids=a.classList.contains('all')?[].concat.apply([],[].map.call(document.querySelectorAll('.change[data-ids]'),"
        "function(c){return c.dataset.ids.split(',')})):a.dataset.ids.split(',');"
        "ids=ids.filter(Boolean).map(Number);a.disabled=true;var msg=document.querySelector('.msg');msg.textContent='Approving…';"
        "fetch('/approve',{method:'POST',headers:{'Content-Type':'application/json','X-Page-Token':R.token},"
        "body:JSON.stringify({ids:ids})}).then(function(r){return r.json()}).then(function(d){"
-       "var done={};d.approved.forEach(function(i){done[i]=1});"
+       "var done={};d.approved.forEach(function(i){done[i]=1;DONE[i]=1});"
        "gone(done);"
        "var bad=Object.keys(d.refused||{});"
        # (a change whose code moved on since the sample: said on it, its Approve off, until a new sample)
        "document.querySelectorAll('.change[data-ids]').forEach(function(c){"
        "if(c.dataset.ids.split(',').some(function(i){return d.refused&&d.refused[i]})){"
-       "c.classList.add('stale');var k=c.querySelector('.ok');if(k){k.disabled=true;k.textContent='Changed since this sample';}"
+       "c.classList.add('stale');c.querySelectorAll('.ok').forEach(function(k){k.disabled=true;k.textContent='Changed since this sample';});"
        "if(!c.querySelector('.stalenote')){var n=document.createElement('p');n.className='stalenote';"
        "n.textContent='Its code has changed since this sample was made, so what you see here is not what it looks like now. '"
        "+'To see it as it is now, close this page and run: python3 dev/style.py review';c.insertBefore(n,c.children[1]||null);}}});"
@@ -1327,14 +1474,44 @@ _JS = ("var R=window.REVIEW;if(R){document.querySelectorAll('.ok,.online').forEa
        # (the looks with no visible change: listed open, each with its code)
        "document.querySelectorAll('details.same').forEach(function(d){d.open=true;});"
        "function pairs(x){var c=x.closest('.change');return c?[].slice.call(c.querySelectorAll('.pair')):[x.closest('.pair')];}"
+       # (every control of a pair's views — the view picked, the slider's line, Switch's side, and waiting on their
+       # pictures — does what it does to each of its change's pairs through this one, never to the one clicked alone:
+       # every theme under the change's Approve button moves together. StyleGuideTests holds every control to it)
+       "function allThemes(x,fn){pairs(x).forEach(fn);}"
        # (the toggle: one view of each pair — Side by side, Diff or Slider; a pair without that view keeps side by side)
-       "document.addEventListener('click',function(e){var b=e.target.closest('.vw');if(!b)return;var v=b.dataset.view;"
-       "pairs(b).forEach(function(pair){var has=pair.querySelector('.vw[data-view=\"'+v+'\"]'),w=has?v:'side';"
+       # (the button clicked stays where it was on the screen: the other themes' pairs above it change height with it,
+       # and so do pictures still loading, so the page is scrolled to keep it put, and again as each of them loads)
+       "function hold(b,y){var until=Date.now()+3000,fix=function(){if(Date.now()>until)return;"
+       "var d=b.getBoundingClientRect().top-y;if(Math.abs(d)>=0.5)window.scrollBy(0,d);};fix();"
+       "allThemes(b,function(pair){pair.querySelectorAll('img').forEach(function(i){if(!i.complete)i.addEventListener('load',fix,{once:true});});});}"
+       "document.addEventListener('click',function(e){var b=e.target.closest('.vw');if(!b)return;var v=b.dataset.view,y=b.getBoundingClientRect().top;"
+       "allThemes(b,function(pair){var has=pair.querySelector('.vw[data-view=\"'+v+'\"]'),w=has?v:'side';"
        "pair.querySelectorAll('.vw').forEach(function(k){k.setAttribute('aria-pressed',k.dataset.view===w?'true':'false')});"
        "pair.querySelector('.ba').hidden=w!=='side';"
        "var d=pair.querySelector('.diffview');if(d)d.hidden=w!=='diff';"
-       "var s=pair.querySelector('.slider');if(s)s.hidden=w!=='slider';});});"
-       "function slide(box,v){pairs(box).forEach(function(pair){var b=pair.querySelector('.slider');if(!b)return;"
+       "var s=pair.querySelector('.slider');if(s)s.hidden=w!=='slider';"
+       "var sw=pair.querySelector('.switch');if(sw)sw.hidden=w!=='switch';});hold(b,y);});"
+       # (Switch: Before and After in turn every 2 s, but not a change the pointer or the keyboard is on, which a click,
+       # Enter or Space switches; with reduced motion asked for, none switches on its own: each says click to switch.
+       # Like every view's controls, it acts on all of its change's pairs at once, every theme under its Approve button)
+       "function flip(x){var on=x.dataset.on==='before'?'after':'before';"
+       "allThemes(x,function(pair){var sw=pair.querySelector('.flp');if(!sw)return;var l=sw.querySelector('.swl');sw.dataset.on=on;"
+       "l.textContent=on==='before'?'Before':'After';l.className='swl side'+(on==='after'?' after':'');});}"
+       "var still=window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches;"
+       "if(still)document.querySelectorAll('.flp').forEach(function(sw){sw.classList.add('still');});"
+       "else setInterval(function(){var done=[];document.querySelectorAll('.switch:not([hidden]) .flp').forEach(function(sw){"
+       "var c=sw.closest('.change')||sw,busy=false;if(done.indexOf(c)>=0)return;done.push(c);"
+       "allThemes(sw,function(pair){var f=pair.querySelector('.flp');if(f&&(f.matches(':hover')||f.matches(':focus-visible')))busy=true;});"
+       "if(!busy)flip(sw);});},2000);"
+       "document.addEventListener('click',function(e){var sw=e.target.closest('.flp');if(sw)flip(sw);});"
+       # (Side by side: a click swaps Before and After round, on every theme of the change; Cmd-, Ctrl- or Shift-click,
+       # or the middle button, still opens the picture)
+       "function swap(x){var on=!x.classList.contains('swapped');allThemes(x,function(pair){pair.querySelector('.ba').classList.toggle('swapped',on);});}"
+       "document.addEventListener('click',function(e){var ba=e.target.closest('.ba');if(!ba||e.metaKey||e.ctrlKey||e.shiftKey||e.button)return;"
+       "e.preventDefault();swap(ba);});"
+       "document.addEventListener('keydown',function(e){var sw=e.target.closest&&e.target.closest('.flp');"
+       "if(!sw||(e.key!=='Enter'&&e.key!==' '))return;e.preventDefault();flip(sw);});"
+       "function slide(box,v){allThemes(box,function(pair){var b=pair.querySelector('.slider');if(!b)return;"
        "var sl=b.querySelector('.sl');sl.setAttribute('aria-valuenow',Math.round(v));"
        "sl.querySelector('.slb').style.clipPath='inset(0 '+(100-v)+'% 0 0)';sl.querySelector('.slx').style.left=v+'%';});}"
        "document.addEventListener('keydown',function(e){var sl=e.target.closest&&e.target.closest('.sl');if(!sl)return;"
@@ -1346,7 +1523,38 @@ _JS = ("var R=window.REVIEW;if(R){document.querySelectorAll('.ok,.online').forEa
        "e.preventDefault();sl.setPointerCapture(e.pointerId);sl.dataset.drag='1';at(sl,e);});"
        "document.addEventListener('pointermove',function(e){var sl=e.target.closest('.sl');if(sl&&sl.dataset.drag)at(sl,e);});"
        "['pointerup','pointercancel'].forEach(function(n){document.addEventListener(n,function(e){var sl=e.target.closest('.sl');"
-       "if(sl)delete sl.dataset.drag;});});")
+       "if(sl)delete sl.dataset.drag;});});"
+       # (while the sample's made — review, with make — the page asks /live how it's going, and once there's more it
+       # draws itself again from the page as it is now: every change that's the same as it was (data-v) kept as it is,
+       # with its view, its slider, Switch's side, where it's scrolled; the rest, new. Nothing here acts on a pair: the
+       # views' controls above, through allThemes, do what they did)
+       "function ready(){if(R){document.querySelectorAll('.ok,.online').forEach(function(x){x.hidden=false});"
+       "var o=document.querySelector('.offline');if(o)o.hidden=true;}"
+       "document.querySelectorAll('details.same').forEach(function(d){d.open=true;});"
+       "if(still)document.querySelectorAll('.flp').forEach(function(sw){sw.classList.add('still');});}"
+       "function redraw(html){var main=document.querySelector('main'),got=new DOMParser().parseFromString(html,'text/html').querySelector('main');"
+       "if(!main||!got)return;var fresh=document.importNode(got,true),was={},anchor=null,top=0;"
+       "main.querySelectorAll('[data-v]').forEach(function(c){was[c.dataset.v]=c;"
+       "if(!anchor&&c.getBoundingClientRect().bottom>0){anchor=c;top=c.getBoundingClientRect().top;}});"
+       "[].slice.call(fresh.querySelectorAll('[data-v]')).forEach(function(c){var o=was[c.dataset.v];if(!o||!fresh.contains(c))return;"
+       "var n=c.querySelector('.num'),m=o.querySelector('.num');if(n&&m)m.textContent=n.textContent;c.replaceWith(o);});"
+       "main.replaceChildren.apply(main,[].slice.call(fresh.childNodes));ready();gone(DONE);left();"
+       "if(anchor&&main.contains(anchor)){var d=anchor.getBoundingClientRect().top-top;if(Math.abs(d)>=0.5)window.scrollBy(0,d);}}"
+       # (a change new to the page comes onto it with its pictures: they're loaded first, so none shows as an empty card —
+       # each given 20 s, then it's drawn all the same)
+       "function loaded(html){var doc=new DOMParser().parseFromString(html,'text/html'),have={},srcs=[];"
+       "document.querySelectorAll('[data-v]').forEach(function(c){have[c.dataset.v]=1;});"
+       "doc.querySelectorAll('main [data-v]').forEach(function(c){if(have[c.dataset.v])return;"
+       "c.querySelectorAll('img').forEach(function(i){var u=i.getAttribute('src');if(u&&srcs.indexOf(u)<0)srcs.push(u);});});"
+       "return Promise.all(srcs.map(function(u){return new Promise(function(ok){var i=new Image(),t=setTimeout(ok,20000);"
+       "i.onload=i.onerror=function(){clearTimeout(t);ok();};i.src=u;});}));}"
+       "var V=R&&R.v||0;"
+       "function poll(){if(!R||!document.querySelector('.making:not(.stuck)'))return;"
+       "fetch('/live',{headers:{'X-Page-Token':R.token}}).then(function(r){return r.json()}).then(function(d){"
+       "if(d.v===V)return setTimeout(poll,1000);"
+       "return fetch('/').then(function(r){return r.text()}).then(function(h){return loaded(h).then(function(){V=d.v;redraw(h);setTimeout(poll,300);});});"
+       "}).catch(function(){setTimeout(poll,3000);});}"
+       "poll();")
 
 
 # ------------------------------------------------------------------ approving
@@ -1393,9 +1601,56 @@ def approve(out: str = SAMPLE, ask=input, terminal: bool | None = None, guide_pa
     return 0
 
 
-def approve_looks(items: list, ids, now: dict, guide_path: str = GUIDE, keep=None) -> tuple[list, dict]:
-    """Some of a sample's looks into the guide (the review page's Approve buttons): each only if it still differs
-    from the guide exactly as the sample showed it. (approved ids, {refused id: why})."""
+# What the sample's pictures can't show: a state it can't put an element in (visited, a placeholder, a scrollbar…: the
+# ones it can are FORCED and PROPERTY_STATES), a rule for a screen or setting it can't take (@supports, print, an @media
+# other than a width or MEDIA), and what only behaves (the cursor, what can be clicked or selected). Motion is pictured
+# as a filmstrip (finder's frames), a state forced on (style-sample.js force), a width or setting taken for its rule.
+STILL_PSEUDO = {"::before", "::after", ":first-child", ":last-child", ":first-of-type", ":last-of-type", ":nth-child",
+                ":nth-last-child", ":nth-of-type", ":only-child", ":not", ":is", ":where", ":has", ":root", ":empty", ":scope",
+                *(":" + s for s in FORCED + PROPERTY_STATES)}
+UNSEEN_PROPS = re.compile(r"(?:^|[;\s\"'{])(?:cursor|will-change|pointer-events|user-select|caret-color|"
+                          r"scroll-[\w-]+|touch-action)\s*:|<animate|<set\b", re.I)
+
+
+def stills_show(item: dict) -> bool:
+    """Whether a change to this look is all in what the sample's pictures show, so the same pictures before and after
+    mean it changed nothing anyone sees (accept_same): its states forced on, its width or setting taken, what moves
+    as a filmstrip. Never for a theme's colour, a decoration's code or a script's style (the pictures show only what the
+    demo's pages use of them), a state or a rule for a screen or setting the sample can't take, or a style that only
+    behaves. The pictures themselves must show it too (style-sample.js: caught; sort_looks)."""
+    look = str(item.get("look") or "")
+    kind = look.split(" ", 1)[0]
+    if kind not in ("css", "inline", "svg", "file"):
+        return False
+    if kind == "css":
+        ctx, _, sel = look[4:].rpartition(" | ") if " | " in look else ("", "", look[4:])
+        if sel.startswith("@") and not sel.startswith("@keyframes "):
+            return False
+        for media in re.findall(r"\(([^()]*)\)", ctx) if ctx else []:
+            m = re.fullmatch(r"(max|min)-width:(\d+)px", media)
+            if (not m and media not in MEDIA) or (m and m.group(1) == "min" and int(m.group(2)) > 1280):
+                return False   # (the pictures are 1280 wide, or as narrow as a max-width takes)
+        if ctx and (not ctx.startswith("@media") or set(re.sub(r"\([^()]*\)", " ", ctx[6:]).split()) - {"and", "screen", "all"}):
+            return False   # (print, or another medium the pictures aren't of)
+        if any(p not in STILL_PSEUDO for p in re.findall(r"::?[a-z-]+", sel.split(" ", 1)[1] if sel.startswith("@") else sel)):
+            return False
+    text = look + " " + " ".join(str(item.get(k) or "") for k in ("was", "now"))
+    return not UNSEEN_PROPS.search(text)
+
+
+def accept_same(items: list, shots: dict, now: dict, guide_path: str = GUIDE, keep=None) -> list:
+    """The looks a sample photographed that drew exactly the same Before and After everywhere (sort_looks's "same"):
+    into the guide with no approval asked, as the maintainer ruled — they change nothing anyone sees. Not a look drawn on
+    no demo page (sort_looks's "code"), nor one whose change a still picture can't show (stills_show): those still wait
+    for the maintainer. The ids taken in."""
+    same = [it["id"] for it in sort_looks(items, shots, True)["same"] if stills_show(it)]
+    return approve_looks(items, same, now, guide_path, keep, on="drew the same")[0] if same else []
+
+
+def approve_looks(items: list, ids, now: dict, guide_path: str = GUIDE, keep=None, on: str = "review page") -> tuple[list, dict]:
+    """Some of a sample's looks into the guide (the review page's Approve buttons; or, ``on`` "drew the same", the
+    sample's own for what drew exactly the same before and after): each only if it still differs from the guide exactly
+    as the sample showed it. (approved ids, {refused id: why})."""
     before = load_guide(guide_path) if os.path.exists(guide_path) else {}
     looks_ = dict(before.get("looks", {}))
     diff = compare(looks_, now)
@@ -1422,7 +1677,7 @@ def approve_looks(items: list, ids, now: dict, guide_path: str = GUIDE, keep=Non
     if done:
         fp = fingerprint({st: {it["look"]: diff[it["state"]][it["look"]] for it in (by_id[i] for i in done) if it["state"] == st}
                           for st in ("new", "changed", "gone")})
-        write_guide(looks_, {"date": datetime.date.today().isoformat(), "sample": fp, "looks": len(done), "on": "review page"},
+        write_guide(looks_, {"date": datetime.date.today().isoformat(), "sample": fp, "looks": len(done), "on": on},
                     guide_path, before)
         if not any(compare(looks_, now).values()):   # all of it approved: the app as it is now is the next Before
             if keep is None and guide_path == GUIDE:
@@ -1432,54 +1687,74 @@ def approve_looks(items: list, ids, now: dict, guide_path: str = GUIDE, keep=Non
     return sorted(done + already), refused
 
 
-IDLE = 3600   # seconds the review page waits unused before it closes (opened from devtools's board, there's no Ctrl-C)
+IDLE = 3600   # seconds the review page waits unused before it closes (opened from callboard's board, there's no Ctrl-C)
 
 
 def review(out: str = SAMPLE, terminal: bool | None = None, open_browser: bool = True, guide_path: str = GUIDE,
-           ready=None, log: str | None = None, idle: float = IDLE, gone: tuple[float, float] = (3.0, 10.0), step: bool = False) -> int:
+           ready=None, log: str | None = None, idle: float = IDLE, gone: tuple[float, float] = (3.0, 10.0), step: bool = False,
+           make=None) -> int:
     """The sample's page with Approve buttons, served to this computer only (127.0.0.1) while it runs: Approve all, or a
     change at a time, and what's approved leaves the page. Like approve: only at a terminal, and only for looks as the
     sample showed them. It closes once everything is approved, once its page is closed (each open tab beats every 2 s and
     says goodbye as it goes: ``gone`` is how long after a goodbye — a reload comes back sooner — and how long without a beat
     it stops), or after an hour unused (the beats don't count as using it: a tab left open and forgotten doesn't keep it
-    open for ever). With log (devtools's board, the
-    r key: the board is on the terminal), what it says goes to that file instead."""
+    open for ever). With log (callboard's board, the
+    r key: the board is on the terminal), what it says goes to that file instead. With ``make`` (main's, when the sample
+    doesn't show what's waiting: ``make(live, stop)`` makes it, sample's), the page opens at once and the sample is made
+    while it's open: each change shows on it as soon as all its pictures are taken (the page asks /live, and draws
+    itself again keeping what's the same), and closing the page stops it."""
     terminal = (sys.stdin.isatty() and sys.stdout.isatty()) if terminal is None else terminal
     if not terminal:
         print("review is the maintainer's, at a terminal, and won't run without one.", file=sys.stderr)
         return 2
-    try:
-        with open(os.path.join(out, "sample.json"), encoding="utf-8") as f:
-            made = json.load(f)
-        with open(os.path.join(out, "index.html"), encoding="utf-8") as f:
-            page = f.read()
-    except (OSError, ValueError):
-        made, page = {}, ""
-    if not page or "items" not in made:
-        print(f"There's no sample to review, and no look waits for approval (when one does, {REVIEW} makes it).", file=sys.stderr)
-        return 1
-    # its pictures, as they were when it opened: a sample made again meanwhile (devtools's board, say) replaces the
-    # folder's, and the page open here would lose its own
+    def made_in(folder):
+        try:
+            with open(os.path.join(folder, "sample.json"), encoding="utf-8") as f:
+                made = json.load(f)
+            with open(os.path.join(folder, "index.html"), encoding="utf-8") as f:
+                page = f.read()
+        except (OSError, ValueError):
+            return {}, ""
+        return made, page
+    if make is None:
+        made, page = made_in(out)
+        if not page or "items" not in made:
+            print(f"There's no sample to review, and no look waits for approval (when one does, {REVIEW} makes it).", file=sys.stderr)
+            return 1
+    else:   # (the page at once, the sample on its way)
+        made, page = {"items": []}, page_html([], {}, "", None, True, None, total=0, making=(
+            "Making the sample: the demos are starting. Each change shows here as soon as its pictures are taken."))[0]
+    # its pictures, as they were when it opened: a sample made again meanwhile (callboard's board, say) replaces the
+    # folder's, and the page open here would lose its own (and, while it's made here, each as it's taken)
     pictures = tempfile.mkdtemp(prefix="style-review-")
-    for f in os.listdir(out):
-        if f.endswith(".png"):
-            shutil.copy2(os.path.join(out, f), pictures)
+    files: dict = {}
+
+    def take(folder, names):
+        for f in names:
+            if os.path.exists(os.path.join(folder, f)):
+                shutil.copy2(os.path.join(folder, f), pictures)
+                files[f] = os.path.join(pictures, f)
+    if make is None:
+        take(out, [f for f in os.listdir(out) if f.endswith(".png")])
     saved = sys.stdout, sys.stderr
     if log is not None:   # (the terminal is the board's: say it to the file, yours alone to read)
         sys.stdout = sys.stderr = devpage.private(log)
     import threading
     lock = threading.Lock()
     ended = threading.Event()
-    approved = [0]               # (how many approved here: what a step on devtools's board says once it's closed)
+    approved = [0]               # (how many approved here: what a step on callboard's board says once it's closed)
+    cur = {"page": page, "made": made, "v": 0, "making": make is not None}   # (what the page is now: drawn again as the sample's made)
+    stop = threading.Event()     # (the page closed while the sample's made: it stops)
 
     def html(token: str) -> str:
         # the token the Approve buttons send, set before the page's own script reads it
         # and the changes approved already (since the sample, here or before): left off the page
         # and the page's beat while it's open, and its goodbye as it goes, so the review stops once the last tab is closed
         guide = load_guide(guide_path)["looks"]
+        page, made, v = cur["page"], cur["made"], cur["v"]
         done = [it["id"] for it in made["items"] if guide.get(it["look"]) == it["now"]]
         return page.replace("<script>var R=window.REVIEW;",
-                            f"<script>window.REVIEW={{token:{json.dumps(token)},done:{json.dumps(done)}}};{devpage.beat(token, 2)}var R=window.REVIEW;", 1)
+                            f"<script>window.REVIEW={{token:{json.dumps(token)},done:{json.dumps(done)},v:{v}}};{devpage.beat(token, 2)}var R=window.REVIEW;", 1)
 
     def approve(q: dict) -> dict:
         try:
@@ -1488,18 +1763,62 @@ def review(out: str = SAMPLE, terminal: bool | None = None, open_browser: bool =
             raise ValueError("ids: a list of the changes' numbers") from e
         with lock:   # (an approval under way finishes before the page closes)
             now = looks()
-            done, refused = approve_looks(made["items"], ids, now, guide_path)
+            items = cur["made"]["items"]
+            done, refused = approve_looks(items, ids, now, guide_path)
             left = any(compare(load_guide(guide_path)["looks"], now).values())
         approved[0] += len(done)
         for i in done:
-            it = next(x for x in made["items"] if x["id"] == i)
+            it = next(x for x in items if x["id"] == i)
             print(f"  approved {it['state']}: {_short(it['look'], 110)}")
         if not left:   # (everything approved: nothing more to do here)
             ended.set()
         return {"approved": done, "refused": refused}
 
+    def live(st):   # (the sample as it's made: the looks with all their pictures so far, on the page)
+        items = [it for it in st["items"] if it["id"] in st["done"]]
+        shots = {k: v for k, v in st["shots"].items() if int(k) in st["done"]}
+        take(st["folder"], {p[k] for ps in shots.values() for p in ps for k in ("before", "after", "diff") if p.get(k)})
+        n, total = len(items), len(st["items"])
+        said_now = (f"Making the sample: {n} of {total} look{'s' if total != 1 else ''} ready. The rest show here as soon as their "
+                    "pictures are taken." if not st.get("stuck") else
+                    f"The sample couldn't be made (what python3 dev/style.py review said has why). {n} of {total} are here to approve; "
+                    f"for the rest, close this page and run {REVIEW} again.")
+        page = page_html(items, shots, st["fingerprint"], st["off"], st["compared"], st["source"], making=said_now, total=total,
+                         stuck=bool(st.get("stuck")))[0]
+        keep = [{k: it[k] for k in ("id", "state", "look", "was", "now")} for it in st["items"]]
+        cur.update(page=page, made={"items": keep}, v=cur["v"] + 1, last=st)
+
+    def making():
+        assert make is not None   # (started only with it: up)
+        print("The sample doesn't show every look the check flags as it is now, or the code that draws them has changed "
+              "since: making it again, each change on the page as soon as its pictures are taken.", flush=True)
+        try:
+            rc = make(live, stop)
+        except Exception as e:   # noqa: BLE001 — (said, and the page says so: what's there can still be approved)
+            print(f"The sample couldn't be made: {e!r}", file=sys.stderr)
+            rc = 1
+        if stop.is_set():
+            return
+        made, page = made_in(out) if rc == 0 else ({}, "")
+        if rc == 0 and not any(compare(load_guide(guide_path)["looks"], looks()).values()):
+            ended.set()   # (nothing to sample after all: every look approved meanwhile)
+        elif page and made.get("items"):
+            take(out, [f for f in os.listdir(out) if f.endswith(".png")])
+            cur.update(page=page, made=made, v=cur["v"] + 1, making=False)
+            print("The sample's made: every change is on the page.", flush=True)
+        elif cur.get("last"):
+            live(dict(cur["last"], stuck=True))
+            cur["making"] = False
+        else:
+            cur.update(page=page_html([], {}, "", None, True, None, total=0, stuck=True, making=(
+                f"The sample couldn't be made (what python3 dev/style.py review said has why). Close this page and run {REVIEW} again."))[0],
+                v=cur["v"] + 1, making=False)
+    worker = threading.Thread(target=making, name="style-sample", daemon=True)
+
     def up(server, url, token):
-        if step:   # (a step of devtools's board, its Style Approval block: the page's address its last line; Enter there
+        if make is not None:   # (the page's address said first, then the sample made)
+            worker.start()
+        if step:   # (a step of callboard's board, its Wardrobe block: the page's address its last line; Enter there
             # skips it, ending it as Ctrl-C would — its pictures' copy removed all the same)
             said(f"http://{urllib.parse.urlsplit(url).netloc}/ · close the page when done")
             import signal
@@ -1511,9 +1830,13 @@ def review(out: str = SAMPLE, terminal: bool | None = None, open_browser: bool =
             ready(server, url, token)
     # (its pictures: served from the copy; its script and styles only by this response's nonce, so the sample has no style="..." of its own)
     try:
-        devpage.serve("review", html, {}, {"/approve": approve}, files={f: os.path.join(pictures, f) for f in os.listdir(pictures)},
+        devpage.serve("review", html, {"/live": lambda q: {"v": cur["v"], "making": cur["making"]}}, {"/approve": approve}, files=files,
                       img="'self'", gone=gone, idle=(idle, "python3 dev/style.py review"), open_browser=open_browser, ready=up, ended=ended)
     finally:
+        stop.set()
+        if worker.is_alive():   # (the page closed before the sample was made: it stops, and leaves the last one as it was)
+            print("Stopping the sample (the page was closed before it was made)…", flush=True)
+            worker.join(60)
         shutil.rmtree(pictures, ignore_errors=True)
     left = sum(len(v) for v in compare(load_guide(guide_path)["looks"], looks()).values())
     print("Every look is in the style guide. Commit dev/style-guide.json, and the files as they are now." if not left else
@@ -1528,7 +1851,7 @@ def review(out: str = SAMPLE, terminal: bool | None = None, open_browser: bool =
 
 
 def review_line(n: int, out: str = SAMPLE, now: dict | None = None) -> str:
-    """devtools's line for looks waiting: how many, and the one command that opens the page to approve them (in another
+    """callboard's line for looks waiting: how many, and the one command that opens the page to approve them (in another
     terminal, while the other checks run), to paste as it is — review makes the sample again first when it doesn't show
     what's waiting (sample_shows; ``out`` and ``now`` are the sample's folder and the looks, as review would take them)."""
     return f"{n} look{'s need' if n != 1 else ' needs'} your approval: {REVIEW}"
@@ -1541,8 +1864,8 @@ def main(argv: list[str]) -> int:
         found = problems(now=now)
         diff = pending(now=now)
         waiting = sum(len(v) for v in diff.values())
-        made = made_by(diff) if waiting and os.environ.get("DEVTOOLS_SAMPLE") != "0" else None
-        if feeding():   # (on devtools's board: its bar — every look compared with the guide, by this process alone; or,
+        made = made_by(diff) if waiting and os.environ.get("CALLBOARD_SAMPLE") != "0" else None
+        if feeding():   # (on callboard's board: its bar — every look compared with the guide, by this process alone; or,
             # the looks waiting already in a sample, that sample and the workers that made it)
             if made is not None:
                 bar = Progress(waiting, unit="looks sampled", bar="style")
@@ -1561,15 +1884,15 @@ def main(argv: list[str]) -> int:
             then(0 if made is not None or sample_shows(diff) else 1)   # (on the board: its next step makes the sample, unless it shows them)
         else:
             print("Every look is in the style guide.")
-            if os.environ.get("DEVTOOLS_RECHECK") != "1":   # (checked again after the review: its line stands, what was approved)
+            if os.environ.get("CALLBOARD_RECHECK") != "1":   # (checked again after the review: its line stands, what was approved)
                 said(result(tally(len(now), "look", "approved")))
             then(0)
         if not found:
             return 0
-        from dev import checks, policy
+        from callboard import checks, policy
         r = checks.levels("style")
         level = r.level("waiting") if r else "warn"
-        from dev.progress import status
+        from callboard.progress import status
         status("looks waiting")
         return policy.exit_code([level])
     if cmd == "sample":
@@ -1584,13 +1907,17 @@ def main(argv: list[str]) -> int:
         if argv[2:] not in ([], ["--board"], ["--step"]):
             print("python3 dev/style.py review [--board | --step]", file=sys.stderr)
             return 2
-        # --board: opened from devtools's board (its r key), which is on the terminal: what it says goes to a file
-        # --step: a step of devtools's board (its Style Approval, once the rest is done): on the board's terminal, what it
+        # --board: opened from callboard's board (its r key), which is on the terminal: what it says goes to a file
+        # --step: a step of callboard's board (its Wardrobe, once the rest is done): on the board's terminal, what it
         # says sent to the board
         step = argv[2:] == ["--step"]
         log = os.path.join(SAMPLE, "review.log") if argv[2:] == ["--board"] else None
         diff = pending()
-        if any(diff.values()) and not sample_shows(diff, SAMPLE):   # (what check flags, the page shows: a sample made before it, again)
+        if any(diff.values()) and not sample_shows(diff, SAMPLE) and not step:
+            # (what check flags, the page shows: the page opened at once, the sample made again while it's open)
+            os.makedirs(SAMPLE, exist_ok=True)
+            return review(log=log, make=lambda live, stop: sample(live=live, stop=stop))
+        if any(diff.values()) and not sample_shows(diff, SAMPLE):   # (on callboard's board, a step: made before it, as before)
             import contextlib
             os.makedirs(SAMPLE, exist_ok=True)
             with (devpage.private(log) if log else open(os.devnull, "w", encoding="utf-8")) as fh, \
@@ -1608,6 +1935,6 @@ def main(argv: list[str]) -> int:
 if __name__ == "__main__":
     try:
         sys.exit(main(sys.argv))
-    except KeyboardInterrupt:   # (Ctrl-C: stopped, said so, no trace — devtools's review at the end, say, skipped)
+    except KeyboardInterrupt:   # (Ctrl-C: stopped, said so, no trace — callboard's review at the end, say, skipped)
         print("\nStopped.", file=sys.stderr)
         sys.exit(130)

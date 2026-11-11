@@ -17,10 +17,13 @@ of only leaving notes in the shared folders (peers.py).
   someone who could write there would also have to answer at the mirror NAS's address as the mirror's
   Plex. Without the marker (a folder sync that leaves out hidden folders), Pair Now pressed on both
   sides within PAIR_WINDOW pairs them — each side's page shows a one-time code, and typing one side's
-  code into the other proves the keys (code_proof: an HMAC of the code over the key it vouches for, so
-  the code never travels). A pairing records what vouched for it ("proven": marker | code | nothing),
-  and one nothing vouched for may only read: carry, update and reach are refused both ways until it's
-  proven (F-2026-021). Unpair forgets that side; it isn't paired with again by itself until Pair Now.
+  code into the other proves the keys (code_proof: an HMAC, keyed by the code and the two sides' shared
+  key, over the key it vouches for — so the code never travels, and someone who read the exchange off
+  the wire has nothing to try codes against, F-2026-040). A pairing records what vouched for it
+  ("proven": marker | code); nothing else makes one — Pair Now on both sides with no code and no marker
+  pairs nothing, both sides say to enter the code, and a pairing from before this (kept, "proven": "")
+  is answered nothing but unpair until it's proven, and never displaces a proven one (F-2026-021, 039).
+  Unpair forgets that side; it isn't paired with again by itself until Pair Now.
 * **Talking** — every request after pairing is signed with the shared key (HMAC-SHA256 over the
   method, path, time, a nonce and the body); a request older than MAX_AGE, or a nonce seen before, is
   refused. A peer reads: what it may ask here is the status and the file lists. The one thing it may
@@ -57,6 +60,7 @@ import ipaddress
 import json
 import logging
 import os
+import re
 import secrets
 import threading
 import time
@@ -78,7 +82,7 @@ API = 1                   # the link's language: a side with another number isn'
 # sends no table at all is taken to have none beyond the handshake. A command's version moves when its request or its
 # answer changes shape — API_SHAPES names each one's fields, tests/peer_api.json records them, and
 # test_the_link_api_is_versioned fails a change without a bump (dev/peer_api.py records a bump).
-COMMANDS = {"hello": 2, "pair": 2, "status": 2, "files": 1, "unpair": 1, "carry": 1, "update": 1, "reach": 1}
+COMMANDS = {"hello": 2, "pair": 3, "status": 2, "files": 1, "unpair": 1, "carry": 1, "update": 1, "reach": 1}  # (pair 3: the proof keyed by the shared key, F-2026-040)
 API_SHAPES = {  # each command's request fields (its body, or its query) and its answer's, sorted
     "hello": {"request": [], "answer": ["api", "app", "commands", "identity", "instance", "name", "plex", "public", "time", "version"]},
     "pair": {"request": ["addresses", "identity", "instance", "manual", "name", "plex", "port", "proof", "public", "window"], "answer": ["paired", "proof", "public", "why"]},
@@ -93,6 +97,8 @@ API_SHAPES = {  # each command's request fields (its body, or its query) and its
 REACH_MAX = 12            # addresses one reach request may have tried (each Plex's /identity, a few seconds at most)
 UPDATE_RETRY = 6 * 3600   # a side asked to update and still behind: asked again after this
 SETTLE = 180              # seconds after a start for which a link's first look is waited for before a page concludes anything from it (settling)
+ASK_NAME = 64             # an unsigned pair request's name, as the page shows it: at most this many characters (F-2026-054)
+ASK_ID = re.compile(r"[A-Za-z0-9_-]{1,80}")  # …its instance and picture: ids (an instance, a fingerprint, a Syncthing device ID)
 PORT = 8642               # Dionysus's own port, as compose.yaml publishes it
 PORTS = range(PORT, PORT + 8)  # the ports looked on besides the advertised ones and our own: one picked by hand is usually near the default
 TICK_EVERY = 300          # seconds between looks at the other side (found, paired, talking)
@@ -167,10 +173,23 @@ def norm_code(text) -> str:
     return "".join(c for c in str(text or "").upper() if c.isalnum())
 
 
-def code_proof(code: str, what: str, public: str) -> str:
-    """What knowing the code proves, without the code travelling: an HMAC of it over the key it vouches for
-    (``what``: "pair" for the asker's, "pair-answer" for the answerer's)."""
-    return hmac.new(("plexcache-pair-code|" + norm_code(code)).encode(), (what + "|" + str(public or "").lower()).encode(), hashlib.sha256).hexdigest()
+def code_proof(code: str, what: str, public: str, shared: bytes) -> str:
+    """What knowing the code proves, without the code travelling: an HMAC over the key it vouches for (``what``: "pair"
+    for the asker's, "pair-answer" for the answerer's), keyed by the code and the two sides' shared key (shared_key) —
+    which only the two sides can work out, so what travels gives an onlooker nothing to try codes against (F-2026-040)."""
+    return hmac.new(b"plexcache-pair-code-v3|" + shared + b"|" + norm_code(code).encode(),
+                    (what + "|" + str(public or "").lower()).encode(), hashlib.sha256).hexdigest()
+
+
+def pair_version_why(there: dict) -> str:
+    """Why the pairing can't go ahead with a side whose hello (``there``) speaks the pair command at another version, or
+    "": the proof means something else there, so the one that's behind is to be updated."""
+    theirs = (there.get("commands") or {}).get("pair") if isinstance(there.get("commands"), dict) else None
+    if theirs == COMMANDS["pair"]:
+        return ""
+    if isinstance(theirs, int) and theirs > COMMANDS["pair"]:
+        return f"the Dionysus there pairs a newer way (pair v{theirs}, v{COMMANDS['pair']} here): update this side first"
+    return f"the Dionysus there pairs an older way (pair v{theirs or '?'}, v{COMMANDS['pair']} here): update it first"
 
 
 def fingerprint(public: str) -> str:
@@ -229,6 +248,12 @@ def _local_host(host: str) -> bool:
     return not ip.is_loopback and not ip.is_unspecified
 
 
+def _plain(value, limit: int) -> str:
+    """Text a request names itself by, for a page: one line, no control characters, at most ``limit`` characters."""
+    text = "".join(ch if ch.isprintable() else " " for ch in str(value or ""))
+    return " ".join(text.split())[:limit]
+
+
 class PeerLinks:
     """This side of every link: the key pair, what this Dionysus says of itself (its hello, its advert, its status), the
     requests that come in, and one PeerLink per mirrored server (link, for_library)."""
@@ -260,7 +285,8 @@ class PeerLinks:
         self.busy = False
         self.asked: dict[str, dict] = {}  # server id -> a Pair Now pressed at its site that didn't pair here: {"name", "instance", "why", "until"}
         self.pair_asks: dict[str, list[float]] = {}  # source address -> when it asked to pair lately (PAIR_ASKS_MINUTE)
-        self.nonces: dict[str, float] = {}
+        self.nonces: dict[str, float] = {}  # (in memory only: what's dated before born is refused instead, F-2026-055)
+        self.born = time.time()  # when this process started: a signed request dated before it may be one seen before a restart
         self._tn_port: tuple[float, int | None] = (0.0, None)
 
     # ------------------------------------------------------------ keys and settings
@@ -416,15 +442,22 @@ class PeerLinks:
 
     def handle_reach(self, data: dict) -> dict:
         """The other side's Plex tried from here at each of its addresses ("urls": http(s) only, REACH_MAX at most) — its
-        /identity, which needs no token, answering as that server ("machine"). {"results": [{"url", "ok", "why"}]}."""
+        /identity, which needs no token, answering as that server ("machine"). Only addresses of that server as this side
+        knows them (the ones plex.tv lists to this side's sign-in, or the one set by hand) are tried: a peer, proven or
+        not, doesn't get this side to connect wherever it names (F-2026-041). {"results": [{"url", "ok", "why"}]}."""
         from .i18n import render
-        from .plex import PlexClient, PlexError
+        from .plex import PlexClient, PlexError, direct_address
         machine = str(data.get("machine") or "")
+        allowed = {h.lower() for h in self.link(machine)._mirror_hosts()} if machine and machine in self.app.mirrors.used() else set()
         out = []
         for url in [u for u in data.get("urls") or [] if isinstance(u, str)][:REACH_MAX]:
             u = urllib.parse.urlsplit(url)
             if u.scheme not in ("http", "https") or not u.hostname:
                 out.append({"url": url, "ok": False, "why": "not an http(s) address"})
+                continue
+            host = u.hostname.lower()
+            if host not in allowed and (direct_address(host) or "").lower() not in allowed:
+                out.append({"url": url, "ok": False, "why": "not an address of that server"})
                 continue
             try:
                 got = PlexClient(url, "", timeout=5).identity().get("machine_id") or ""
@@ -521,6 +554,8 @@ class PeerLinks:
             raise PeerError("bad time") from None
         if age > MAX_AGE:
             raise PeerError("the clocks are too far apart (or the request is old)")
+        if int(at) < int(self.born):  # (the nonces seen before a restart are gone: a request from then could be a replay)
+            raise PeerError("sent before this side started: send it again")
         if not hmac.compare_digest(sig, signature(link._key(), method, path, at, nonce, body)):
             raise PeerError("bad signature")
         now = time.time()
@@ -559,9 +594,9 @@ class PeerLinks:
             return 403, {"error": str(e)}
         if not link.talking():  # (a paired side talks to us before we talk to it — just paired, say: looked at now, not at the next pass)
             self.tick_async(force=True)
-        if path in ("/peer/v1/carry", "/peer/v1/update", "/peer/v1/reach") and not link.proven():
-            # a pairing whose key nothing vouched for (Pair Now alone, no marker and no code) may read, never write here,
-            # start an update, or point probes (F-2026-021)
+        if path != "/peer/v1/unpair" and not link.proven():
+            # a pairing whose key nothing vouched for (one from before, kept with "proven": "") gets nothing here: not the
+            # status, not a file list, and never a write, an update or a probe (F-2026-021, 039)
             return 403, {"error": "this pairing isn’t proven: press Pair Now on both sides and enter the code one side shows into the other"}
         if path == "/peer/v1/status" and method == "GET":
             return 200, self.local_status()
@@ -616,9 +651,14 @@ class PeerLinks:
             w = data.get("window")
             idn = data.get("identity")
             idn = idn if isinstance(idn, dict) else {}
-            self.asked[sid] = {"name": str(data.get("name") or data.get("instance") or ""), "instance": str(data.get("instance") or ""),
+            # (the request isn't signed: what it says of itself is kept short and plain for the page, F-2026-054 — a name of
+            # ASK_NAME characters at most, its instance and picture only in their own alphabets)
+            inst = str(data.get("instance") or "")
+            inst = inst if ASK_ID.fullmatch(inst) else ""
+            pic = str(idn.get("id") or "")
+            self.asked[sid] = {"name": _plain(data.get("name"), ASK_NAME) or inst, "instance": inst,
                                "public": str(data.get("public") or "") if valid_public(data.get("public")) else "",
-                               "id": str(idn.get("id") or ""),  # (how the asker pictures itself: the identicon its own pages show)
+                               "id": pic if ASK_ID.fullmatch(pic) else "",  # (how the asker pictures itself: the identicon its own pages show)
                                "why": str(got.get("why") or ""), "until": time.time() + (w if isinstance(w, int) and 0 < w <= PAIR_WINDOW else PAIR_WINDOW)}
 
     def asks(self) -> dict:
@@ -925,13 +965,16 @@ class PeerLink:
             return M("The key in its marker doesn’t match the one it answers with: not paired.")
         return None
 
-    def _keep_pairing(self, hello: dict, url: str, how: str, proven: str = "") -> None:
-        """``proven``: what vouched for the other side's key — "marker" (its marker in our synced folders carried it),
-        "code" (a one-time pairing code, typed by a person), or "" (Pair Now on both sides alone: paired, but carry,
-        update and reach stay off until it's proven — F-2026-021)."""
+    def _keep_pairing(self, hello: dict, url: str, how: str, proven: str = "") -> bool:
+        """``proven``: what vouched for the other side's key — "marker" (its marker in our synced folders carried it) or
+        "code" (a one-time pairing code, typed by a person). Nothing vouching makes no pairing (handle_pair and try_pair
+        refuse before this), and a proven pairing is never displaced by one that isn't: False then (F-2026-039)."""
         with self.lock:
             same = self.paired and self.paired.get("instance") == hello.get("instance") and self.paired.get("public") == hello.get("public")
             kept = (self.paired or {}).get("proven") or "" if same else ""
+            if not (proven or kept) and self.paired and self.paired.get("proven"):
+                self.pair_error = M("Another Dionysus ({name}) asked to pair without proving the code: the proven pairing stays.", name=hello.get("name") or hello.get("instance") or "?")
+                return False
             self.paired = {"instance": hello["instance"], "name": hello.get("name") or "", "url": url, "public": hello["public"],
                            "at": (self.paired or {}).get("at") if same else time.time(), "how": (self.paired or {}).get("how") if same else how,
                            "proven": proven or kept}  # (a pairing once proven stays proven; it never downgrades)
@@ -942,6 +985,7 @@ class PeerLink:
         self.save()
         if not same:
             self.app.activity.event("sync", M("Paired with the Dionysus on {name} ({url})", name=hello.get("name") or hello["instance"], url=url))
+        return True
 
     def proven(self) -> bool:
         """Whether this pairing's key was vouched for (marker or code): what carry, update and reach require, both ways."""
@@ -959,9 +1003,16 @@ class PeerLink:
             return False
         manual = self.window_open()
         their_code = self.their_code if manual else ""  # (the code typed here off the other side's page)
+        their_pub = str(f["hello"].get("public") or "")
+        wrong = pair_version_why(f["hello"]) if valid_public(their_pub) else "its hello carries no usable key"
+        if wrong:
+            with self.lock:
+                self.pair_error = M("It can’t be paired with: {why}", why=wrong)
+            return False
+        shared = shared_key(self.links.private, their_pub)  # (what only the two sides can work out: the proof's key, F-2026-040)
         body = {"instance": self.instance(), "name": getattr(self.app, "plex_name", "") or "", "public": self.public(), "plex": self.links.own_plex_id(),
                 "port": self.links.own_port(), "addresses": self.links.own_addresses(), "manual": manual, "identity": self.links.identity(),
-                "proof": code_proof(their_code, "pair", self.public()) if their_code else "",  # (the code never travels: what knowing it proves does)
+                "proof": code_proof(their_code, "pair", self.public(), shared) if their_code else "",  # (the code never travels: what knowing it proves does)
                 "window": max(0, int(self.window - time.time()))}  # (how long Pair Now here has left: the other side says so on its pages)
         try:
             got = self._post_open(f["url"] + "/peer/v1/pair", body)
@@ -973,7 +1024,6 @@ class PeerLink:
             with self.lock:
                 self.pair_error = M("It didn’t pair: {why}", why=got.get("why") or "?")
             return False
-        their_pub = str(f["hello"].get("public") or "")
         if str(got.get("public") or "").lower() != their_pub.lower():
             with self.lock:
                 self.pair_error = M("It answered with another key than its hello’s: not paired.")
@@ -982,12 +1032,13 @@ class PeerLink:
         mark = self._marker_public(str(f["hello"].get("instance") or ""))
         if mark and mark.lower() == their_pub.lower():
             proven = "marker"
-        elif their_code and hmac.compare_digest(str(got.get("proof") or ""), code_proof(their_code, "pair-answer", their_pub)):
+        elif their_code and hmac.compare_digest(str(got.get("proof") or ""), code_proof(their_code, "pair-answer", their_pub, shared)):
             proven = "code"
-        else:
-            proven = ""
-        self._keep_pairing(f["hello"], f["url"], "manual" if manual else "auto", proven)
-        return True
+        else:  # (nothing vouches for its key: not paired — F-2026-039)
+            with self.lock:
+                self.pair_error = M("Nothing vouches for it: enter the code shown on the other side’s page into Pair Now here (or this side’s there), or sync the .plexcache folders so its marker reaches this side.")
+            return False
+        return self._keep_pairing(f["hello"], f["url"], "manual" if manual else "auto", proven)
 
     def _post_open(self, url: str, body: dict) -> dict:
         data = json.dumps(body).encode()
@@ -1032,16 +1083,22 @@ class PeerLink:
             why = self.may_pair(hello, url)
             if why:
                 return {"paired": False, "why": str(why)}
+            if pair_version_why(hello):
+                return {"paired": False, "why": pair_version_why(hello)}
+            shared = shared_key(self.links.private, pub)  # (the proof's key: only the two sides have it, F-2026-040)
             code, proof = self.code, str(body.get("proof") or "")
-            if proof and not (code and hmac.compare_digest(proof, code_proof(code, "pair", pub))):
+            if proof and not (code and hmac.compare_digest(proof, code_proof(code, "pair", pub, shared))):
                 return {"paired": False, "why": "the pairing code doesn’t match: read it again off this side’s page and press Pair Now there once more"}
             mark = self._marker_public(inst)  # (what vouches for its key: its marker in our folders, else the code a person typed there)
             proven = "marker" if mark and mark.lower() == pub.lower() else ("code" if proof else "")
-            self._keep_pairing(hello, url, "manual" if self.window_open() else "auto", proven)
+            if not proven:  # (nothing vouches for its key: not paired — F-2026-039)
+                return {"paired": False, "why": str(M("Nothing vouches for it: enter the code shown on the other side’s page into Pair Now here (or this side’s there), or sync the .plexcache folders so its marker reaches this side."))}
+            if not self._keep_pairing(hello, url, "manual" if self.window_open() else "auto", proven):
+                return {"paired": False, "why": str(self.pair_error or "")}
             with self.lock:
                 self.found, self.found_at, self.find_error = {"url": url, "hello": hello, "at": time.time()}, time.time(), None
             # the answer proves this side's code back, over this side's key: the other side marks the pairing proven too
-            return {"paired": True, "public": self.public(), "proof": code_proof(code, "pair-answer", self.public()) if code else ""}
+            return {"paired": True, "public": self.public(), "proof": code_proof(code, "pair-answer", self.public(), shared) if code else ""}
         return {"paired": False, "why": "its hello couldn’t be fetched back from the addresses it gave"}
 
     # ------------------------------------------------------------ signed requests

@@ -1,0 +1,14 @@
+# Public security audits (dev/audit.py record).
+id = "2026-11-09-2"
+date = 2026-11-09
+commit = "99c6f5abd44b142c184c2e954d4c5d3a76f5379f"
+kind = "partial"
+scope = ["plexcache/peerlink.py:verify", "plexcache/peerlink.py:PeerLinks.__init__"]
+uncommitted = true
+prints = [
+    "0a32e8a90a59", "0c84210b2ac4", "10711e6bca7b", "2ae4f91f1a03", "3032e3d07a9d", "321a357764a6",
+    "36d2075f4793", "41a185a0729b", "57744b46fb43", "6157a4b348fe", "70c566efc844", "78a29a05f9db",
+    "84911e13150d", "91e4e5decc43", "9b203c1bc521", "9d79d52eb7d9", "a0c9ef3473b8", "a1a49b9e766c",
+    "a9819dafb5c3", "b8918246b4fd", "cc162f447e0f", "d507e03fdab9", "db7f0e34160c", "de0376c7c45c",
+    "df365597d73b", "e0499a8ae0fd", "eaa51433c709", "ead7503b8feb", "ec02d3f9a498", "eda8786e9190",
+]

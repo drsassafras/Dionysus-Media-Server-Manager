@@ -132,6 +132,40 @@ PCI18N.ready.then(function () {
     return "<h2>" + title + (long ? info(hint, title.replace(/<[^>]*>/g, "").replace(/&amp;/g, "&")) : "") + "</h2>" + (extra || "") + (hint && !long ? '<p class="hint">' + hint + "</p>" : "");
   }
 
+  // The page takes no style="…" (the CSP has no 'unsafe-inline', F-2026-058): fixed looks are app.css classes, and what's
+  // worked out as the page is drawn (a bar's width, a chart's colour, a drawing's lengths) is written data-css="…" and set
+  // here through the CSSOM — only these properties, and only numbers (with a unit), colours (#hex) or var(--name), so no
+  // markup can bring a style of its own. Every bit of HTML the page puts in goes through setHtml, which sets them.
+  const CSS_PROPS = /^(width|height|left|top|flex|color|background|stroke|fill|stroke-width|stroke-dasharray|opacity|--[A-Za-z][\w-]*)$/;
+  const CSS_VALUE = /^(-?\d+(\.\d+)?(px|%|s)?( -?\d+(\.\d+)?(px|%|s)?){0,2}|#[0-9a-fA-F]{3,8}|var\(--[\w-]+\))$/;
+  function cssSet(root) {
+    if (!root || !root.querySelectorAll) return;
+    const els = Array.prototype.slice.call(root.querySelectorAll("[data-css]"));
+    if (root.hasAttribute && root.hasAttribute("data-css")) els.push(root);
+    els.forEach(function (el) {
+      String(el.getAttribute("data-css") || "").split(";").forEach(function (d) {
+        const i = d.indexOf(":"), prop = d.slice(0, i).trim(), val = d.slice(i + 1).trim();
+        if (i > 0 && CSS_PROPS.test(prop) && CSS_VALUE.test(val)) el.style.setProperty(prop, val);
+      });
+      el.removeAttribute("data-css");
+    });
+  }
+  // how: "inner" (el's content, the default), "outer" (el itself) or "beforeend" (added at its end)
+  function setHtml(el, html, how) {
+    if (!el) return;
+    if (how === "outer") {
+      const parent = el.parentNode;
+      el.outerHTML = html;
+      cssSet(parent);
+    } else if (how === "beforeend") {
+      el.insertAdjacentHTML("beforeend", html);
+      cssSet(el);
+    } else {
+      el.innerHTML = html;
+      cssSet(el);
+    }
+  }
+
   // Server text arrives either as a string or as a message to translate ({_t, _p}).
   function esc(v) {
     return String(v == null ? "" : (typeof v === "object" ? msg(v) : v)).replace(/[&<>"']/g, function (c) {
@@ -225,7 +259,7 @@ PCI18N.ready.then(function () {
       if (!w || !h) continue;
       const r = Math.min(parseFloat(getComputedStyle(el).borderTopLeftRadius) || 0, h / 2, w / 2);
       const edge = 2 * (w + h) - 8 * r + 2 * Math.PI * r, tail = edge / 2, period = edge / COMET_SPEED;
-      let svg = '<svg class="comet" aria-hidden="true" width="' + w + '" height="' + h + '" style="--P:' + edge.toFixed(2) + 'px;--period:' + period.toFixed(3) + 's">';
+      let svg = '<svg class="comet" aria-hidden="true" width="' + w + '" height="' + h + '" data-css="--P:' + edge.toFixed(2) + 'px;--period:' + period.toFixed(3) + 's">';
       // the head: a round dot (the shortest dash, its round caps). The tail begins at the back of the dot, a radius behind
       // the head's front, narrower than the dot so the dot reads as a ball; each dash longer than the last and a little
       // thinner, the last nothing. --front is how far behind the comet's front a dash begins. The strokes lie on one
@@ -236,10 +270,10 @@ PCI18N.ready.then(function () {
       for (let k = 0; k < COMET_LAYERS; k++) {
         const head = k === 0, f = k / (COMET_LAYERS - 1), len = head ? 0.1 : lens[k], front = head ? 0 : COMET_HEAD / 2, width = head ? COMET_HEAD : COMET_HEAD * (0.75 - 0.65 * f),
           here = head ? 1 : solid(lens[k - 1]), after = head || k === COMET_LAYERS - 1 ? 0 : solid(lens[k]), alpha = head ? 1 : (here - after) / (1 - after);
-        svg += '<rect x="0" y="0" width="' + w + '" height="' + h + '" rx="' + r.toFixed(2) + '" style="--front:' + (len + front).toFixed(2) + 'px;stroke-width:' + width.toFixed(2) + ';opacity:' + alpha.toFixed(3) +
+        svg += '<rect x="0" y="0" width="' + w + '" height="' + h + '" rx="' + r.toFixed(2) + '" data-css="--front:' + (len + front).toFixed(2) + 'px;stroke-width:' + width.toFixed(2) + ';opacity:' + alpha.toFixed(3) +
           ';stroke-dasharray:' + len.toFixed(2) + ' ' + (edge - len).toFixed(2) + '"/>';
       }
-      el.insertAdjacentHTML("beforeend", svg + "</svg>");
+      setHtml(el, svg + "</svg>", "beforeend");
       // every comet's animation started at the document's time zero: its place on the edge is the clock's, so one drawn
       // again (or drawn later, on another element) is where the last one was
       const drawn = el.lastElementChild, anims = drawn && drawn.getAnimations ? drawn.getAnimations({ subtree: true }) : [];
@@ -270,7 +304,8 @@ PCI18N.ready.then(function () {
     if (!Object.keys(body).length) return Promise.resolve();
     return api("/api/settings", body).then(function (r) {
       S = r.settings; if (ST) ST.settings = S;
-      toast(T("Saved"));
+      if (r.moved && r.moved.length) toast(T("Saved. {services}: the saved sign-in only went to the old address, so sign in or enter the key again for the new one", { services: r.moved.join(", ") }), true);
+      else toast(T("Saved"));
       return load();
     }).catch(function (e) { toast(T("Not saved: {why}", { why: e.message })); return load(); });
   }
@@ -414,7 +449,7 @@ PCI18N.ready.then(function () {
       // {APP} in a command is this app's own address (e.g. to download a script it serves).
       const cmd = it.fix_cmd ? it.fix_cmd.split("{APP}").join(location.origin) : "";
       out += '<div class="fix">' + links(it.fix);
-      if (cmd) out += '<div class="cmd"><code style="white-space:pre-wrap">' + esc(cmd) + '</code><button class="btn" data-copy="' + esc(cmd) + '">' + H("Copy") + "</button>" +
+      if (cmd) out += '<div class="cmd"><code class="s-wspre">' + esc(cmd) + '</code><button class="btn" data-copy="' + esc(cmd) + '">' + H("Copy") + "</button>" +
         '<button class="btn' + (ST.checking ? " spinning" : "") + '" type="button" data-act="recheck"' + (ST.checking ? " disabled" : "") + ">" + (ST.checking ? H("Checking…") : H("Re-test")) + "</button></div>";
       out += "</div>";
     }
@@ -424,7 +459,7 @@ PCI18N.ready.then(function () {
   }
 
   function tile(n, label, color) {
-    return '<div class="card tile"><div class="big" style="color:' + color + '">' + esc(n || 0) + '</div><div class="det" style="margin:0">' + esc(label) + "</div></div>";
+    return '<div class="card tile"><div class="big" data-css="color:' + color + '">' + esc(n || 0) + '</div><div class="det s-m0">' + esc(label) + "</div></div>";
   }
   function top(title, sub, actions) {
     return '<div class="top"><div><h1>' + esc(title) + '</h1><div class="sub">' + sub + "</div></div>" + (actions || "") + "</div>" + pairAsks();
@@ -507,7 +542,7 @@ PCI18N.ready.then(function () {
   }
   function refreshRevert(sec, key) {
     const slot = main.querySelector('.rv-slot[data-rv="' + sec + "." + key + '"]');
-    if (slot) slot.innerHTML = revertInner(sec, key, slot.dataset.unit);
+    if (slot) setHtml(slot, revertInner(sec, key, slot.dataset.unit));
   }
   function range(sec, key, label, min, max, step, unit, help) {
     const id = "f-" + sec + "-" + key;
@@ -545,17 +580,17 @@ PCI18N.ready.then(function () {
       cls = { fits: ["pass", T("Fits")], tight: ["warn", T("Tight fit")], reduced: ["warn", T("Too big — seconds reduced automatically")],
         insufficient: ["fail", T("Doesn’t fit even at minimum seconds")], none: ["fail", T("No L2ARC found")] }[p.status];
     }
-    let out = '<div class="est"><div style="display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px;align-items:baseline"><div style="font-weight:600">' + esc(head) + "</div>" + badge(cls[0], cls[1]) + "</div>";
+    let out = '<div class="est"><div class="s-dflex_wrap_jcsb_gap8_aib"><div class="s-fw600">' + esc(head) + "</div>" + badge(cls[0], cls[1]) + "</div>";
     out += '<div class="bar" role="img" aria-label="' + H("L2ARC space estimate") + '">' +
-      '<div style="width:' + pct(used.movie) + '%;background:var(--c-movie)"></div><div style="width:' + pct(used.tv) + '%;background:var(--c-tv)"></div>' +
-      '<div style="width:' + pct(used.audio) + '%;background:var(--c-audio)"></div>' +
-      '<div style="width:' + pct(p.reserve) + '%;background:var(--c-res)"></div></div>';
-    out += '<div class="legend"><span><i style="background:var(--c-movie)"></i>' + H("Movies {size}", { size: fmtBytes(used.movie) }) + "</span><span><i style=\"background:var(--c-tv)\"></i>" + H("TV {size}", { size: fmtBytes(used.tv) }) +
-      '</span><span><i style="background:var(--c-audio)"></i>' + H("Audio {size}", { size: fmtBytes(used.audio) }) + "</span>" +
-      '<span><i style="background:var(--c-res)"></i>' + H("System buffer {n} GB", { n: S.warmup.reserve_gb }) + "</span>" +
+      '<div data-css="width:' + pct(used.movie) + '%;background:var(--c-movie)"></div><div data-css="width:' + pct(used.tv) + '%;background:var(--c-tv)"></div>' +
+      '<div data-css="width:' + pct(used.audio) + '%;background:var(--c-audio)"></div>' +
+      '<div data-css="width:' + pct(p.reserve) + '%;background:var(--c-res)"></div></div>';
+    out += '<div class="legend"><span><i class="s-bgc-movie"></i>' + H("Movies {size}", { size: fmtBytes(used.movie) }) + "</span><span><i class=\"s-bgc-tv\"></i>" + H("TV {size}", { size: fmtBytes(used.tv) }) +
+      '</span><span><i class="s-bgc-audio"></i>' + H("Audio {size}", { size: fmtBytes(used.audio) }) + "</span>" +
+      '<span><i class="s-bgc-res"></i>' + H("System buffer {n} GB", { n: S.warmup.reserve_gb }) + "</span>" +
       (l2 != null ? "<span>" + H("Unused {size}", { size: fmtBytes(Math.max(0, l2 - need)) }) + "</span>" : "") + "</div>";
     if (p.status === "reduced" || p.status === "insufficient") {
-      out += '<div class="help muted" style="font-size:13px;margin-top:6px">' + H("Will use: {list}", { list: p.libraries.map(function (r) { return T("{kind} {n} s", { kind: r.name, n: r.sec }); }) }) + "</div>";
+      out += '<div class="help muted s-fs13_mt6">' + H("Will use: {list}", { list: p.libraries.map(function (r) { return T("{kind} {n} s", { kind: r.name, n: r.sec }); }) }) + "</div>";
     }
     out += "</div>";
     return out;
@@ -613,7 +648,7 @@ PCI18N.ready.then(function () {
 
   function sizingHtml(standalone) {
     const st = ST.library.stats, p = ST.plan, w = S.warmup;
-    if (!st || !st.scanned_at || !p) return standalone ? '<div class="sizing"><p class="muted" style="margin:14px 0 0">' +
+    if (!st || !st.scanned_at || !p) return standalone ? '<div class="sizing"><p class="muted s-m14-0-0">' +
       (ST.library.scanning ? H("Reading your libraries to work out how big an L2ARC you’d need…") : H("Connect Plex to see how big an L2ARC you’d need.")) + "</p></div>" : "";
     const rows = p.libraries, buffer = p.reserve, tot = sizeTotals();
     const kbps = function (v) { return v >= 1000 ? T("{n} Mbps", { n: dec(v / 1000, 1) }) : T("{n} kbps", { n: Math.round(v) }); };
@@ -658,10 +693,10 @@ PCI18N.ready.then(function () {
         : T("For the Lead-in Cache, add an L2ARC of at least {size}.", { size: fmtBytes(need) });
     }
     const titles = rows.reduce(function (a, r) { return a + r.count; }, 0);
-    const body = (head ? '<p style="font-weight:600;margin:12px 0 8px">' + esc(head) + "</p>" : "") + table +
-      '<p class="muted" style="font-size:13px;margin:8px 0 0">' + PH(titles, "From {n} title.", "From {n} titles.") +
+    const body = (head ? '<p class="s-fw600_m12-0-8">' + esc(head) + "</p>" : "") + table +
+      '<p class="muted s-fs13_m8-0-0">' + PH(titles, "From {n} title.", "From {n} titles.") +
       (tot.missing ? " " + H("Libraries whose dataset’s record size couldn’t be checked aren’t counted in Your minimum or Your library.") : "") + "</p>" +
-      '<p style="margin:8px 0 0;font-weight:600" data-esthead>' + estHead() + "</p>";
+      '<p class="s-m8-0-0_fw600" data-esthead>' + estHead() + "</p>";
     if (standalone) return '<div class="sizing">' + body + "</div>";
     return '<div class="sizing">' + details("l2-sizing", H("L2ARC sizing"), body) + "</div>";
   }
@@ -686,7 +721,7 @@ PCI18N.ready.then(function () {
     if (!p || !p.libraries.length) return "";
     return '<div class="estgrid">' + p.libraries.map(function (r) {
       const lim = SEC_LIMITS[r.kind], id = "est-" + r.key;
-      return '<div class="fld" style="margin:0"><label for="' + id + '">' + libIcon(r.key) + esc(r.name) + ' <span class="val" data-val="' + id + '">' + esc(secText(estSec(r))) + "</span></label>" +
+      return '<div class="fld s-m0"><label for="' + id + '">' + libIcon(r.key) + esc(r.name) + ' <span class="val" data-val="' + id + '">' + esc(secText(estSec(r))) + "</span></label>" +
         '<input id="' + id + '" type="range" min="' + lim[0] + '" max="' + lim[1] + '" step="1" value="' + estSec(r) + '" data-est="' + esc(r.key) + '"></div>';
     }).join("") + "</div>";
   }
@@ -702,25 +737,25 @@ PCI18N.ready.then(function () {
     const v = document.querySelector('[data-val="' + el.id + '"]');
     if (v) v.textContent = secText(el.value);
     const c = document.querySelector('[data-estcell="' + el.dataset.est + '"]');
-    if (c && r) c.innerHTML = estCell(r);
+    if (c && r) setHtml(c, estCell(r));
     const t = sizeTotals().target, buf = ST.plan.reserve;
     [["lead", t.bytes], ["l2", t.bytes + buf]].forEach(function (x) {
       const td = document.querySelector('[data-est' + x[0] + '="target"]');
       if (td) td.textContent = fmtBytes(x[1]);
     });
     const head = document.querySelector("[data-esthead]");
-    if (head) head.innerHTML = estHead();
+    if (head) setHtml(head, estHead());
   });
 
   function sizingControls() {
-    return '<div class="grid" style="max-width:520px">' +
+    return '<div class="grid s-maxw520">' +
       range("warmup", "reserve_gb", T("System buffer"), 0, 500, 10, "GB",
         H("Room on the SSD for everything else ZFS caches. The larger the buffer, the longer cached files stay cached.")) + "</div>";
   }
   function sizingAdvanced() {
     return details("l2-advanced", H("Safety margins"),
-      '<p class="help" style="margin:8px 0 0">' + H("When the L2ARC is too small for your seconds, warm-up shortens them, but never below each file’s metadata: at its start, whole records through 60% of a record of video, and at its end the index, tags, fonts and cover art.") + "</p>" +
-      '<div class="grid" style="margin-top:8px">' +
+      '<p class="help s-m8-0-0">' + H("When the L2ARC is too small for your seconds, warm-up shortens them, but never below each file’s metadata: at its start, whole records through 60% of a record of video, and at its end the index, tags, fonts and cover art.") + "</p>" +
+      '<div class="grid s-mt8">' +
       number("warmup", "padding_video", T("Video safety margin (%)"), 0, 100, H("Extra on top of the average bitrate, for scenes that run higher.")) +
       number("warmup", "padding_audio", T("Audio safety margin (%)"), 0, 100, "") + "</div>");
   }
@@ -749,21 +784,21 @@ PCI18N.ready.then(function () {
         "Reads that come from the SSD or RAM already aren’t held back: there’s nothing to copy.<br><br>" +
         "To warm up faster, raise <span class=\"mono\">l2arc_write_max</span> (Health shows how); automatic pacing follows it. Warm-up’s “Run Now” runs at full speed.") };
     const manual = !w.pacing_auto || !rate;
-    return '<div style="margin-top:12px">' + checkbox("warmup", "pacing_auto", T("L2ARC pacing: match how fast ZFS fills the L2ARC (automatic)"), autoHelp) + "</div>" +
-      (manual ? '<div class="grid" style="max-width:520px;margin-top:4px">' +
+    return '<div class="s-mt12">' + checkbox("warmup", "pacing_auto", T("L2ARC pacing: match how fast ZFS fills the L2ARC (automatic)"), autoHelp) + "</div>" +
+      (manual ? '<div class="grid s-maxw520_mt4">' +
         range("warmup", "pacing_percent", T("L2ARC pacing"), 5, 100, 5, T("% of disk time"), H("A share of disk time instead. Lower is gentler on other workloads; too high, and reads outrun what ZFS can copy to the SSD (Health warns). Warm-up’s “Run Now” runs at full speed.")) + "</div>" : "");
   }
   function l2arcSettingsCard() {
     const q = ST.l2arc_queue || {};
     const wp = ST.warmup.running && ST.warmup.progress && ST.warmup.progress.paused;
     const queue = q.waiting || q.reading ?
-      '<div class="note" style="background:var(--guide-bg);border-color:var(--guide-line);color:var(--ink)">' +
+      '<div class="note s-bgguide-bg_bcguide-line_cink">' +
         (q.paused ? badge("warn", T("Paused")) : badge("running", T("Reading"))) + " " +
         H("Prefetch’s L2ARC-only queue: {n} waiting", { n: fmtNum(q.waiting || 0) }) +
         (q.reading ? " · " + H("now: {title}", { title: q.reading }) : "") +
-        (q.paused ? '<div class="help" style="margin:4px 0 0">' + H("Paused: {why}.", { why: msg(q.paused) }) + "</div>" : "") + "</div>" : "";
+        (q.paused ? '<div class="help s-m4-0-0">' + H("Paused: {why}.", { why: msg(q.paused) }) + "</div>" : "") + "</div>" : "";
     return '<section class="card" id="l2arc-settings"><h2>' + H("L2ARC Cache Settings") + "</h2>" +
-      '<p class="help" style="margin:4px 0 0">' + H("These apply only when there’s an L2ARC, to all caching that needs one: warm-up, and the Prefetch choices with the grey SSD icon (the whole library’s lead-ins, the rest of a season in full…). " +
+      '<p class="help s-m4-0-0">' + H("These apply only when there’s an L2ARC, to all caching that needs one: warm-up, and the Prefetch choices with the grey SSD icon (the whole library’s lead-ins, the rest of a season in full…). " +
         "It reads in the background at this pace and steps aside for anything below, then carries on where it left off. " +
         "Prefetch’s share is one queue for every player: the newest request goes to the front, and everything in it is read in the end, even after its player stops. " +
         "Caching that works on RAM alone — Now Playing Cache, and Prefetch’s smaller steps like the next episode — never waits for these, so the reads that help most are never held up.") + "</p>" +
@@ -774,7 +809,7 @@ PCI18N.ready.then(function () {
       checkbox("warmup", "pause_buffering", T("A player is buffering"), H("Plex reports a stream waiting for data. Stays paused for 3 minutes after it clears.")) +
       checkbox("warmup", "pause_preload", T("Now Playing Cache or Prefetch is reading for someone"), H("Someone watching now comes first — usually a pause of a minute or two while a title loads. (Other L2ARC-only reads don’t count.)")) +
       checkbox("warmup", "pause_scrub", T("A scrub or resilver is running"), H("They already keep every disk in the pool busy; caching would only slow them down. Needs the TrueNAS API.")) +
-      '<div class="grid" style="margin-top:8px;max-width:520px">' +
+      '<div class="grid s-mt8_maxw520">' +
       select("warmup", "pause_disk_busy", T("The pool’s disks are busy with other work"), [[40, T("{n}% busy or more", { n: 40 })], [50, T("{n}% busy or more", { n: 50 })], [60, T("{n}% busy or more", { n: 60 })], [0, T("Don’t pause for this")]],
         H("File copies, backups or other apps. Measured while L2ARC-only caching is idle, so its own reads don’t count. Warm-up’s “Run Now” ignores this.")) +
       "</div>" + cooldownFields("l2arc") + "</section>";
@@ -785,11 +820,11 @@ PCI18N.ready.then(function () {
     if (wu.running) {
       const p = wu.progress || { done: 0, total: 0, bytes: 0 };
       const pct = p.total ? Math.round(p.done / p.total * 100) : 0;
-      return '<div class="note" style="background:var(--guide-bg);border-color:var(--guide-line);color:var(--ink)"><div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between"><div>' +
+      return '<div class="note s-bgguide-bg_bcguide-line_cink"><div class="s-dflex_wrap_gap10_aic_jcsb"><div>' +
         (p.paused ? badge("warn", T("Paused")) : badge("running", wu.phase === "scanning" ? T("Preparing") : T("Running"))) + " " +
         (p.total ? H("{done} of {total} files · {size} read", { done: p.done, total: p.total, size: fmtBytes(p.bytes) }) : H("Reading library list…")) +
-        (p.paused ? '<div class="help" style="margin:4px 0 0">' + H("Paused: {why}.", { why: p.paused }) + "</div>" : "") +
-        '</div><button class="btn danger" data-act="warmup-stop">' + H("Stop") + '</button></div><div class="meter" role="progressbar" aria-label="' + esc(T("Progress")) + '" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + pct + '"><div style="width:' + pct + '%"></div></div></div>';
+        (p.paused ? '<div class="help s-m4-0-0">' + H("Paused: {why}.", { why: p.paused }) + "</div>" : "") +
+        '</div><button class="btn danger" data-act="warmup-stop">' + H("Stop") + '</button></div><div class="meter" role="progressbar" aria-label="' + esc(T("Progress")) + '" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + pct + '"><div data-css="width:' + pct + '%"></div></div></div>';
     }
     return "";
   }
@@ -827,7 +862,7 @@ PCI18N.ready.then(function () {
     // ---- Now Playing Cache
     const n = S.nowplaying;
     out += '<section class="card' + (isOn("nowplaying") ? "" : " off") + '" id="nowplaying"><div class="head">' + toggle("nowplaying", T("Now Playing Cache")) +
-      "<h2>" + H("Now Playing Cache") + "</h2>" + rec("nowplaying") + '<span style="flex:1"></span>' + guideBtn("nowplaying") + "</div>" +
+      "<h2>" + H("Now Playing Cache") + "</h2>" + rec("nowplaying") + '<span class="s-flex1"></span>' + guideBtn("nowplaying") + "</div>" +
       '<p class="lede">' + H("The file being played, read ahead of whoever is watching, so skipping forward or back comes from cache instead of the hard drives.") + "</p>" +
       guide("nowplaying", [
         [H("When it helps"), H("Skipping intros, scrubbing, jumping back. Works even with no SSDs, as long as file data can stay in RAM.")],
@@ -857,9 +892,9 @@ PCI18N.ready.then(function () {
         "</div>";
       if (!n.delay_sec) {
         out += details("np-timing", H("Automatic start timing"),
-          '<p class="help" style="margin:8px 0 12px">' + H("The wait is Plex’s buffer read at the disks’ speed.") + info(H("Plex keeps filling its buffer after playback starts. The wait is that buffer — some seconds of playback at the file’s bitrate — read at the measured speed of its dataset (<a href=\"/system#disk-speed\" data-nav>System → Disk Speed</a>). " +
+          '<p class="help s-m8-0-12">' + H("The wait is Plex’s buffer read at the disks’ speed.") + info(H("Plex keeps filling its buffer after playback starts. The wait is that buffer — some seconds of playback at the file’s bitrate — read at the measured speed of its dataset (<a href=\"/system#disk-speed\" data-nav>System → Disk Speed</a>). " +
           "For example, 60 s of an 80 Mbps remux is 600 MB: about {s} s at {speed} MB/s.", { s: Math.max(n.min_delay_sec, Math.round(600 / speedGuess())), speed: speedGuess() }), T("automatic timing")) + "</p>" +
-          '<div class="grid" style="margin-top:0">' +
+          '<div class="grid s-mt0">' +
           number("nowplaying", "buffer_direct_sec", T("Direct Play: seconds of playback buffer"), 0, 600, "") +
           number("nowplaying", "buffer_transcode_sec", T("Transcoding: seconds of playback buffer"), 0, 600, "") +
           number("nowplaying", "min_delay_sec", T("Never start sooner than (seconds)"), 0, 600, H("Gives the player time to open the file.")) + "</div>");
@@ -897,7 +932,7 @@ PCI18N.ready.then(function () {
   function suggestLine(route) {
     const r = ((ST.survival || {}).routes || {})[route];
     if (!r) return "";
-    return '<p class="help" style="margin-top:4px">' + (r.suggest ? H("Measured on this NAS over the last 7 days: everything read again up to {age} after it was cached was still there, so a cooldown up to that saves reading it again for nothing.", { age: ageShort(r.suggest) })
+    return '<p class="help s-mt4">' + (r.suggest ? H("Measured on this NAS over the last 7 days: everything read again up to {age} after it was cached was still there, so a cooldown up to that saves reading it again for nothing.", { age: ageShort(r.suggest) })
       : noSuggestion(r)) + ' <a href="/activity#lasts" data-nav>' + H("Details") + "</a></p>";
   }
   // Why a route has no suggested cooldown: too few re-reads in the last 7 days, or even the soonest
@@ -917,14 +952,14 @@ PCI18N.ready.then(function () {
     const cl = ST.cachelog || { lead_ins: 0, whole_files: 0 };
     const r = ((ST.survival || {}).routes || {})[kind === "l2arc" ? "ssd" : "ram"] || {};
     const autoOn = S.general[sk + "lead_in_minutes"] === AUTO || S.general[sk + "whole_minutes"] === AUTO;
-    const autoLine = !autoOn ? "" : '<p class="help" style="margin-top:8px">' + (r.auto ?
+    const autoLine = !autoOn ? "" : '<p class="help s-mt8">' + (r.auto ?
       H("Automatic now: up to {age}, or each library’s own where it’s been measured. It’s worked out again every few hours from recent reads.", { age: ageShort(r.auto) }) :
       H("Automatic: not enough recent reads measured yet, so a typical value is used for now.")) + "</p>";
     return '<h3 class="subh">' + H("Cooldown") + cooldownInfo(kind) + "</h3>" +
-      '<div class="grid" style="margin-top:0">' +
+      '<div class="grid s-mt0">' +
       select("general", sk + "lead_in_minutes", T("Lead-in cooldown"), opts(), H("Warm-up, and Prefetch’s lead-ins.")) +
       select("general", sk + "whole_minutes", T("Whole file cooldown"), opts(), H("Prefetch near the end, and Now Playing Cache when the whole file fit.")) +
-      "</div>" + (modeOn ? '<p class="help" style="margin-top:8px">' + H("Logged now: {lead} and {whole}.", { lead: P(cl.lead_ins, "{n} lead-in", "{n} lead-ins"), whole: P(cl.whole_files, "{n} whole file", "{n} whole files") }) + "</p>" : "") +
+      "</div>" + (modeOn ? '<p class="help s-mt8">' + H("Logged now: {lead} and {whole}.", { lead: P(cl.lead_ins, "{n} lead-in", "{n} lead-ins"), whole: P(cl.whole_files, "{n} whole file", "{n} whole files") }) + "</p>" : "") +
       autoLine + suggestLine(kind === "l2arc" ? "ssd" : "ram");
   }
   // Whether a mode's settings are the ones in use right now, as a line under the card's description.
@@ -956,18 +991,18 @@ PCI18N.ready.then(function () {
       '<div class="ramlines" data-lines="' + sec + "." + key + '">' + ramLines(sec, key) + "</div></div>";
   }
   function refreshRamLines() {
-    main.querySelectorAll("[data-lines]").forEach(function (el) { const p = el.dataset.lines.split("."); el.innerHTML = ramLines(p[0], p[1]); });
+    main.querySelectorAll("[data-lines]").forEach(function (el) { const p = el.dataset.lines.split("."); setHtml(el, ramLines(p[0], p[1])); });
   }
   function arcCard() {
     return '<section class="card" id="arc"><h2>' + H("Cache Settings") + "</h2>" +
-      '<p class="help" style="margin:4px 0 0">' + H("These apply whether or not there’s an L2ARC: how much of the RAM cache (the ZFS ARC) Now Playing Cache and Prefetch may use.") + "</p>" +
+      '<p class="help s-m4-0-0">' + H("These apply whether or not there’s an L2ARC: how much of the RAM cache (the ZFS ARC) Now Playing Cache and Prefetch may use.") + "</p>" +
       '<div class="grid">' +
       ramSlider("general", "ram_reserve_gb", T("Reserve ZFS cache"), 0, Math.min(4096, Math.max(16, Math.ceil(((ST.ram || {}).cache_max || 0) / 1e9))), 1, "GB", { more: reserveHelp().more }) +
       ramSlider("nowplaying", "ram_percent", T("Now Playing Cache RAM limit"), 5, 90, 5, "%", { more: ramHelp("nowplaying", H("Reads the whole file if it fits, otherwise as much as fits ahead of the viewer.")).more }) +
       ramSlider("nextepisode", "ram_percent", T("Prefetch RAM limit"), 5, 90, 5, "%", { more: ramHelp("nextepisode", H("The Whole File Cache, and without an L2ARC the Lead-in Cache too. With an L2ARC, lead-ins only pass through RAM on their way to the SSD, so they don’t count.")).more }) +
       "</div></section>" +
       '<section class="card" id="ram-only"><h2>' + H("RAM Only Settings") + "</h2>" +
-      '<p class="help" style="margin:4px 0 0">' + H("These apply only when there’s no L2ARC.") + "</p>" +
+      '<p class="help s-m4-0-0">' + H("These apply only when there’s no L2ARC.") + "</p>" +
       inUseNote("ram") + cooldownFields("ram") + "</section>";
   }
 
@@ -1035,10 +1070,10 @@ PCI18N.ready.then(function () {
       const cmd = next.cmd || "";
       out += '<div class="row">' + badge("warn", T("To do")) + '<div class="grow"><div class="what">' + esc(next.title) + "</div>" +
         (next.detail ? '<div class="det">' + esc(next.detail) + "</div>" : "") +
-        (next.fix || cmd ? '<div class="fix">' + esc(next.fix || "") + (cmd ? '<div class="cmd"><code style="white-space:pre-wrap">' + esc(cmd) +
+        (next.fix || cmd ? '<div class="fix">' + esc(next.fix || "") + (cmd ? '<div class="cmd"><code class="s-wspre">' + esc(cmd) +
           '</code><button class="btn" data-copy="' + esc(cmd) + '">' + H("Copy") + "</button></div>" : "") + "</div>" : "") + "</div></div>";
     }
-    out += '<div style="margin-top:10px"><button class="btn" type="button" data-act="optimizer-check">' + H("Check Again") + "</button> " +
+    out += '<div class="s-mt10"><button class="btn" type="button" data-act="optimizer-check">' + H("Check Again") + "</button> " +
       '<span class="muted">' + H("checked {when}", { when: ago(su.at) }) + "</span></div>";
     return out + "</section>";
   }
@@ -1064,13 +1099,13 @@ PCI18N.ready.then(function () {
       (!checking && job.current ? '<div class="det">' + fileTitle(job.current_title, job.current) + (job.step ? ' <span class="muted">(' + esc(job.step) + ")</span>" : "") + "</div>" : "") +
       // the file in hand: how far through it is (remuxing, then checking both copies)
       (!checking && job.current && job.file_pct != null ? '<div class="filebar"><div class="meter thin" role="progressbar" aria-label="' + esc(T("Progress")) + '" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' +
-        Math.round(job.file_pct) + '" aria-label="' + esc(T("This file")) + '"><div style="width:' + Math.min(100, job.file_pct) + '%"></div></div></div>' : "") +
+        Math.round(job.file_pct) + '" aria-label="' + esc(T("This file")) + '"><div data-css="width:' + Math.min(100, job.file_pct) + '%"></div></div></div>' : "") +
       (job.paused_by ? '<div class="det">' + badge("info", job.paused_by === "resilver" ? T("Paused: {why}", { why: job.paused_why || "" }) : T("Paused")) +
         (job.paused_by === "resilver" ? " " + H("It carries on when the resilver is done.") : "") + "</div>" : "") +
       (!checking ? '<div class="det">' + jobEta(job) + "</div>" : "") + (extra || "");
     // the poster as tall as everything beside it
     const poster = !checking && job.current && job.kind === "optimize";
-    return '<div class="meter" role="progressbar" aria-label="' + esc(T("Progress")) + '" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + pct + '"><div style="width:' + pct + '%"></div></div>' +
+    return '<div class="meter" role="progressbar" aria-label="' + esc(T("Progress")) + '" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + pct + '"><div data-css="width:' + pct + '%"></div></div>' +
       (poster ? '<div class="withposter tall">' + '<div class="posterbig">' + (job.poster ? '<img alt="" src="/api/poster?path=' + encodeURIComponent(job.poster) +
         '" data-hide-broken>' : "") + '</div><div class="grow">' + lines + "</div></div>" : lines);
   }
@@ -1116,7 +1151,7 @@ PCI18N.ready.then(function () {
   function jobFailures(job) {
     const n = (job.errors || []).length;
     if (!n) return "";
-    return '<div class="det" style="margin-top:6px">' + badge("fail", P(n, "{n} file failed", "{n} files failed", { n: fmtNum(n) })) + " " +
+    return '<div class="det s-mt6">' + badge("fail", P(n, "{n} file failed", "{n} files failed", { n: fmtNum(n) })) + " " +
       H("The originals are unchanged.") + ' <button class="link" type="button" data-act="proc-failed" data-job="' + esc(job.id || "") + '">' +
       H("See why") + "</button></div>";
   }
@@ -1143,7 +1178,7 @@ PCI18N.ready.then(function () {
         '<div class="det">' + (job.kind === "copy" && job.mirror ? H("The last pass: {total} files checked, {copied} copied (changed since the copy)", { total: fmtNum(job.total || 0), copied: fmtNum(job.copied || 0) })
           : job.kind === "copy" ? H("{done} of {total} files copied", { done: fmtNum(job.done || 0), total: fmtNum(job.total || 0) })
           : H("{optimized} optimized, {rewritten} written again, {skipped} skipped, {failed} failed", job)) + "</div>" + jobFailures(job) +
-        '<div style="margin-top:10px"><button class="btn" type="button" data-act="job" data-job="dismiss">' + H("Dismiss") + "</button></div></section>";
+        '<div class="s-mt10"><button class="btn" type="button" data-act="job" data-job="dismiss">' + H("Dismiss") + "</button></div></section>";
     }
     if (!job || !job.running) return "";
     let pauseBtn = job.paused ? '<button class="btn pri" type="button" data-act="job" data-job="resume"' + (job.paused_by === "resilver" ? " disabled" : "") + ">" + H("Resume") + "</button> "
@@ -1151,7 +1186,7 @@ PCI18N.ready.then(function () {
     if (job.paused_by === "resilver" && !job.paused) pauseBtn = "";  // a resilver pause can't be overridden
     const sub = job.kind === "copy" ? H("{folder} → {dataset}", { folder: job.folder || "", dataset: job.child || "" }) : "";
     return '<section class="card">' + heading(jobIcon(job) + esc(jobTitle(job)), sub) + jobProgress(job, jobFailures(job)) +
-      '<div style="margin-top:10px">' + pauseBtn + (job.stopping ? '<button class="btn" type="button" disabled>' + H("Cancelling…") + "</button> " : '<button class="btn" type="button" data-act="job" data-job="cancel">' + H("Cancel") + "</button> ") +
+      '<div class="s-mt10">' + pauseBtn + (job.stopping ? '<button class="btn" type="button" disabled>' + H("Cancelling…") + "</button> " : '<button class="btn" type="button" data-act="job" data-job="cancel">' + H("Cancel") + "</button> ") +
       '<span class="muted">' + (job.kind === "copy" ? H("Pausing and cancelling take effect straight away; a copy carries on where it was.")
         : H("Pausing and cancelling take effect after the file in hand.")) + " " + H("File jobs started meanwhile wait in the queue.") + "</span></div></section>";
   }
@@ -1296,12 +1331,12 @@ PCI18N.ready.then(function () {
     const gate = q || runs ? { ready: true, html: "" } : readinessPanel(key, "largest", "optimizer", "", 0);
     let out = gate.html + applyBox({ does: H("Each ticked file is written again in its place: its metadata laid out and its tags and cover art as chosen above (MKV files), in the dataset’s record size and compression. Plex sees the same files."),
       changes: H("The ticked files in this library’s folders. Plex records are left as they are.") }, gate);
-    out += '<div class="row" style="align-items:center;gap:12px;flex-wrap:wrap;margin-top:10px">' +
+    out += '<div class="row s-aic_gap12_wrap_mt10">' +
       '<label class="det"><input type="checkbox" data-act="opt-all" data-key="' + esc(key) + '"' + (all ? " checked" : "") + "> " + H("All {n} (every page)", { n: fmtNum(can.length) }) + "</label>" +
       (can.length > pageIds.length ? '<label class="det"><input type="checkbox" data-act="opt-page" data-key="' + esc(key) + '"' + (pageAll ? " checked" : "") + "> " + H("This page") + "</label>" : "");
     if (q || runs) return out + badge("info", q ? T("Queued") : T("Running")) + "</div>";
     if (OPT_CONFIRM === key && n) {
-      out += '<span class="det" style="max-width:420px">' + H("Optimizing before changing the ZFS settings means each file is written now and again after the change. Change the settings first to write each file only once.") + "</span>" +
+      out += '<span class="det s-maxw420">' + H("Optimizing before changing the ZFS settings means each file is written now and again after the change. Change the settings first to write each file only once.") + "</span>" +
         '<button class="btn pri" type="button" data-act="optimize-sel" data-key="' + esc(key) + '" data-confirmed="1">' + H("Optimize Anyway") + "</button>" +
         '<button class="btn" type="button" data-act="optimize-cancel">' + H("Cancel") + "</button>";
     } else {
@@ -1322,7 +1357,7 @@ PCI18N.ready.then(function () {
   }
   // Scan / Scan Again, as every tool's: every library's files looked at again now (the optimizer also does it by itself)
   function optScanBar(op, more) {
-    return '<div class="row" style="align-items:center;gap:12px;flex-wrap:wrap"><button class="btn" type="button" data-act="optimizer-survey"' + (op.surveying ? " disabled" : "") + ">" +
+    return '<div class="row s-aic_gap12_wrap"><button class="btn" type="button" data-act="optimizer-survey"' + (op.surveying ? " disabled" : "") + ">" +
       (op.surveying ? H("Scanning…") : op.surveyed_at ? H("Scan Again") : H("Scan")) + "</button>" +
       (op.surveyed_at && !op.surveying ? '<span class="det">' + H("Scanned {when}", { when: ago(op.surveyed_at) }) + "</span>" : "") + (more || "") + "</div>" +
       (op.surveying ? loadingBar(T("Looking at every library’s files…"), op.survey_progress) : "");
@@ -1378,7 +1413,7 @@ PCI18N.ready.then(function () {
   // A word for the shell, quoted so nothing in it (a folder named with $ or quotes) can run as a command
   function shq(v) { return "'" + String(v).replace(/'/g, "'\\''") + "'"; }
   function cmdBox(cmd) {
-    return '<div class="cmd"><code style="white-space:pre-wrap">' + esc(cmd) + '</code><button class="btn" data-copy="' + esc(cmd) + '">' + H("Copy") + "</button></div>";
+    return '<div class="cmd"><code class="s-wspre">' + esc(cmd) + '</code><button class="btn" data-copy="' + esc(cmd) + '">' + H("Copy") + "</button></div>";
   }
   // A check's badge: done; a step to do; one that completes by itself (what it's doing: Waiting, Restarting, Reading…);
   // a warning (said, stopping nothing); an error (something wrong that stops the step: red)
@@ -1415,7 +1450,7 @@ PCI18N.ready.then(function () {
     const b = function (mig, label, pri, extra) {
       return '<button class="btn' + (pri ? " pri" : "") + '" type="button" data-act="mig" data-mig="' + mig + '"' + (extra || "") + ">" + label + "</button> ";
     };
-    const row = function (html) { return '<div style="margin-top:6px">' + html + "</div>"; };
+    const row = function (html) { return '<div class="s-mt6">' + html + "</div>"; };
     if (c.action === "restart") return row(b("restart", H("Restart Now"), true));
     // what you've done where Dionysus can't see it
     if (c.action === "sync_paused") return row(b("sync_paused", H("I’ve Paused the Folder Sync Here"), true));
@@ -1438,7 +1473,7 @@ PCI18N.ready.then(function () {
   // Mirror page's choice: one or the other is needed before the copy (migrating.py mirror_chosen)
   function migMirror(mv) {
     if (!mv) return "";
-    const acts = !mv.watched && mv.library ? '<div class="acts" style="margin:4px 0 0 26px">' +
+    const acts = !mv.watched && mv.library ? '<div class="acts s-m4-0-0-26">' +
       (mv.how === "suspected" && mv.id ? '<button class="btn sm pri" type="button" data-act="mirror-set" data-key="' + esc(mv.library) + '" data-state="mirror" data-server="' + esc(mv.id) + '" data-their="' + esc(mv.their_key || "") + '">' + H("Mark {name} as the Mirror", { name: mv.name }) + "</button> " : "") +
       '<button class="btn sm" type="button" data-act="mirror-set" data-key="' + esc(mv.library) + '" data-state="none">' + H("No Mirror for This Library") + "</button></div>" : "";
     return '<div class="lights">' + light(mv.status, mv.title, mv.detail) + acts + "</div>";
@@ -1541,7 +1576,7 @@ PCI18N.ready.then(function () {
     const job = ST.job;
     if (!job || job.kind !== "copy" || !job.running) return '<p class="help">' + H("Starting…") + "</p>";
     return '<div class="migprog"><div class="what">' + (job.mirror ? H("The last pass: copying what changed, then comparing") : H("Copying")) + "</div>" +
-      jobProgress(job, jobFailures(job)) + '<div style="margin-top:8px">' + jobButtons(job) + "</div></div>";
+      jobProgress(job, jobFailures(job)) + '<div class="s-mt8">' + jobButtons(job) + "</div></div>";
   }
   function migrationCard() {
     const mg = ST.migration || {}, st = mg.state, checks = mg.checks || [];
@@ -1589,7 +1624,7 @@ PCI18N.ready.then(function () {
     // what changes: the folder (as TrueNAS sees it) becomes a dataset of its own — nothing moves to another place
     out += '<div class="det"><strong>' + esc(st.title) + "</strong>: " + H("the folder {folder} becomes the dataset {dataset}. Its path stays the same, so Plex and this app see the same files.",
       { folder: st.host_folder || st.folder, dataset: st.child }) + "</div>";
-    out += '<div class="det" style="margin:8px 0">' + steps.map(function (s, i) {
+    out += '<div class="det s-m8-0">' + steps.map(function (s, i) {
       return (i < at ? "✓ " : i === at ? "▶ " : "") + (i === at ? "<strong>" + esc(s[1]) + "</strong>" : esc(s[1]));
     }).join(" &nbsp;→&nbsp; ") + "</div>";
     if (st.corrected) out += '<div class="note">' + esc(st.corrected) + "</div>";
@@ -1608,28 +1643,28 @@ PCI18N.ready.then(function () {
       out += migChecks(checks);
       const ready0 = checks.length && checks.every(migClear);
       const gateM = readinessPanel(String(st.library), 0, "dataset", T("the old folder itself: set aside once the copy is checked, deleted only when you say"), 0);
-      out += gateM.html + '<div style="margin-top:10px">' + checkBtn() + btn("copy", H("Start Copying"), true, !ready0 || !gateM.ready) + btn("cancel", H("Cancel")) + "</div>";
+      out += gateM.html + '<div class="s-mt10">' + checkBtn() + btn("copy", H("Start Copying"), true, !ready0 || !gateM.ready) + btn("cancel", H("Cancel")) + "</div>";
     } else if (st.step === "create") {
       out += '<p class="help">' + H("Create the new dataset next to the folder, with these settings. It’s checked before anything is copied.") + "</p>";
       out += '<div class="fix"><strong>' + H("In the TrueNAS shell") + "</strong>" + cmdBox("sudo zfs create -o recordsize=" + rs + " -o compression=zstd " + shq(temp) + "\n" +
         "sudo chown " + (owner.uid != null ? Number(owner.uid) + ":" + Number(owner.gid) : "568:568") + " " + shq(st.temp_host)) + "</div>";
-      out += '<div class="fix"><strong>' + H("Or in the TrueNAS web UI") + "</strong><ol style=\"margin:4px 0 0 18px\">" +
+      out += '<div class="fix"><strong>' + H("Or in the TrueNAS web UI") + "</strong><ol class=\"s-m4-0-0-18\">" +
         "<li>" + H("Datasets → select {parent} → Add Dataset.", { parent: st.dataset }) + "</li>" +
         "<li>" + H("Name: {name}. Under Advanced Options: Record Size {size}, Compression Level ZSTD. Save.", { name: temp.split("/").pop(), size: rs }) + "</li>" +
         "<li>" + H("Select it → Edit Permissions: owner {uid}, group {gid} (the folder’s). Save.", { uid: owner.uid != null ? owner.uid : 568, gid: owner.gid != null ? owner.gid : 568 }) + "</li></ol></div>";
       out += migChecks(checks);
       const ready = checks.length && checks.every(migClear);
-      out += '<div style="margin-top:10px">' + checkBtn() + btn("copy", H("Start Copying"), true, !ready) + btn("cancel", H("Cancel")) + "</div>";
+      out += '<div class="s-mt10">' + checkBtn() + btn("copy", H("Start Copying"), true, !ready) + btn("cancel", H("Cancel")) + "</div>";
     } else if (st.step === "copy" || (st.step === "switch" && st.copying)) {
       // the copy runs as the file job: its progress, Pause and Cancel are in the card above
       if (st.copying && st.queued) out += '<p class="help">' + H("Waiting in the queue: it starts when the file jobs before it are done.") + "</p>" +
-        '<div style="margin-top:10px"><button class="btn" type="button" data-act="queue-remove" data-id="' + esc((queuedFor("copy", { folder: st.folder }) || {}).id || "") + '">' +
+        '<div class="s-mt10"><button class="btn" type="button" data-act="queue-remove" data-id="' + esc((queuedFor("copy", { folder: st.folder }) || {}).id || "") + '">' +
         H("Remove from the Queue") + "</button></div>";
       else if (st.copying) out += migProgress();
       else out += '<div class="det">' + ((st.copy || {}).result === "stopped"
           ? H("Copying stopped. What’s copied so far stays in {name}: Carry On Copying picks up from there; Cancel ends the conversion, the folder as it was.", { name: temp })
           : H("Stopped: {why}", { why: (st.copy || {}).reason || (st.copy || {}).result || "" })) + "</div>" +
-        '<div style="margin-top:10px">' + btn("copy", H("Carry On Copying"), true) + btn("cancel", H("Cancel")) + "</div>";
+        '<div class="s-mt10">' + btn("copy", H("Carry On Copying"), true) + btn("cancel", H("Cancel")) + "</div>";
     } else if (st.step === "switch") {
       // the last pass ran by itself after the copy; it runs again, always, just before the old folder is set aside
       const cmp = st.compare, lp = st.last_pass || {}, cat = st.compare_at || (st.copy || {}).finished;
@@ -1655,11 +1690,11 @@ PCI18N.ready.then(function () {
           (st.move_error ? '<div class="det bad">' + esc(st.move_error) + "</div>" : "")) +
         stepRow("", H("<strong>Rename the new dataset</strong> to the folder’s name, in the TrueNAS shell:") + cmdBox("sudo zfs rename " + shq(temp) + " " + shq(st.child)) +
           '<div class="det">' + H("Or in the TrueNAS web UI, if your version offers it: Datasets → select {name} → Rename.", { name: temp.split("/").pop() }) + "</div>") +
-        "</ol>" + migChecks(checks) + '<div style="margin-top:10px">' + checkBtn() + (st.old_path ? "" : btn("cancel", H("Cancel"))) + "</div>";
+        "</ol>" + migChecks(checks) + '<div class="s-mt10">' + checkBtn() + (st.old_path ? "" : btn("cancel", H("Cancel"))) + "</div>";
     } else if (st.step === "verify") {
       out += '<p class="help">' + H("Now restart Plex (TrueNAS: Apps → Plex → Restart) so it sees the dataset, and let it scan. Then check again.") + "</p>" + migChecks(checks);
       const ok = checks.length && checks.every(migClear);
-      out += '<div style="margin-top:10px">' + checkBtn();
+      out += '<div class="s-mt10">' + checkBtn();
       if (MIG_CONFIRM_DELETE) out += '<span class="det">' + H("Delete {path} for good?", { path: (st.old_path || "").split("/").pop() }) + "</span> " + btn("delete_old", H("Delete"), true) +
         '<button class="link" type="button" data-act="mig-nodelete">' + H("Cancel") + "</button>";
       else out += btn("ask_delete", H("Delete the Old Copy"), true, !ok);
@@ -1807,7 +1842,7 @@ PCI18N.ready.then(function () {
     if (now && live.running) {  // the run under way: its step and progress, on the card
       progress = '<div class="migprog"><div class="what">' + (live.stopping ? H("Cancelling… (after the file in hand)") : live.phase === "backup" ? H("Backing up…") : H("Applying…")) + "</div>" +
         (live.step ? '<div class="det">' + esc(live.step) + "</div>" : "") + (live.phase !== "backup" ? '<div class="det">' + H("{done} of {total}", { done: fmtNum(live.done || 0), total: fmtNum(live.total || 0) }) + (live.current ? " · " + esc(live.current) : "") + "</div>" : "") +
-        '<div class="meter thin' + (live.phase === "backup" ? " busy" : "") + '" role="progressbar" aria-label="' + esc(T("Progress")) + '"><div' + (live.phase === "backup" ? "" : ' style="width:' + (live.total ? Math.round(100 * (live.done || 0) / live.total) : 0) + '%"') + "></div></div></div>";
+        '<div class="meter thin' + (live.phase === "backup" ? " busy" : "") + '" role="progressbar" aria-label="' + esc(T("Progress")) + '"><div' + (live.phase === "backup" ? "" : ' data-css="width:' + (live.total ? Math.round(100 * (live.done || 0) / live.total) : 0) + '%"') + "></div></div></div>";
     }
     let backupLine = !bk ? "" : bk.kind === "snapshot" ? '<div class="det">' + badge("pass", T("Backup created")) + " " + esc(T("Snapshot {names}, kept until {until}.", { names: (bk.names || []).join(", "), until: fmtWhen(bk.until) })) + "</div>"
       : bk.kind === "copies" ? '<div class="det">' + badge("pass", T("Backup")) + " " + esc(T("The copies this tool keeps, until {until}.", { until: fmtWhen(bk.until) })) + "</div>"
@@ -1853,7 +1888,7 @@ PCI18N.ready.then(function () {
       cols.map(function (c) { return '<th scope="col">' + esc(msg(c.name)) + "</th>"; }).join("") + "</tr></thead><tbody>";
     d.files.forEach(function (f) {
       const h = f.history || {};
-      out += "<tr><td>" + posterImg(f.poster) + '</td><td style="min-width:240px">' + fileTitle(f.label || f.title, f.file) +
+      out += "<tr><td>" + posterImg(f.poster) + '</td><td class="s-minw240">' + fileTitle(f.label || f.title, f.file) +
         (f.reason && (f.result === "failed" || f.result === "revert_failed") ? '<div class="det bad">' + esc(sentence(f.reason)) + "</div>" : "") +
         (f.at ? '<div class="det muted">' + esc(fmtWhen(f.reverted_at || f.at)) + "</div>" : "") + "</td><td>" + (inHand(f) ? badge("info", live.paused || live.paused_by ? T("Paused") : T("Processing")) : res[f.result] || esc(f.result || "")) + "</td>" +
         cols.map(function (c) { return "<td>" + cell(c.id, h[c.id]) + "</td>"; }).join("") + "</tr>";
@@ -1967,7 +2002,7 @@ PCI18N.ready.then(function () {
         res = badge("info", T("Optimizing"));
         tried = false;
         if (job.file_pct != null) retry = '<div class="meter thin" role="progressbar" aria-label="' + esc(T("Progress")) + '" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' +
-          Math.round(job.file_pct) + '" aria-label="' + esc(T("This file")) + '"><div style="width:' + Math.min(100, job.file_pct) + '%"></div></div>';
+          Math.round(job.file_pct) + '" aria-label="' + esc(T("This file")) + '"><div data-css="width:' + Math.min(100, job.file_pct) + '%"></div></div>';
       }
       // each column: the file as it was on the first line, as written on the second (and a third: what changed)
       const wrote = !now && (f.result === "optimized" || f.result === "rewritten" || f.result === "converted" || f.result === "discovered");
@@ -2000,7 +2035,7 @@ PCI18N.ready.then(function () {
       const more = byTitle && i + 1 < d.files.length && key(d.files[i + 1]) === key(f);  // the title's next file follows
       const chart = f.views && procChart[id + "|" + f.file];
       out += '<tr' + (more || chart ? ' class="ingrp"' : "") + ">" + (first ? "<td" + (rows > 1 ? ' rowspan="' + rows + '"' : "") + ">" + thumb + "</td>" : "") +
-        '<td style="min-width:240px">' + name + (f.reason && !now && f.result !== "cancelled" ? '<div class="det bad">' + esc(sentence(f.reason)) + "</div>" : "") +
+        '<td class="s-minw240">' + name + (f.reason && !now && f.result !== "cancelled" ? '<div class="det bad">' + esc(sentence(f.reason)) + "</div>" : "") +
         (f.at ? '<div class="det muted">' + esc(fmtWhen(f.at)) + "</div>" : "") +
         (f.views ? '<div class="det"><button class="link" type="button" data-act="proc-chart" data-key="' + esc(id + "|" + f.file) + '" aria-expanded="' + !!procChart[id + "|" + f.file] + '">' +
           (procChart[id + "|" + f.file] ? H("Hide before and after") : H("Before and after")) + "</button></div>" : "") + "</td><td>" + ln(res) + (retry ? '<div class="ln">' + retry + "</div>" : "") +
@@ -2146,7 +2181,7 @@ PCI18N.ready.then(function () {
   }
   function libBlock(b, path, big, sel, count, est) {
     const inner = b.pieces.map(function (p) {
-      return '<span class="' + partClass(p) + '" style="flex:' + p.bytes + ' 0 0" title="' + esc(partName(p) + (p.name ? " · " + p.name : "") + " · " + fmtBytesShort(p.bytes)) + '"></span>';
+      return '<span class="' + partClass(p) + '" data-css="flex:' + p.bytes + ' 0 0" title="' + esc(partName(p) + (p.name ? " · " + p.name : "") + " · " + fmtBytesShort(p.bytes)) + '"></span>';
     }).join("");
     // under a big block: how much ZFS compresses it (estimated), or its number until that's known
     const e = est && est[b.n], rs = b.data + (b.pieces.filter(function (p) { return p.kind === "empty"; })[0] || { bytes: 0 }).bytes;
@@ -2306,7 +2341,7 @@ PCI18N.ready.then(function () {
         const pct = 100 * n / scale;
         // its size, as much of it as fits (fitBars: the size, or just the number, or nothing)
         const full = fmtBytesShort(n);
-        return '<span class="' + cls + '" style="width:' + pct.toFixed(2) + '%" title="' + esc(tip) + '" data-full="' + esc(full) + '" data-short="' +
+        return '<span class="' + cls + '" data-css="width:' + pct.toFixed(2) + '%" title="' + esc(tip) + '" data-full="' + esc(full) + '" data-short="' +
           esc(full.replace(/[^\d.,]+$/, "")) + '">' + esc(full) + "</span>";
       };
       const inFile = key === "cache" ? T(" in the file") : "";
@@ -2326,11 +2361,11 @@ PCI18N.ready.then(function () {
       const usefulTip = T("Meaningful: {size} — what a play needs: the lead-in video and the metadata players use", { size: fmtBytesShort(useful) }) + left;
       const close = (x.total - useful) / scale < 0.2;
       const line = '<div class="lcline">' +
-        '<span class="lclv" style="width:' + w(x.lead) + '" title="' + esc(usefulTip) + '"></span>' +
-        '<span class="lclm" style="width:' + w(x.useful_meta || 0) + '" title="' + esc(usefulTip) + '"></span>' +
-        '<span class="lclr" style="width:' + w(Math.max(0, x.total - useful)) + '" title="' + esc(totalTip) + '"></span>' +
-        (close ? '<em style="left:' + w(x.total) + '">' + esc(T("Meaningful: {a} · Total: {b}", { a: fmtBytesShort(useful), b: fmtBytesShort(x.total) })) + "</em>"
-          : '<em style="left:' + w(useful) + '">' + esc(T("Meaningful: {size}", { size: fmtBytesShort(useful) })) + '</em><em style="left:' + w(x.total) + '">' + esc(T("Total: {size}", { size: fmtBytesShort(x.total) })) + "</em>") + "</div>";
+        '<span class="lclv" data-css="width:' + w(x.lead) + '" title="' + esc(usefulTip) + '"></span>' +
+        '<span class="lclm" data-css="width:' + w(x.useful_meta || 0) + '" title="' + esc(usefulTip) + '"></span>' +
+        '<span class="lclr" data-css="width:' + w(Math.max(0, x.total - useful)) + '" title="' + esc(totalTip) + '"></span>' +
+        (close ? '<em data-css="left:' + w(x.total) + '">' + esc(T("Meaningful: {a} · Total: {b}", { a: fmtBytesShort(useful), b: fmtBytesShort(x.total) })) + "</em>"
+          : '<em data-css="left:' + w(useful) + '">' + esc(T("Meaningful: {size}", { size: fmtBytesShort(useful) })) + '</em><em data-css="left:' + w(x.total) + '">' + esc(T("Total: {size}", { size: fmtBytesShort(x.total) })) + "</em>") + "</div>";
       return '<div class="lccell">' + line +
         '<div class="lcbar">' + seg("lp-video", x.lead, (v.split ? T("Lead-in video: {size}", { size: fmtBytesShort(x.lead) }) + "\n" + T("The first blocks: what a play starts with.") : T("Video: {size}", { size: fmtBytesShort(x.lead) }))) +
         seg("lcvidend", x.tail, T("Unused video: {size}", { size: fmtBytesShort(x.tail) }) + "\n" + T("In the last blocks, with the metadata: cached with it, but no use to the lead-in.")) +
@@ -2394,8 +2429,8 @@ PCI18N.ready.then(function () {
       if (m.url) a.href = m.url;
       const peek = document.createElement("span");
       peek.className = "sspeek";
-      peek.innerHTML = '<img src="/api/match?image=1&guid=' + encodeURIComponent(g) + '" alt="">' +
-        "<span><strong>" + esc(m.title || g) + "</strong>" + (m.year ? " (" + esc(m.year) + ")" : "") + (m.summary ? '<span class="det">' + esc(m.summary.length > 300 ? m.summary.slice(0, 300) + "…" : m.summary) + "</span>" : "") + "</span>";
+      setHtml(peek, '<img src="/api/match?image=1&guid=' + encodeURIComponent(g) + '" alt="">' +
+        "<span><strong>" + esc(m.title || g) + "</strong>" + (m.year ? " (" + esc(m.year) + ")" : "") + (m.summary ? '<span class="det">' + esc(m.summary.length > 300 ? m.summary.slice(0, 300) + "…" : m.summary) + "</span>" : "") + "</span>");
       a.parentElement.classList.add("sspeekwrap");
       a.parentElement.appendChild(peek);
     }).catch(function () { delete MATCHES[g]; delete a.dataset.peeked; });
@@ -2427,7 +2462,7 @@ PCI18N.ready.then(function () {
     facts.push(
       [T("Always cached"), bm ? P(bm.start.length + bm.end.length, "{n} block", "{n} blocks", { n: bm.start.length + bm.end.length }) + cachedSize(bm, est) : "—"]);
     if (imgs.length) facts.push([T("Cover art"), imgs.map(function (a) { return coverState(a, d.optimized); }).join(" · ")]);
-    let out = '<div class="ldetail"><div class="det mono" style="margin-bottom:6px">' + esc(path.split("/").pop()) + "</div>" + checkCounts(d.checks) + '<div class="lfacts">' + facts.map(function (f) { return "<div><span class=\"muted\">" + esc(f[0]) + "</span> " + esc(f[1]) + "</div>"; }).join("") + "</div>";
+    let out = '<div class="ldetail"><div class="det mono s-mb6">' + esc(path.split("/").pop()) + "</div>" + checkCounts(d.checks) + '<div class="lfacts">' + facts.map(function (f) { return "<div><span class=\"muted\">" + esc(f[0]) + "</span> " + esc(f[1]) + "</div>"; }).join("") + "</div>";
     const dv = d.views;
     if (dv && dv.after) out += mixChart([[T("Existing"), dv.now, ROW_TIPS.existing], [T("Optimized"), dv.after, dv.rewrite ? ROW_TIPS.rewrite : ROW_TIPS.optimized]]) +
       blocksLine(dv.now.blocks, dv.after.blocks);
@@ -2614,7 +2649,7 @@ PCI18N.ready.then(function () {
   function loadingBar(text, pg) {
     if (pg && pg.total) {
       const pct = Math.min(100, Math.round(100 * (pg.done || 0) / pg.total));
-      return '<div class="loading"><div class="meter thin" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + pct + '" aria-label="' + esc(text || T("Loading")) + '"><div style="width:' + pct + '%"></div></div>' +
+      return '<div class="loading"><div class="meter thin" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + pct + '" aria-label="' + esc(text || T("Loading")) + '"><div data-css="width:' + pct + '%"></div></div>' +
         '<div class="det">' + esc(text || T("Loading…")) + " " + H("{done} of {total} · {pct}%", { done: fmtNum(pg.done || 0), total: fmtNum(pg.total), pct: pct }) + "</div></div>";
     }
     return '<div class="loading"><div class="meter thin busy" role="progressbar" aria-busy="true" aria-label="' + esc(text || T("Loading")) + '"><div></div></div><div class="det">' + esc(text || T("Loading…")) + "</div></div>";
@@ -2654,7 +2689,7 @@ PCI18N.ready.then(function () {
     const sc = (ST.health_scans || {})[only];
     if (!sc || (sc.libraries || []).map(String).indexOf(String(key)) < 0) return "";
     const at = (sc.at || {})[key], scanning = String(sc.running) === String(key);
-    return '<div class="row" style="align-items:center;gap:12px;flex-wrap:wrap"><button class="btn" type="button" data-act="lh-scan" data-key="' + esc(key) + '" data-cat="' + esc(only) + '"' + (sc.running ? " disabled" : "") + ">" +
+    return '<div class="row s-aic_gap12_wrap"><button class="btn" type="button" data-act="lh-scan" data-key="' + esc(key) + '" data-cat="' + esc(only) + '"' + (sc.running ? " disabled" : "") + ">" +
       (scanning ? H("Scanning…") : at ? H("Scan Again") : H("Scan")) + "</button>" +
       (at && !scanning ? '<span class="det">' + H("Scanned {when}", { when: ago(at) }) + "</span>" : "") + "</div>";
     // (no bar of its own: a scan makes the page's count pending, and its placeholder — countBox — is the one bar shown)
@@ -2886,7 +2921,7 @@ PCI18N.ready.then(function () {
     // while inspecting (or waiting to): a progress bar
     if (job) {
       const pct = job.total ? Math.round(100 * (job.done || 0) / job.total) : 0;
-      out += '<div class="linspect"><div class="meter" role="progressbar" aria-label="' + esc(T("Progress")) + '" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + pct + '"><div style="width:' + pct + '%"></div></div>' +
+      out += '<div class="linspect"><div class="meter" role="progressbar" aria-label="' + esc(T("Progress")) + '" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + pct + '"><div data-css="width:' + pct + '%"></div></div>' +
         '<div class="det">' + (job.paused ? H("Inspecting paused: {done} of {total} files", { done: fmtNum(job.done || 0), total: fmtNum(job.total || 0) })
           : H("Inspecting files: {done} of {total}", { done: fmtNum(job.done || 0), total: fmtNum(job.total || 0) })) + "</div></div>";
     }
@@ -2898,7 +2933,7 @@ PCI18N.ready.then(function () {
     if (!d.files.length) return out + '<p class="muted">' + H("No files.") + "</p></section></div>";
     const key = function (x) { return x.label; };
     out += '<div class="tbl-wrap lfwrap"><table class="tbl lfiles"><thead><tr><th scope="col"><span class="sr-only">' + H("Status") + '</span></th><th scope="col">' + H("File") + '</th><th scope="col">' + H("Size") +
-      '</th><th scope="col" style="width:60%">' + H("Blocks always cached: the start · the end") + "</th></tr></thead><tbody>";
+      '</th><th scope="col" class="s-w60p">' + H("Blocks always cached: the start · the end") + "</th></tr></thead><tbody>";
     let openHere = null;
     d.files.forEach(function (f, i) {
       const first = i === 0 || key(d.files[i - 1]) !== key(f); let span = 1;
@@ -2907,7 +2942,7 @@ PCI18N.ready.then(function () {
       const name = (first ? '<div class="what">' + esc(f.label) + "</div>" : "") + (span > 1 || !first ? '<div class="det mono">' + esc(f.file.split("/").pop()) + "</div>" : "");
       out += '<tr class="lrow' + (more ? " ingrp" : "") + (LIB.open === f.file ? " open" : "") + '" data-act="lib-open" data-file="' + esc(f.file) + '">' +
         (first ? "<td" + (span > 1 ? ' rowspan="' + span + '"' : "") + ">" + posterImg(f.poster) + "</td>" : "") +
-        '<td style="min-width:200px">' + name + '</td><td class="nw">' + esc(fmtBytesShort(f.size)) + (f.health ? '<div class="det">' + healthBadge(f.health) + "</div>" : "") +
+        '<td class="s-minw200">' + name + '</td><td class="nw">' + esc(fmtBytesShort(f.size)) + (f.health ? '<div class="det">' + healthBadge(f.health) + "</div>" : "") +
         "</td><td>" + libBlocks(f, false, f.file) + "</td></tr>";
       if (LIB.open === f.file) openHere = f.file;
       if (openHere && !more) { out += '<tr class="ldrow"><td colspan="4">' + libDetail(openHere) + "</td></tr>"; openHere = null; }
@@ -2938,16 +2973,16 @@ PCI18N.ready.then(function () {
     out += '<section class="card"><h2>' + H("L2ARC on Your Media Pools") + "</h2>" +
       (rows ? '<div class="tbl-wrap"><table class="tbl mid"><thead><tr><th scope="col">' + H("Pool") + '</th><th scope="col">' + H("Cache devices") + '</th><th scope="col">' + H("Size") + "</th></tr></thead><tbody>" + rows + "</tbody></table></div>"
         : '<p class="muted">' + (ST.pending || ST.checking ? H("Checking the pools…") : ST.l2arc === "unknown" ? H("Couldn’t check the pools yet. <a href=\"/system\" data-nav>Connect TrueNAS in System</a> to see them.") : H("No media pools found yet.")) + "</p>") +
-      (arc && arc.l2_present ? '<p class="muted" style="font-size:13px;margin:10px 0 0">' + H("L2ARC (SSD cache): {used} of {total} filled", { used: fmtBytes(arc.l2_asize), total: fmtBytes(ST.zfs.l2_total || arc.l2_size || 0) }) + "</p>" : "") +
+      (arc && arc.l2_present ? '<p class="muted s-fs13_m10-0-0">' + H("L2ARC (SSD cache): {used} of {total} filled", { used: fmtBytes(arc.l2_asize), total: fmtBytes(ST.zfs.l2_total || arc.l2_size || 0) }) + "</p>" : "") +
       (ST.l2arc === "absent" && !c.no_l2arc && !ST.pending ? '<div class="note">' + H("No L2ARC found. To add one in TrueNAS: Storage → your media pool → Manage Devices → Add VDEV → Cache, and pick an SSD.") + "</div>" : "") +
-      '<div style="margin-top:14px">' + checkbox("general", "no_l2arc", T("I won’t use an L2ARC"),
+      '<div class="s-mt14">' + checkbox("general", "no_l2arc", T("I won’t use an L2ARC"),
         { s: H("Runs on RAM only, without a warning in Health."),
           more: H("Settings then always use their RAM-only defaults, choices that need an SSD fall back, and warm-up stays off. Untick it if you add an L2ARC later.") }) + "</div>" +
       "</section>";
     out += l2arcSettingsCard();
     // ---- how big
     out += '<section class="card"><h2>' + H("L2ARC Sizing Estimator") + "</h2>" +
-      '<p class="help" style="margin:4px 0 0">' + H("How much cache it takes to keep every library’s lead-ins in the Lead-in Cache — on the SSD with an L2ARC, in RAM without one. Libraries without a warm-up need less. " +
+      '<p class="help s-m4-0-0">' + H("How much cache it takes to keep every library’s lead-ins in the Lead-in Cache — on the SSD with an L2ARC, in RAM without one. Libraries without a warm-up need less. " +
         "Try a different lead-in length per library below to see what it would need — the <strong>Target</strong> column follows. These sliders are only a what-if: they don’t change your settings (lead-in length is set per library in <a href=\"/caching#leadin\" data-nav>Caching → Lead-in Cache</a>), and they start from the default lengths each time this page opens. All the way down is one record.") + "</p>" +
       estimatorSliders() +
       sizingControls() + estimateHtml() + sizingHtml(true) + sizingAdvanced() + "</section>";
@@ -3005,7 +3040,7 @@ PCI18N.ready.then(function () {
   // is, Warm-up (whole libraries on a schedule) and Prefetch (what's likely to play next).
   function leadInCard() {
     const w = S.warmup, noL2 = ST.l2arc === "absent";
-    let out = '<section class="card" id="leadin"><div class="head"><h2>' + H("Lead-in Cache") + '</h2><span style="flex:1"></span>' + guideBtn("leadin") + "</div>" +
+    let out = '<section class="card" id="leadin"><div class="head"><h2>' + H("Lead-in Cache") + '</h2><span class="s-flex1"></span>' + guideBtn("leadin") + "</div>" +
       '<p class="lede">' + H("The first seconds of each file, plus its metadata, kept ready so anything you press play on starts instantly.") + "</p>" +
       guide("leadin", [
         [H("Lead-in length"), H("How many seconds of playback each lead-in holds, set per library and scaled by each file’s own bitrate, so a 4K remux gets more bytes than a 720p episode. " +
@@ -3027,7 +3062,7 @@ PCI18N.ready.then(function () {
       const used = Object.keys(scheds).map(function (k) { return scheds[k]; });
       const timed = used.filter(function (v) { return WARM_TIMED.indexOf(v) >= 0; }).length > 0;
       const weekly = used.indexOf("weekly") >= 0 || used.indexOf("twice_weekly") >= 0;
-      out += warmupStatus() + '<div class="grid" style="margin-top:0">' +
+      out += warmupStatus() + '<div class="grid s-mt0">' +
         '<div class="fld"><label for="f-warmup-time">' + H("Timed warm-ups start at") + '</label><div class="inline">' +
           (weekly ? '<select aria-label="' + H("Day") + '" data-set="warmup.weekday">' + [0, 1, 2, 3, 4, 5, 6].map(function (i) {
             const d = new Date(2024, 0, 1 + i).toLocaleDateString(LOCALE, { weekday: "long" });  // 1 Jan 2024 was a Monday
@@ -3037,7 +3072,7 @@ PCI18N.ready.then(function () {
           (ST.warmup.next_run ? H("Next run {when}", { when: fmtIso(ST.warmup.next_run) }) : timed ? "" : H("Every library warms up at boot only.")) +
           (used.indexOf("twice_weekly") >= 0 ? " " + H("Twice weekly: this day and three days later.") : "") +
           (used.indexOf("twice_monthly") >= 0 ? " " + H("Twice monthly: the 1st and 15th.") : "") + "</div></div>" +
-        '<div class="fld"><span class="lbl">' + H("Manual warm-up") + '</span><div class="acts" style="margin-top:0"><button class="btn" data-act="warmup-run"' + (ST.warmup.running ? " disabled" : "") +
+        '<div class="fld"><span class="lbl">' + H("Manual warm-up") + '</span><div class="acts s-mt0"><button class="btn" data-act="warmup-run"' + (ST.warmup.running ? " disabled" : "") +
         ">" + H("Run Now") + '</button></div><div class="help">' + (ST.warmup.last_run ? H("Last run {when}", { when: fmtIso(ST.warmup.last_run) }) : H("Hasn’t run yet")) + " · " +
         H("Full speed, every library with a warm-up.") + "</div></div>" +
         "</div>" + estimateHtml() + "</div>";
@@ -3070,7 +3105,7 @@ PCI18N.ready.then(function () {
 
   // ---- Whole File Cache: whole files Prefetch reads near the end of what's playing, per library.
   function wholeFileCard() {
-    let out = '<section class="card" id="wholefile"><div class="head"><h2>' + H("Whole File Cache") + '</h2><span style="flex:1"></span>' + guideBtn("wholefile") + "</div>" +
+    let out = '<section class="card" id="wholefile"><div class="head"><h2>' + H("Whole File Cache") + '</h2><span class="s-flex1"></span>' + guideBtn("wholefile") + "</div>" +
       '<p class="lede">' + H("Whole files read near the end of what’s playing, so the next one plays entirely from cache.") + "</p>" +
       guide("wholefile", [
         [H("When it helps"), H("Binge watching, and listening to an album or audiobook straight through: no pause before the next episode or track, and skips in it land in cache.")],
@@ -3143,7 +3178,7 @@ PCI18N.ready.then(function () {
       prev = upto;
       return '<div class="lh" title="' + esc(t) + '">' + esc(short) + "</div>";
     }).join("");
-    let out = '<div class="tbl-wrap"><div class="lgrid" style="--cols:' + cols + '"><div class="lh lh0">' + H("Read again after") + "</div>" + heads;
+    let out = '<div class="tbl-wrap"><div class="lgrid" data-css="--cols:' + cols + '"><div class="lh lh0">' + H("Read again after") + "</div>" + heads;
     lastsLibs(route).forEach(function (lib) {
       let lo = 0;
       const pts = LASTS_COLS.map(function (upto) {
@@ -3157,7 +3192,7 @@ PCI18N.ready.then(function () {
       let d = "";
       pts.forEach(function (q, i) { if (q.pct != null) d += (d ? "L" : "M") + X(i) + " " + Y(q.pct); });
       const dots = pts.map(function (q, i) {
-        return q.pct == null ? "" : '<span class="ldot' + (q.n < LASTS_FEW ? " few" : "") + '" style="left:' + ((i + 0.5) / cols * 100) + "%;top:" + Y(q.pct) + 'px"></span>';
+        return q.pct == null ? "" : '<span class="ldot' + (q.n < LASTS_FEW ? " few" : "") + '" data-css="left:' + ((i + 0.5) / cols * 100) + "%;top:" + Y(q.pct) + 'px"></span>';
       }).join("");
       out += '<div class="lname' + (lib.all ? " all" : "") + '">' + esc(lib.name) +
         '<div class="lcool">' + (lib.suggest ? H("Cooldown: up to {age}", { age: ageShort(lib.suggest) }) :
@@ -3174,7 +3209,7 @@ PCI18N.ready.then(function () {
           return '<div class="lsamp">' + (q.n ? fmtNum(q.n) : "") + "</div>";
         }).join("");
     });
-    return out + "</div></div>" + '<p class="help" style="margin:8px 0 0">' + H("How much was still cached when read again that long after it was cached. Faded: fewer than {n} reads so far.", { n: LASTS_FEW }) + "</p>";
+    return out + "</div></div>" + '<p class="help s-m8-0-0">' + H("How much was still cached when read again that long after it was cached. Faded: fewer than {n} reads so far.", { n: LASTS_FEW }) + "</p>";
   }
 
   function lastsStaleIndex(fine, route) {
@@ -3185,7 +3220,7 @@ PCI18N.ready.then(function () {
   }
   function lastsFreshRows(route, fine, idx) {
     const libs = lastsLibs(route).filter(function (l) { return !l.all; });
-    if (!libs.length) return '<p class="muted" style="margin:8px 0 0">' + H("No libraries yet. They show up here once Plex has been scanned.") + "</p>";
+    if (!libs.length) return '<p class="muted s-m8-0-0">' + H("No libraries yet. They show up here once Plex has been scanned.") + "</p>";
     // "All libraries" here adds up the libraries (reads from before they were noted apart don't have the finer ages)
     const all = { name: T("All libraries"), all: true, fine: fine.map(function () { return [0, 0]; }), first: [0, 0] };
     libs.forEach(function (l) {
@@ -3194,10 +3229,10 @@ PCI18N.ready.then(function () {
     });
     // A segment holds its share and its count, one above the other (cut short if it's narrow: the tooltip has both)
     const seg = function (cls, flex, topH, bottom, tip) {
-      return '<div class="' + cls + '" style="flex:' + flex + ' 1 0" title="' + esc(tip) + '"><span>' + topH + "</span><span>" + bottom + "</span></div>";
+      return '<div class="' + cls + '" data-css="flex:' + flex + ' 1 0" title="' + esc(tip) + '"><span>' + topH + "</span><span>" + bottom + "</span></div>";
     };
     const side = function (hit, miss, left, flex) {
-      const n = hit + miss, cls = "fhalf" + (left ? " L" : " R"), fl = ' style="flex:' + flex + ' 1 0"';
+      const n = hit + miss, cls = "fhalf" + (left ? " L" : " R"), fl = ' data-css="flex:' + flex + ' 1 0"';
       if (!n) return '<div class="' + cls + '"' + fl + '><div class="fbar"><div class="fempty">' + H("No reads") + "</div></div></div>";
       const hp = Math.round(100 * hit / n); let bar = "";
       if (hit) bar += seg("fhit", hp, hp + "%", PH(hit, "{n} hit", "{n} hits"), T("{pct}% hit · {n} of {total} reads", { pct: hp, n: fmtNum(hit), total: fmtNum(n) }));
@@ -3214,20 +3249,20 @@ PCI18N.ready.then(function () {
       return o;
     };
     const age = ageShort(fine[idx]), mid = lastsFirst ? 24 : 0;  // (the rows' middles vary; the headings just mark left, middle and right)
-    const out = '<div></div><div class="fband fheads' + (lastsFirst ? " ends" : "") + '"><div class="fhead L" style="flex:' + (100 - mid) / 2 + ' 1 0"><strong>' + H("Fresh cache") + '</strong><div class="help">' + H("Cached {age} ago or less", { age: age }) + "</div></div>" +
-      (lastsFirst ? '<div class="fhead M" style="flex:' + mid + ' 1 0"><strong>' + H("Virgin cache") + '</strong><div class="help">' + H("Not in the log before") + "</div></div>" : "") +
-      '<div class="fhead R" style="flex:' + (100 - mid) / 2 + ' 1 0"><strong>' + H("Stale cache") + '</strong><div class="help">' + H("Cached more than {age} ago", { age: age }) + "</div></div></div>";
+    const out = '<div></div><div class="fband fheads' + (lastsFirst ? " ends" : "") + '"><div class="fhead L" data-css="flex:' + (100 - mid) / 2 + ' 1 0"><strong>' + H("Fresh cache") + '</strong><div class="help">' + H("Cached {age} ago or less", { age: age }) + "</div></div>" +
+      (lastsFirst ? '<div class="fhead M" data-css="flex:' + mid + ' 1 0"><strong>' + H("Virgin cache") + '</strong><div class="help">' + H("Not in the log before") + "</div></div>" : "") +
+      '<div class="fhead R" data-css="flex:' + (100 - mid) / 2 + ' 1 0"><strong>' + H("Stale cache") + '</strong><div class="help">' + H("Cached more than {age} ago", { age: age }) + "</div></div></div>";
     return out + /** @type {Row[]} */ ([all]).concat(libs).map(function (l) {
       const o = split(l), half = (100 - o.mid) / 2;
       const name = '<div class="lname' + (l.all ? " all" : "") + '">' + (l.all ? "" : libIcon(l.key)) + esc(l.name) + "</div>";
       // Nothing to show is worth knowing too: say why instead of leaving the library out
       if (!l.all && !(o.n + l.first[0] + l.first[1])) {
         const why = lastsNone(l, H("No reads"));
-        return name + '<div class="fband"><div class="fhalf L" style="flex:1 1 0"><div class="fbar"><div class="fempty">' + why + "</div></div></div>" +
-          '<div class="fhalf R" style="flex:1 1 0"><div class="fbar"><div class="fempty">' + why + "</div></div></div></div>";
+        return name + '<div class="fband"><div class="fhalf L s-flex1-1-0"><div class="fbar"><div class="fempty">' + why + "</div></div></div>" +
+          '<div class="fhalf R s-flex1-1-0"><div class="fbar"><div class="fempty">' + why + "</div></div></div></div>";
       }
       const pct = o.n ? Math.round(100 * o.first / o.n) : 0;
-      const midHtml = !o.mid ? "" : '<div class="fmid" style="flex:' + o.mid + ' 1 0"><div class="fbar">' +
+      const midHtml = !o.mid ? "" : '<div class="fmid" data-css="flex:' + o.mid + ' 1 0"><div class="fbar">' +
         seg("ffirst", 1, pct + "%", esc(T("{n} of {total} virgin", { n: fmtNum(o.first), total: fmtNum(o.n) })),
           T("Virgin: {n} of {total} reads ({pct}%)", { n: fmtNum(o.first), total: fmtNum(o.n), pct: pct })) + "</div></div>";
       return name + '<div class="fband">' + side(o.fh, o.fm, true, half) + midHtml + side(o.sh, o.sm, false, half) + "</div>";
@@ -3247,7 +3282,7 @@ PCI18N.ready.then(function () {
       '<strong id="lasts-stale-val">' + esc(age) + "</strong></div>" +
       '<div class="fopts"><button class="link" type="button" data-lasts-first aria-expanded="' + lastsFirst + '">' + (lastsFirst ? H("Hide virgin cache") : H("Show virgin cache")) + "</button></div>" +
       '<div class="frows" id="lasts-fresh">' + lastsFreshRows(route, fine, idx) + "</div>" +
-      '<p class="help" style="margin:8px 0 0"><span class="fkey fhit"></span> ' + H("Hit: read from cache") + ' &nbsp; <span class="fkey fmiss"></span> ' + H("Miss: read from the disk") +
+      '<p class="help s-m8-0-0"><span class="fkey fhit"></span> ' + H("Hit: read from cache") + ' &nbsp; <span class="fkey fmiss"></span> ' + H("Miss: read from the disk") +
       '<span id="lasts-first-key"' + (lastsFirst ? "" : " hidden") + '> &nbsp; <span class="fkey ffirst"></span> ' + H("Virgin: established cache entry, history unknown") + "</span></p>";
   }
   function lastsFreshUpdate(idx) {
@@ -3256,7 +3291,7 @@ PCI18N.ready.then(function () {
     if (idx == null) idx = lastsStaleIndex(sv.fine, route);
     lastsStale[lastsTier] = idx;
     main.querySelector("#lasts-stale-val").textContent = ageShort(sv.fine[idx]);
-    main.querySelector("#lasts-fresh").innerHTML = lastsFreshRows(route, sv.fine, idx);
+    setHtml(main.querySelector("#lasts-fresh"), lastsFreshRows(route, sv.fine, idx));
     main.querySelector("#lasts-first-key").hidden = !lastsFirst;
     const b = main.querySelector("[data-lasts-first]");
     b.setAttribute("aria-expanded", String(lastsFirst));
@@ -3280,7 +3315,7 @@ PCI18N.ready.then(function () {
       return { name: l.name || T("Library {key}", { key: l.key }), pts: d.libs[l.key] || [], color: FC_COLORS[i % FC_COLORS.length] };
     }));
     const seg = function (v, label) { return '<button role="tab" type="button" aria-selected="' + (v === lastsRange) + '" data-lasts-range="' + v + '">' + label + "</button>"; };
-    const ranges = '<div class="seg small" role="tablist" aria-label="' + H("Range") + '" style="margin:0 0 10px">' + seg("24h", H("24 hours")) + seg("7d", H("7 days")) + seg("30d", H("30 days")) + "</div>";
+    const ranges = '<div class="seg small s-m0-0-10" role="tablist" aria-label="' + H("Range") + '">' + seg("24h", H("24 hours")) + seg("7d", H("7 days")) + seg("30d", H("30 days")) + "</div>";
     const W = 700, Hh = 260, L = 64, R = 12, Tp = 12, B = 30, n = d.days.length;
     const lo = Math.log(60), hi = Math.log(15552000);
     const X = function (i) { return L + (W - L - R) * (n > 1 ? i / (n - 1) : 0.5); };
@@ -3305,23 +3340,23 @@ PCI18N.ready.then(function () {
         path += (pen ? "L" : "M") + X(i) + " " + Y(p.age);
         pen = true;
       });
-      if (path) svg += '<path d="' + path + '" fill="none" style="stroke:' + s.color + '" stroke-width="' + (s.all ? 3 : 2) + '" stroke-linejoin="round" stroke-linecap="round"/>';
+      if (path) svg += '<path d="' + path + '" fill="none" data-css="stroke:' + s.color + '" stroke-width="' + (s.all ? 3 : 2) + '" stroke-linejoin="round" stroke-linecap="round"/>';
       s.pts.forEach(function (p, i) {
         if (!p) return;
         const at = new Date(d.days[i] * 1000);
         const day = hourly ? at.toLocaleString(LOCALE, { weekday: "short", hour: "numeric", minute: "2-digit" }) : at.toLocaleDateString(LOCALE, { weekday: "short", month: "short", day: "numeric" });
         const what = p.bound ? T("at least {age}", { age: ageShort(p.age) }) : (p.age ? ageShort(p.age) : T("under {age}", { age: ageShort(p.miss) }));
-        svg += '<circle cx="' + X(i) + '" cy="' + Y(p.age) + '" r="' + (lastsRange === "7d" ? (s.all ? 3 : 2.5) : (s.all ? 5 : 4)) + '" style="stroke:' + s.color + ";fill:" + (p.bound ? "var(--panel)" : s.color) + '" stroke-width="2"><title>' +
+        svg += '<circle cx="' + X(i) + '" cy="' + Y(p.age) + '" r="' + (lastsRange === "7d" ? (s.all ? 3 : 2.5) : (s.all ? 5 : 4)) + '" data-css="stroke:' + s.color + ";fill:" + (p.bound ? "var(--panel)" : s.color) + '" stroke-width="2"><title>' +
           esc(day + " · " + s.name + ": " + what + " · " + P(p.n, "{n} re-read", "{n} re-reads")) + "</title></circle>";
       });
     });
     svg += "</svg>";
     const legend = '<div class="fclegend">' + series.map(function (s) {
-      return '<span><i style="background:' + s.color + (s.all ? ";height:4px" : "") + '"></i>' + esc(s.name) + "</span>";
+      return '<span><i data-css="background:' + s.color + (s.all ? ";height:4px" : "") + '"></i>' + esc(s.name) + "</span>";
     }).join("") + '<span><i class="ring"></i>' + H("no misses: at least this long") + "</span></div>";
-    if (!any) return ranges + legend + '<p class="muted" style="margin:8px 0 0">' + H("No history yet. A point shows up for each hour in which something cached is read again.") + "</p>";
+    if (!any) return ranges + legend + '<p class="muted s-m8-0-0">' + H("No history yet. A point shows up for each hour in which something cached is read again.") + "</p>";
     return ranges + legend + '<div class="fcwrap">' + svg + "</div>" +
-      '<p class="help" style="margin:8px 0 0">' + (hourly ? H("Each hour: everything read again in that hour, up to this age, was still cached. Hover a point for the details.") :
+      '<p class="help s-m8-0-0">' + (hourly ? H("Each hour: everything read again in that hour, up to this age, was still cached. Hover a point for the details.") :
         H("Each day: everything read again that day, up to this age, was still cached. Hover a point for the details.")) + "</p>";
   }
 
@@ -3344,7 +3379,7 @@ PCI18N.ready.then(function () {
   }
   function covBody() {
     const d = covData();
-    if (!d || !d.t.length) return '<p class="muted" style="margin:8px 0 0">' + H("No history yet: the first hour is recorded once the libraries have been scanned.") + "</p>";
+    if (!d || !d.t.length) return '<p class="muted s-m8-0-0">' + H("No history yet: the first hour is recorded once the libraries have been scanned.") + "</p>";
     const n = d.t.length; let last = null;
     for (let j = n - 1; j >= 0 && !last; j--) last = d.v[j] && { i: j, v: d.v[j] };
     const at = covHover != null && d.v[covHover] ? { i: covHover, v: d.v[covHover] } : last;
@@ -3400,7 +3435,7 @@ PCI18N.ready.then(function () {
     const tab = function (attr, v, cur, label) { return '<button role="tab" type="button" aria-selected="' + (String(v) === String(cur)) + '" ' + attr + '="' + v + '">' + label + "</button>"; };
     const hours = COV ? Math.max(1, Math.round(Math.exp(covRange / 1000 * Math.log(Math.max(2, COV.hours.length))))) : 1;
     const span = hours < 48 ? P(hours, "{n} hour", "{n} hours") : hours < 24 * 60 ? P(Math.round(hours / 24), "{n} day", "{n} days") : P(Math.round(hours / 720), "{n} month", "{n} months");
-    return '<section class="card" id="coverage" style="margin-bottom:20px"><h2>' + H("Library Cached Over Time") + "</h2>" +
+    return '<section class="card s-mb20" id="coverage"><h2>' + H("Library Cached Over Time") + "</h2>" +
       '<p class="hint">' + H("Each hour: the share of the library this app cached within the last hour, 24 hours, 7 days, 30 days and 6 months — in RAM or on the SSD. Wider means more of it. Hover for any hour.") + "</p>" +
       '<div class="lctl"><div class="seg small strong" role="tablist" aria-label="' + H("Library") + '">' + tab("data-cov-lib", "*", covLib, H("All libraries")) +
       libs.map(function (l) { return tab("data-cov-lib", l.key, covLib, libIcon(l.key) + esc(l.title)); }).join("") + "</div>" +
@@ -3419,9 +3454,9 @@ PCI18N.ready.then(function () {
     const segBtn = function (attr, val, cur, label) { return '<button role="tab" type="button" aria-selected="' + (val === cur) + '" ' + attr + '="' + val + '">' + label + "</button>"; };
     const sug = (route.suggest ? H("Suggested cooldown: up to {age} (fully cached age, last 7 days)", { age: ageShort(route.suggest) }) : noSuggestion(route)) +
       (route.auto ? " · " + H("Automatic uses up to {age} now", { age: ageShort(route.auto) }) : "");
-    let out = '<section class="card" id="lasts" style="margin-bottom:20px"><div style="display:flex;flex-wrap:wrap;justify-content:space-between;gap:10px;align-items:baseline"><h2>' + H("How Long Cached Data Lasts") + "</h2>" +
+    let out = '<section class="card s-mb20" id="lasts"><div class="s-dflex_wrap_jcsb_gap10_aib"><h2>' + H("How Long Cached Data Lasts") + "</h2>" +
       guideBtn("lasts") + "</div>" +
-      '<div class="muted" style="font-size:13px">' + H("Since {when}", { when: fmtTime(sv.since) }) + ' · <button class="link" type="button" data-act="lasts-reset">' + H("Start again") + "</button>" +
+      '<div class="muted s-fs13">' + H("Since {when}", { when: fmtTime(sv.since) }) + ' · <button class="link" type="button" data-act="lasts-reset">' + H("Start again") + "</button>" +
       ' · <a class="link" href="/api/cachelog/export" download>' + H("Export log") + "</a></div>" +
       guide("lasts", [
         [H("What’s measured"), H("Every time something is read again — by Now Playing Cache, Prefetch or warm-up — the read is timed, so it tells us whether what was cached that long ago was still there. " +
@@ -3440,12 +3475,12 @@ PCI18N.ready.then(function () {
       (noL2 ? "" : '<div class="seg small strong" role="tablist" aria-label="' + H("Cache") + '">' +
       segBtn("data-lasts-tier", "ram", lastsTier, H("RAM") + " " + mark("ram-only")) + segBtn("data-lasts-tier", "ssd", lastsTier, H("SSD (L2ARC)") + " " + mark("ssd-only")) + "</div>") + "</div>";
     if (!(lastsTier === "ssd" && ST.l2arc === "absent"))
-      out += '<p class="help" style="margin:0 0 12px">' + sug + " · " + PH(route.first, "{n} cached for the first time", "{n} cached for the first time") + "</p>";
+      out += '<p class="help s-m0-0-12">' + sug + " · " + PH(route.first, "{n} cached for the first time", "{n} cached for the first time") + "</p>";
     // The SSD cache is per pool: none at all, or only under some libraries, is worth saying
     if (lastsTier === "ssd") {
       const bare = (route.libs || []).filter(function (l) { return l.cached !== false && l.l2arc === false; });
-      if (ST.l2arc === "absent") out += '<div class="note" style="margin:0 0 12px">' + H("There’s no SSD cache (L2ARC) on the pools holding your libraries, so nothing is cached on an SSD to measure. See <a href=\"/ssd\" data-nav>SSD Cache</a>.") + "</div>";
-      else if (bare.length) out += '<div class="note" style="margin:0 0 12px">' + H("No SSD cache (L2ARC) on the pool of: {list}. Their data only stays in RAM.", { list: bare.map(function (l) { return l.name; }).join(", ") }) + "</div>";
+      if (ST.l2arc === "absent") out += '<div class="note s-m0-0-12">' + H("There’s no SSD cache (L2ARC) on the pools holding your libraries, so nothing is cached on an SSD to measure. See <a href=\"/ssd\" data-nav>SSD Cache</a>.") + "</div>";
+      else if (bare.length) out += '<div class="note s-m0-0-12">' + H("No SSD cache (L2ARC) on the pool of: {list}. Their data only stays in RAM.", { list: bare.map(function (l) { return l.name; }).join(", ") }) + "</div>";
     }
     out += lastsView === "fresh" ? lastsFreshHtml(route, sv.fine) : lastsView === "fully" ? lastsFullyHtml(route) : lastsAgeHtml(route);
     return out + "</section>";
@@ -3457,7 +3492,7 @@ PCI18N.ready.then(function () {
   function optimizedHistoryCard() {
     const libs = ST.optimized_history || [];
     if (!libs.length) return "";
-    let out = '<section class="card" style="margin-bottom:20px">' + heading(esc(T("Optimized Files")),
+    let out = '<section class="card s-mb20">' + heading(esc(T("Optimized Files")),
       H("What caching keeps of each library’s optimized files, on average per file: as each file was when first seen, before any optimizing, and as it is now. Kept for good."));
     libs.forEach(function (l) {
       out += '<div class="lmixsum"><div class="what">' + libIcon(l.key) + esc(l.title || l.key) + "</div>";
@@ -3478,13 +3513,13 @@ PCI18N.ready.then(function () {
 
     // sessions
     const ss = ST.playback.sessions;
-    out += '<section class="card" style="margin-bottom:20px"><h2 style="margin-bottom:14px">' + H("Playing Now") + "</h2>";
+    out += '<section class="card s-mb20"><h2 class="s-mb14">' + H("Playing Now") + "</h2>";
     if (ST.playback.error) out += '<div class="note">' + esc(ST.playback.error) + "</div>";
-    if (!ss.length) out += '<p class="muted" style="margin:0">' + H("Nothing is playing.") + "</p>";
+    if (!ss.length) out += '<p class="muted s-m0">' + H("Nothing is playing.") + "</p>";
     ss.forEach(function (s) {
-      out += '<div class="sess"><div class="withposter">' + posterImg(s.poster) + '<div><div class="what">' + esc(s.label) + '</div><div class="muted" style="font-size:13px">' + esc(s.player || T("Unknown player")) + " · " +
+      out += '<div class="sess"><div class="withposter">' + posterImg(s.poster) + '<div><div class="what">' + esc(s.label) + '</div><div class="muted s-fs13">' + esc(s.player || T("Unknown player")) + " · " +
         (s.local === false ? H("remote") : H("local")) + " · " + (s.transcoding ? H("transcoding") : H("direct play")) + " · " + H("{pct}% watched", { pct: s.progress }) + "</div></div></div><div>";
-      if (!s.jobs.length) out += '<span class="muted" style="font-size:13px">' + H("No cache work for this stream yet") + "</span>";
+      if (!s.jobs.length) out += '<span class="muted s-fs13">' + H("No cache work for this stream yet") + "</span>";
       const nextJobs = s.jobs.filter(function (j) { return j.feature === "nextepisode" && j.state !== "cancelled"; });
       let shown = s.jobs;
       if (nextJobs.length > 3) {
@@ -3493,7 +3528,7 @@ PCI18N.ready.then(function () {
         const bytes = nextJobs.reduce(function (t, j) { return t + (j.read || 0); }, 0);
         const now = nextJobs.filter(function (j) { return j.state === "reading" && !j.paused; })[0];
         const held = nextJobs.filter(function (j) { return j.paused; })[0];
-        out += '<div class="muted" style="font-size:13px">' + H("Prefetch") + '</div><div style="display:flex;gap:10px;align-items:center;margin:4px 0 8px;flex-wrap:wrap">' +
+        out += '<div class="muted s-fs13">' + H("Prefetch") + '</div><div class="s-dflex_gap10_aic_m4-0-8_wrap">' +
           badge(doneN === nextJobs.length ? "done" : "running", doneN === nextJobs.length ? T("Done") : T("Reading")) + "<span>" +
           PH(nextJobs.length, "{done} of {n} track ready · {size}", "{done} of {n} tracks ready · {size}", { done: doneN, size: fmtBytes(bytes) }) +
           (now ? " · " + H("now: {title}", { title: now.target }) : "") +
@@ -3508,7 +3543,7 @@ PCI18N.ready.then(function () {
           (j.state === "done" ? T("{size} loaded", { size: fmtBytes(j.read) }) + of + " " + ago(j.finished) :
           (j.state === "waiting" ? fmtBytes(j.length) + of + (j.delay ? " · " + T("starts {n} s after playback began", { n: j.delay }) : "") : fmtBytes(j.length)));
         if (j.paused) amt += " · " + T("paused: {why}", { why: msg(j.paused) });
-        out += '<div class="muted" style="font-size:13px">' + esc(feat) + '</div><div style="display:flex;gap:10px;align-items:center;margin:4px 0 8px;flex-wrap:wrap">' +
+        out += '<div class="muted s-fs13">' + esc(feat) + '</div><div class="s-dflex_gap10_aic_m4-0-8_wrap">' +
           (j.paused ? badge("warn", T("Paused")) : badge(j.state, label)) + "<span>" + esc(j.target) + " · " + esc(amt) + "</span></div>";
       });
       out += "</div></div>";
@@ -3516,8 +3551,8 @@ PCI18N.ready.then(function () {
     out += "</section>";
 
     // runs
-    out += '<section class="card" style="margin-bottom:20px"><div style="display:flex;flex-wrap:wrap;justify-content:space-between;gap:10px;align-items:baseline"><h2>' + H("Warm-up Runs") + info(H("“L2ARC grew” compares cache size before and after each run. ZFS fills the L2ARC gradually, so it can lag a little. " +
-      "If it stays near zero and “Already cached” stays low on repeat runs, reads aren’t landing in the L2ARC — Health will flag it."), T("warm-up runs")) + '</h2><span class="muted" style="font-size:13px">' +
+    out += '<section class="card s-mb20"><div class="s-dflex_wrap_jcsb_gap10_aib"><h2>' + H("Warm-up Runs") + info(H("“L2ARC grew” compares cache size before and after each run. ZFS fills the L2ARC gradually, so it can lag a little. " +
+      "If it stays near zero and “Already cached” stays low on repeat runs, reads aren’t landing in the L2ARC — Health will flag it."), T("warm-up runs")) + '</h2><span class="muted s-fs13">' +
       (isOn("warmup") ? (ST.warmup.next_run ? H("Next run {when}", { when: fmtIso(ST.warmup.next_run) }) : H("No timed runs")) : H("No library has a warm-up")) + "</span></div>" + warmupStatus();
     if (!a.runs.length) out += '<p class="muted">' + H("No runs yet.") + "</p>";
     else {
@@ -3530,7 +3565,7 @@ PCI18N.ready.then(function () {
           (r.l2_growth == null ? "—" : (r.l2_growth >= 0 ? "+" : "−") + esc(fmtBytes(Math.abs(r.l2_growth)))) + '</td><td class="nw">' +
           (r.next_day == null ? '<span class="muted">' + (Date.now() / 1000 - r.finished < 86400 ? H("tomorrow") : "—") + "</span>" : r.next_day + "%") + '</td><td class="nw">' +
           esc(fmtDur(r.finished - r.started)) + "</td><td>" +
-          badge(r.result, { ok: T("OK"), stopped: T("Stopped"), errors: T("Errors") }[r.result] || r.result) + (r.errors ? ' <span class="muted" style="font-size:13px">' + H("{n} unreadable", { n: r.errors }) + "</span>" : "") + "</td></tr>";
+          badge(r.result, { ok: T("OK"), stopped: T("Stopped"), errors: T("Errors") }[r.result] || r.result) + (r.errors ? ' <span class="muted s-fs13">' + H("{n} unreadable", { n: r.errors }) + "</span>" : "") + "</td></tr>";
       });
       out += "</tbody></table></div>";
 
@@ -3541,7 +3576,7 @@ PCI18N.ready.then(function () {
     out += coverageCard();
 
     // events
-    out += '<section class="card"><div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center"><h2>' + H("Recent Events") + '</h2></div><div class="log" tabindex="0" role="log" aria-label="' + esc(T("Recent Events")) + '" style="margin-top:12px">';
+    out += '<section class="card"><div class="s-dflex_jcsb_gap10_wrap_aic"><h2>' + H("Recent Events") + '</h2></div><div class="log s-mt12" tabindex="0" role="log" aria-label="' + esc(T("Recent Events")) + '">';
     if (!a.events.length) out += '<div class="muted">' + H("Nothing yet.") + "</div>";
     a.events.forEach(function (e) {
       const t = new Date(e.t * 1000).toLocaleTimeString(LOCALE, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -3589,15 +3624,15 @@ PCI18N.ready.then(function () {
     const pct = function (p, n) { return n ? Math.round(100 * p / n) : null; };
     const bar = function (p, n) {
       const v = pct(p, n);
-      if (v == null) return '<div class="sbar"><div class="fempty" style="flex:1">' + H("No skips") + "</div></div>";
+      if (v == null) return '<div class="sbar"><div class="fempty s-flex1">' + H("No skips") + "</div></div>";
       return '<div class="sbar" title="' + esc(T("{pct}% expected from cache, over {n} skips", { pct: v, n: fmtNum(n) })) + '">' +
-        (v ? '<div class="fhit" style="flex:' + v + ' 1 0">' + (v >= 10 ? v + "%" : "") + "</div>" : "") +
-        (v < 100 ? '<div class="fmiss" style="flex:' + (100 - v) + ' 1 0">' + (100 - v >= 10 ? (100 - v) + "%" : "") + "</div>" : "") + "</div>";
+        (v ? '<div class="fhit" data-css="flex:' + v + ' 1 0">' + (v >= 10 ? v + "%" : "") + "</div>" : "") +
+        (v < 100 ? '<div class="fmiss" data-css="flex:' + (100 - v) + ' 1 0">' + (100 - v >= 10 ? (100 - v) + "%" : "") + "</div>" : "") + "</div>";
     };
     const known = libs.reduce(function (a, l) { return a + l.total; }, 0);
     /** @type {Row[]} */ const rows = [{ key: "*", name: T("All libraries"), total: t.total, expected: t.expected, all: true }].concat(libs);
     if (t.total > known) rows.push({ key: "?", name: T("Library not recorded"), total: t.total - known, expected: Math.max(0, t.expected - libs.reduce(function (a, l) { return a + l.expected; }, 0)) });
-    let out = '<section class="card" id="skips" style="margin-bottom:20px"><h2>' + H("Skips Served from Cache") + "</h2>" +
+    let out = '<section class="card s-mb20" id="skips"><h2>' + H("Skips Served from Cache") + "</h2>" +
       '<p class="hint">' + H("{period}: each skip counted by how likely it came from cache — where it landed, how long ago that part was cached, and how long cached data lasts in its library.", { period: r.span }) + "</p>";
     out += '<div class="srows">' + rows.map(function (l) {
       return '<div class="lname' + (l.all ? " all" : "") + '">' + (l.all ? "" : libIcon(l.key)) + esc(l.name) + '</div><div>' + bar(l.expected, l.total) + "</div>" +
@@ -3607,7 +3642,7 @@ PCI18N.ready.then(function () {
     const keyChips = rows.filter(function (l) { return l.key !== "?"; }).map(function (l) {
       return '<button role="tab" type="button" aria-selected="' + (l.key === skipsLib) + '" data-skips-lib="' + l.key + '">' + libIcon(l.key) + esc(l.name) + "</button>";
     }).join("");
-    out += '<div class="seg small strong" role="tablist" aria-label="' + H("Library") + '" style="margin:16px 0 8px">' + keyChips + "</div>";
+    out += '<div class="seg small strong s-m16-0-8" role="tablist" aria-label="' + H("Library") + '">' + keyChips + "</div>";
     const data = (r.series || []).map(function (d) {
       const nv = skipsLib === "*" ? [d.skips || 0, d.skips_p || 0] : ((d.skips_by || {})[skipsLib] || [0, 0]);
       return { label: barLabel(d, r.period), n: nv[0], p: nv[1] };
@@ -3632,8 +3667,8 @@ PCI18N.ready.then(function () {
       if (i % every === 0) svg += '<text class="axis" x="' + (x + bw / 2) + '" y="' + (CH - 6) + '" text-anchor="middle">' + esc(d.label) + "</text>";
     });
     svg += "</svg>";
-    out += any ? svg : '<p class="muted" style="margin:6px 0 0">' + H("No skips in this period.") + "</p>";
-    return out + '<p class="help" style="margin:8px 0 0"><span class="fkey fhit"></span> ' + H("From cache") + ' &nbsp; <span class="fkey fmiss"></span> ' + H("From the disks") + "</p></section>";
+    out += any ? svg : '<p class="muted s-m6-0-0">' + H("No skips in this period.") + "</p>";
+    return out + '<p class="help s-m8-0-0"><span class="fkey fhit"></span> ' + H("From cache") + ' &nbsp; <span class="fkey fmiss"></span> ' + H("From the disks") + "</p></section>";
   }
 
   function niceMax(v) {
@@ -3685,9 +3720,9 @@ PCI18N.ready.then(function () {
       c.keys.map(function (k) { return '<th scope="col">' + esc(k[1]) + "</th>"; }).join("") + "</tr></thead><tbody>" +
       data.map(function (d) { return "<tr><td>" + esc(d.label) + "</td>" + c.keys.map(function (k) { return "<td>" + (d[k[0]] == null ? "—" : esc(c.fmt(d[k[0]]))) + "</td>"; }).join("") + "</tr>"; }).join("") +
       "</tbody></table></div>";
-    return '<section class="card chartcard" style="margin-bottom:20px"><div class="head"><h2>' + H("Over Time") + '</h2><span style="flex:1"></span><div class="seg small" role="tablist" aria-label="' + H("Chart") + '">' + tabs + "</div></div>" +
+    return '<section class="card chartcard s-mb20"><div class="head"><h2>' + H("Over Time") + '</h2><span class="s-flex1"></span><div class="seg small" role="tablist" aria-label="' + H("Chart") + '">' + tabs + "</div></div>" +
       '<p class="hint">' + esc(c.hint) + "</p>" + legend +
-      (any ? '<div class="chartwrap">' + svg + '<div class="chart-tip" hidden></div></div>' : '<p class="muted" style="margin:18px 0">' + H("Nothing measured in this period yet.") + "</p>") +
+      (any ? '<div class="chartwrap">' + svg + '<div class="chart-tip" hidden></div></div>' : '<p class="muted s-m18-0">' + H("Nothing measured in this period yet.") + "</p>") +
       details("chart-table", H("Show as a table"), table) + "</section>";
   }
 
@@ -3698,8 +3733,8 @@ PCI18N.ready.then(function () {
     function rtile(title, big, sub, status, why, goTo) {
       // go: the detailed view this tile opens (a card further down the page): a click anywhere on it, or its › (the
       // button the keyboard reaches: the tile holds the ⓘ, and a button can't hold another)
-      return '<div class="card tile rtile r-' + status + (goTo ? ' rgo" data-goto="' + goTo + '" title="' + esc(T("Show the details")) : "") + '"><div class="muted" style="font-size:13px">' + esc(title) + info(esc(why), title) + '</div><div class="big">' + big +
-        '</div><div class="muted" style="font-size:13px">' + sub + (goTo ? ' <span class="rmore" data-goto="' + goTo + '" role="button" tabindex="0" aria-label="' + esc(T("Show the details")) + '">›</span>' : "") + "</div></div>";
+      return '<div class="card tile rtile r-' + status + (goTo ? ' rgo" data-goto="' + goTo + '" title="' + esc(T("Show the details")) : "") + '"><div class="muted s-fs13">' + esc(title) + info(esc(why), title) + '</div><div class="big">' + big +
+        '</div><div class="muted s-fs13">' + sub + (goTo ? ' <span class="rmore" data-goto="' + goTo + '" role="button" tabindex="0" aria-label="' + esc(T("Show the details")) + '">›</span>' : "") + "</div></div>";
     }
     out += '<div class="tiles rtiles">';
     // Weighted by how likely each one really came from cache: how long ago that part was cached,
@@ -3728,10 +3763,10 @@ PCI18N.ready.then(function () {
     out += "</div>" + chartCard(r) + skipsCard(r);
 
     if (r.attention.length) {
-      out += '<section class="card" style="margin-bottom:20px"><h2>' + H("Needs Attention") + '</h2><p class="hint">' + H("Only shows up when something could be better.") + "</p>";
+      out += '<section class="card s-mb20"><h2>' + H("Needs Attention") + '</h2><p class="hint">' + H("Only shows up when something could be better.") + "</p>";
       r.attention.forEach(function (x) {
         out += itemRow({ status: x.status, title: x.title, detail: x.detail, fix: x.fix },
-          x.link ? '<a href="' + esc(x.link) + '" data-nav style="font-size:13px">' + H("Go there") + "</a>" : "");
+          x.link ? '<a href="' + esc(x.link) + '" data-nav class="s-fs13">' + H("Go there") + "</a>" : "");
       });
       out += "</section>";
     }
@@ -3745,18 +3780,18 @@ PCI18N.ready.then(function () {
     }
     function meter(label, used, limit) {
       const pct = limit ? Math.min(100, used / limit * 100) : 0;
-      return '<div style="margin:6px 0 12px"><div style="display:flex;justify-content:space-between;font-size:13px"><span>' + esc(label) + '</span><span class="muted">' +
-        H("{used} of {limit}", { used: fmtBytes(used), limit: fmtBytes(limit) }) + '</span></div><div class="meter usage"><div style="width:' + pct.toFixed(1) + '%"></div></div></div>';
+      return '<div class="s-m6-0-12"><div class="s-dflex_jcsb_fs13"><span>' + esc(label) + '</span><span class="muted">' +
+        H("{used} of {limit}", { used: fmtBytes(used), limit: fmtBytes(limit) }) + '</span></div><div class="meter usage"><div data-css="width:' + pct.toFixed(1) + '%"></div></div></div>';
     }
-    out += '<div class="cols2" style="margin-bottom:20px"><section class="card"><h2>' + H("RAM Limits") + '</h2><p class="hint">' + H("In use right now, by streams that are playing.") + "</p>" +
+    out += '<div class="cols2 s-mb20"><section class="card"><h2>' + H("RAM Limits") + '</h2><p class="hint">' + H("In use right now, by streams that are playing.") + "</p>" +
       meter(T("Now Playing Cache"), r.ram.nowplaying.in_use, r.ram.nowplaying.limit) + meter(T("Prefetch"), r.ram.nextepisode.in_use, r.ram.nextepisode.limit) +
-      '<div class="muted" style="font-size:13px">' + ramShort(r) + "</div></section>";
+      '<div class="muted s-fs13">' + ramShort(r) + "</div></section>";
     out += '<section class="card"><h2>' + H("Disks While People Watched") + '</h2><p class="hint">' + H("How busy the media pool’s disks were during streams.") + "</p>";
-    if (r.disk.avg == null) out += '<p class="muted" style="margin:0">' + H("Measured during streams; nothing yet.") + "</p>";
-    else out += '<div class="big" style="font-size:28px">' + H("{n}% <small class=\"muted\" style=\"font-size:14px\">average</small>", { n: r.disk.avg }) + '</div><div class="meter usage"><div style="width:' + r.disk.avg + '%"></div></div>' +
-      '<div class="muted" style="font-size:13px;margin-top:6px">' + PH(r.disk.streams, "Peak {peak}% · over {n} stream", "Peak {peak}% · over {n} streams", { peak: r.disk.peak }) + "</div>";
+    if (r.disk.avg == null) out += '<p class="muted s-m0">' + H("Measured during streams; nothing yet.") + "</p>";
+    else out += '<div class="big s-fs28">' + H("{n}% <small class=\"muted s-fs14\">average</small>", { n: r.disk.avg }) + '</div><div class="meter usage"><div data-css="width:' + r.disk.avg + '%"></div></div>' +
+      '<div class="muted s-fs13_mt6">' + PH(r.disk.streams, "Peak {peak}% · over {n} stream", "Peak {peak}% · over {n} streams", { peak: r.disk.peak }) + "</div>";
     if (z.l2_total && arc) {
-      out += '<div class="muted" style="font-size:13px;margin-top:12px">' + H("L2ARC (SSD cache): {used} of {total} filled", { used: fmtBytes(arc.l2_asize), total: fmtBytes(z.l2_total) }) + "</div>";
+      out += '<div class="muted s-fs13_mt12">' + H("L2ARC (SSD cache): {used} of {total} filled", { used: fmtBytes(arc.l2_asize), total: fmtBytes(z.l2_total) }) + "</div>";
     }
     out += "</section></div>";
     return out;
@@ -3875,12 +3910,12 @@ PCI18N.ready.then(function () {
   }
   function peerCard() {
     const pe = ST.peer || {}, ps = S.peer || {}, own = pe.own || {}, peerLinks = Object.keys(pe.links || {}).map(function (k) { return pe.links[k]; });
-    let out = '<section class="card' + (integrationMark("peer", own.name || T("This Dionysus")) ? " hasfp" : "") + '" id="peer">' + integrationMark("peer", own.name || T("This Dionysus")) + "<h2>" + icon("mirror") + H("Mirror Dionysus") + ' <span class="muted" style="font-weight:400;font-size:14px">· ' + H("optional") + "</span></h2>" +
+    let out = '<section class="card' + (integrationMark("peer", own.name || T("This Dionysus")) ? " hasfp" : "") + '" id="peer">' + integrationMark("peer", own.name || T("This Dionysus")) + "<h2>" + icon("mirror") + H("Mirror Dionysus") + ' <span class="muted s-fw400_fs14">· ' + H("optional") + "</span></h2>" +
       '<p class="hint">' + H("The Dionysus at the site of each server your libraries are mirrored by, if there is one. The two talk directly, over your network or a VPN, so Mirror Checks can compare both sites’ files.") +
       info(H("They find each other from the mirror’s Plex addresses, and pair by themselves when it’s safe: each writes a public key into the synced .plexcache folder, and a pairing is taken only from the mirror’s address, with the key the folder carried. " +
         "Every request after that is signed with a key the two work out from those, which never leaves either side. What they ask each other only reads: how each side is, and a library’s list of files.<br><br>" +
         "Meant for your network, a VPN or Tailscale: don’t open its port to the internet."), T("Mirror Dionysus")) + "</p>" +
-      '<div style="margin-top:10px">' + checkbox("peer", "enabled", T("Look for a Dionysus at each mirror’s site"),
+      '<div class="s-mt10">' + checkbox("peer", "enabled", T("Look for a Dionysus at each mirror’s site"),
         { s: H("Untick when there’s none there: Mirror Checks then compare the Plexes only.") }) + "</div>";
     if (!ps.enabled) return out + "</section>";
     out += checkbox("peer", "auto_pair", T("Pair by itself"),
@@ -3904,7 +3939,7 @@ PCI18N.ready.then(function () {
   // Checks' (mirror_syncthing_*); Convert Folder to Child Dataset pauses and resumes the folder through it.
   function syncthingCard() {
     const sy = ST.syncthing || {}, lt = sy.lights || {}, testing = !!sy.busy || !!ST.testing;  // (asked again with the other connections; the lights: integrationLights)
-    const out = '<section class="card' + (integrationMark("syncthing", "Syncthing") ? " hasfp" : "") + '" id="syncthing">' + integrationMark("syncthing", "Syncthing") + "<h2>" + brand("syncthing") + 'Syncthing <span class="muted" style="font-weight:400;font-size:14px">· ' + H("optional") + "</span></h2>" +
+    const out = '<section class="card' + (integrationMark("syncthing", "Syncthing") ? " hasfp" : "") + '" id="syncthing">' + integrationMark("syncthing", "Syncthing") + "<h2>" + brand("syncthing") + 'Syncthing <span class="muted s-fw400_fs14">· ' + H("optional") + "</span></h2>" +
       '<p class="hint">' + H("The folder sync between the sites of a mirror, read through its API on this server. Mirror Checks then see that it runs, has a folder over each mirrored library, watches for changes and sends the smallest files first; Convert Folder to Child Dataset pauses the folder and adds its ignore patterns itself.") +
       info(H("Asked every couple of minutes: its folders and their settings, which devices they’re shared with and whether each is connected, and what’s still on its way. The only things it’s ever asked to change are a folder’s pause, Watch for Changes, its pull order and its ignore patterns — each from a button here, never by itself. The key is kept with the settings and never shown again.<br><br>" +
         "<strong>Smallest First</strong> matters: the markers and claims in the hidden .plexcache folder are small files about big ones. Sent first, the other site knows a file is being optimized before it arrives; sent after, both sites can optimize the same file."), "Syncthing") + "</p>" +
@@ -3916,26 +3951,26 @@ PCI18N.ready.then(function () {
       '<div class="grid">' + textInput("syncthing", "url", T("Syncthing address"), "s-syurl", H("Its web UI’s address on this server, filled in by itself when one is found among TrueNAS’s apps or on port 8384. Port 8384 is used if you leave it off."), "http://192.168.1.10:8384") +
       secretInput("syncthing", "api_key", T("API key"), "s-sykey") + "</div>" +
       details("stkey", H("How to find the API key"),
-        "<ol style=\"margin:8px 0 0;padding-left:20px\"><li>" + H("In Syncthing, open <strong>Actions → Settings</strong> (top right).") + "</li>" +
+        "<ol class=\"s-m8-0-0_pl20\"><li>" + H("In Syncthing, open <strong>Actions → Settings</strong> (top right).") + "</li>" +
         "<li>" + H("On the <strong>General</strong> tab, copy the <strong>API Key</strong>.") + "</li>" +
         "<li>" + H("Paste it above.") + "</li></ol>",
         !!(S.syncthing || {}).url && !(lt.key && lt.key.status === "ok")) +
-      (String((S.syncthing || {}).url || "").toLowerCase().indexOf("https://") === 0 ? '<div style="margin-top:12px">' + checkbox("syncthing", "verify_tls", T("Verify the certificate against a CA"),
+      (String((S.syncthing || {}).url || "").toLowerCase().indexOf("https://") === 0 ? '<div class="s-mt12">' + checkbox("syncthing", "verify_tls", T("Verify the certificate against a CA"),
         { s: H("For an https:// address with a real certificate (a reverse proxy). Off, the certificate is pinned on first use instead — Syncthing’s own is self-signed by design.") }) + "</div>" : "") +
-      '<div style="margin-top:12px">' + checkbox("syncthing", "throttle", T("Hold Syncthing back while people watch and the disks are busy"),
+      '<div class="s-mt12">' + checkbox("syncthing", "throttle", T("Hold Syncthing back while people watch and the disks are busy"),
         { s: H("A season just dropped in, someone starts watching, and Syncthing scans and sends it all at once: the disks serve three things. With this on, the devices the mirrored folders are shared with are held to a rate while something plays and the media pool’s disks are busy, and let go once they’re calm or nobody is watching."),
           more: H("Syncthing’s own per-device rate limits are what’s set, so it applies at once and the small .plexcache files still travel; pausing the folder would stop those too. The limits a device had are kept and put back. Held after half a minute over the busy mark, let go after a minute under the calm mark, or at once when the last stream ends. Each hold and release is in the Activity log.") }) + "</div>" +
       ((S.syncthing || {}).throttle ? '<div class="grid">' +
         number("syncthing", "throttle_kbps", T("Held to (KB/s)"), 100, 1000000, { s: H("What the devices may send and receive while held back. 2000 leaves a trickle; a mirror a season behind catches up once the film ends.") }) +
         number("syncthing", "throttle_busy", T("Hold when the disks pass (%)"), 10, 100, { s: H("The media pool’s disks’ busy share while something plays, as Metrics’ “Disks While People Watched” measures it.") }) +
         number("syncthing", "throttle_calm", T("Let go when they’re under (%)"), 0, 100, { s: H("Lower than the hold mark, so it doesn’t flap.") }) + "</div>" : "") +
-      '<div style="margin-top:12px">' + checkbox("syncthing", "giveway", T("Give way to remote streams on your internet connection"),
+      '<div class="s-mt12">' + checkbox("syncthing", "giveway", T("Give way to remote streams on your internet connection"),
         { s: H("A stream to a player away from home leaves over your upload, often right at its limit. While one plays, the devices Syncthing reaches over the internet — not those on this NAS’s own networks — are held to what’s left of your upload, and let go a minute after the last remote stream ends."),
           more: H("Which players are remote is Plex’s call, from its LAN Networks setting: the Plex card’s LAN networks light checks that this NAS’s networks and Tailscale’s range are in it, so a viewer at home or on your tailnet never counts. Devices on your LAN keep full speed throughout. The rate is your upload less the streams’ bandwidth and a fifth of headroom, never under the floor; without your upload speed, the floor alone.") }) + "</div>" +
       ((S.syncthing || {}).giveway ? '<div class="grid">' +
         number("syncthing", "giveway_up_mbps", T("Your upload speed (Mbit/s)"), 0, 100000, { s: H("0: not known — the floor below is used as the rate.") }) +
         number("syncthing", "giveway_floor_kbps", T("Never under (KB/s)"), 50, 1000000, { s: H("What Syncthing keeps whatever plays.") }) + "</div>" +
-        '<div style="margin-top:8px">' + checkbox("syncthing", "giveway_both", T("Hold receiving too (my ISP pools upload and download)"), { s: H("Off: only what Syncthing sends is held, since a stream leaves over your upload. On: what it receives too, for a connection whose two directions share one limit.") }) + "</div>" : "") +
+        '<div class="s-mt8">' + checkbox("syncthing", "giveway_both", T("Hold receiving too (my ISP pools upload and download)"), { s: H("Off: only what Syncthing sends is held, since a stream leaves over your upload. On: what it receives too, for a connection whose two directions share one limit.") }) + "</div>" : "") +
       '<div class="acts"><button class="btn' + (testing ? " spinning" : "") + '" type="button" data-act="syncthing-test"' + (testing ? " disabled" : "") + ">" + (testing ? H("Testing…") : H("Test Again")) + "</button></div>";
     return out + "</section>";
   }
@@ -3969,7 +4004,7 @@ PCI18N.ready.then(function () {
     if (!servers.length) return '<div class="lights">' + light("off", T("No mirror yet"), T("Choose a library’s mirror below: its server is reached from then on.")) + "</div>";
     let out = "";
     servers.forEach(function (sv) {
-      out += '<div class="det" style="display:flex;align-items:center;gap:8px;margin:6px 0 2px">' + identicon(sv.id, "sm") + "<strong>" + esc(sv.name) + "</strong><span class=\"muted\" title=\"" + esc(sv.id) + "\">" + esc(String(sv.id).slice(0, 7).toUpperCase()) + "</span></div>";  // (its identity: Plex's machine identifier, as its own Plex card shows it there)
+      out += '<div class="det s-dflex_aic_gap8_m6-0-2">' + identicon(sv.id, "sm") + "<strong>" + esc(sv.name) + "</strong><span class=\"muted\" title=\"" + esc(sv.id) + "\">" + esc(String(sv.id).slice(0, 7).toUpperCase()) + "</span></div>";  // (its identity: Plex's machine identifier, as its own Plex card shows it there)
       // (reached through Plex's relay only — a Plex-run proxy, slow, limited and apt to drop: said, with the way out)
       const relayHint = T("Only Plex’s relay reaches {name} from here: slow, limited, and it drops. Give this NAS a direct way to it — Remote Access on in its Plex settings, a VPN between the sites, or enter an address this NAS can reach, below.", { name: sv.name });
       if (!sv.reached) out += light("fail", T("{name} isn’t reached", { name: sv.name }), T("None of its addresses answered from here. Choose its library again, or enter an address this NAS can reach, below."));
@@ -4048,16 +4083,16 @@ PCI18N.ready.then(function () {
     // a server in use that isn't reached, stopped answering, or is reached through Plex's relay only: an address this NAS can reach, by hand
     (p2.servers || []).forEach(function (sv) {
       if (sv.reached && !sv.error && !sv.relay) return;
-      out += '<div class="grid" style="margin-top:8px"><div class="fld"><label for="s-p2addr-' + esc(sv.id) + '">' + esc(T("Address for {name}", { name: sv.name })) + "</label>" +
+      out += '<div class="grid s-mt8"><div class="fld"><label for="s-p2addr-' + esc(sv.id) + '">' + esc(T("Address for {name}", { name: sv.name })) + "</label>" +
         '<input id="s-p2addr-' + esc(sv.id) + '" type="text" value="" placeholder="https://" data-p2addr="' + esc(sv.id) + '">' +
         '<div class="help">' + H("An address this NAS can reach: the other site’s public address with Remote Access on, or one over a VPN. Its token comes from your sign-in.") + "</div></div>" +
         '<div class="acts"><button class="btn" type="button" data-act="plex2-address" data-server="' + esc(sv.id) + '">' + H("Use This Address") + "</button></div></div>";
     });
     // looking for mirrors: a sample of each library's files looked for on each of the account's servers' libraries, by path
-    out += '<div style="margin-top:10px">' + checkbox("sync", "discover", T("Look for mirrors among my Plex account’s servers"),
+    out += '<div class="s-mt10">' + checkbox("sync", "discover", T("Look for mirrors among my Plex account’s servers"),
       { s: H("Weekly while a library’s mirror isn’t chosen, when this page opens after an hour, and on Look for Mirrors — which also compares each mirror chosen over all of the library’s files.") }) + "</div>" +
       '<div class="acts"><button class="btn" type="button" data-act="sync-discover"' + (sy.running ? " disabled" : "") + ">" + (sy.running ? H("Looking…") : H("Look for Mirrors")) + "</button>" +
-      ' <span class="muted" style="font-size:13px">' + esc(sy.discovered_at ? T("looked {when}", { when: ago(sy.discovered_at) }) : T("Not looked yet")) + "</span></div>";
+      ' <span class="muted s-fs13">' + esc(sy.discovered_at ? T("looked {when}", { when: ago(sy.discovered_at) }) : T("Not looked yet")) + "</span></div>";
     if (sy.error) out += '<div class="det bad">' + esc(sy.error) + "</div>";
     (sy.candidates || []).forEach(function (c) {  // (a server in use: its light above says how it is)
       if ((p2.servers || []).some(function (sv) { return sv.id === c.id; })) return;
@@ -4096,7 +4131,7 @@ PCI18N.ready.then(function () {
     if ((sy.peers || []).length) out += '<div class="note">' + H("Another Dionysus shares these folders (it marked itself in them): {n} system(s). Each optimizes its own side; claims keep them off the same file.", { n: sy.peers.length }) + "</div>";
     // the sign-in the servers are listed from: this server's, or an account of its own
     const signin = '<button class="btn" type="button" data-act="plex2-signin">' + (p2.own_signin ? H("Sign In Again") : H("Use Another Plex Account")) + "</button>";
-    out += '<div class="acts" style="margin-top:10px">' + signin + "</div>" +
+    out += '<div class="acts s-mt10">' + signin + "</div>" +
       '<div class="det muted">' + (p2.signed_in ? H("Your account’s servers are listed from this server’s sign-in (<a href=\"/system#plex\" data-nav>System → Plex</a>) — or sign in to another account, when the mirror is on one.")
         : H("Sign in with Plex first (<a href=\"/system#plex\" data-nav>System → Plex</a>): your account’s servers are listed from there.")) + "</div>";
     return out + "</section>";
@@ -4106,7 +4141,7 @@ PCI18N.ready.then(function () {
   function pageMirrors() {
     const p2 = ST.plex2 || {};
     let out = top(T("Mirror"), H("Other Plex servers with the same files — at another site, kept in step by syncing the folders — chosen per library, from the servers of your Plex account."), "");
-    out += '<div class="stack" style="max-width:980px">';
+    out += '<div class="stack s-maxw980">';
     // ---- each library: its mirror, chosen from the account's servers (what looking found for it), under the lights
     out += mirrorLibrariesCard();
     // ---- what Plex's own sync carries (Sync Libraries leaves it to Plex)
@@ -4168,7 +4203,7 @@ PCI18N.ready.then(function () {
       '<div class="themelist">' + rows + "</div>" +
       '<div class="acts"><button class="btn" type="button" data-act="theme-upload">' + H("Upload a Theme") + "</button>" +
       '<input type="file" id="theme-file" accept=".json,application/json" hidden>' +
-      '<span class="muted" style="font-size:13px">' + H("To make your own, download a theme, change its colours, give it a new name and upload it.") +
+      '<span class="muted s-fs13">' + H("To make your own, download a theme, change its colours, give it a new name and upload it.") +
       info(H("A theme file lists every colour of its light look and of its dark look (as #hex), its two fonts and its decorations, each with what it colours or does. Any colour left out comes from the theme it was based on."), T("Themes")) + "</span></div></section>";
   }
   // the theme the settings name, put on the page (theme.js: PCTHEME) as soon as it changes here or on another browser
@@ -4194,7 +4229,7 @@ PCI18N.ready.then(function () {
     let out = top(T("System"), H("Connections and system-wide options. Stored in the app’s config folder, so they survive updates."),
       '<button class="btn' + (testing ? " spinning" : "") + '" data-act="retest"' + (testing ? " disabled" : "") + ">" + (testing ? H("Testing…") : H("Re-test Settings")) + "</button>");
     out += banner(settingsSummary(c.summary), testing);
-    out += '<div class="stack" style="max-width:980px">';
+    out += '<div class="stack s-maxw980">';
 
     // ---- Access: who may use the web UI and the API
     const au = ST.auth || {};
@@ -4203,7 +4238,7 @@ PCI18N.ready.then(function () {
         : badge(S.general.lan_only ? "info" : "warn", T("No sign-in")) + " " +
           (S.general.lan_only ? H("Any device on your local network can change settings and run the optimizer.") : H("Any device that can reach it can change settings and run the optimizer.")) + " " +
           H("To require a sign-in, set PLEXCACHE_USERNAME and PLEXCACHE_PASSWORD in the app’s YAML (Apps → plex-cache → Edit).")) + "</div>" +
-      '<div style="margin-top:10px">' + checkbox("general", "lan_only", T("Local network only"),
+      '<div class="s-mt10">' + checkbox("general", "lan_only", T("Local network only"),
         { s: H("Devices outside your network — the internet — are refused, signed in or not."),
           more: H("Your network means private addresses (10.x.x.x, 172.16–31.x.x, 192.168.x.x), this NAS, and VPNs into your network that use their own range, such as Tailscale (100.64–127.x.x). " +
             "Behind a reverse proxy, the proxy’s address is what counts. Turning this off from outside your network isn’t possible: change it from a device on your network.") }) + "</div></section>";
@@ -4227,17 +4262,17 @@ PCI18N.ready.then(function () {
           "<strong>10 seconds</strong> — fine for mostly movies and TV watched straight through.<br>" +
           "<strong>30 seconds</strong> — the fewest requests, but streams and skips can be noticed up to half a minute late; short songs may be half over, and brief buffering can be missed.<br><br>" +
           "Faster than 3 seconds gains little: Now Playing Cache waits for Plex’s own start-up buffer anyway.") }) + "</div>" +
-      (String((S.plex || {}).url || "").toLowerCase().indexOf("https://") === 0 ? '<div style="margin-top:12px">' + checkbox("plex", "verify_tls", T("Verify the certificate against a CA"),
+      (String((S.plex || {}).url || "").toLowerCase().indexOf("https://") === 0 ? '<div class="s-mt12">' + checkbox("plex", "verify_tls", T("Verify the certificate against a CA"),
         { s: H("For an https:// address with a real certificate (a reverse proxy). Off, the certificate is pinned on first use instead; a plex.direct address is always fully verified.") }) + "</div>" : "") +
       '<div class="acts"><button class="btn' + (tokOk ? "" : " pri") + '" data-act="plex-signin">' + (tokOk ? H("Sign In Again") : H("Sign In with Plex")) + "</button>" +
-      '<span class="muted" style="font-size:13px">' + H("Why sign in?") + info(H("Plex only shares your libraries and what’s playing with apps that hold a token for your account, so this step is required. " +
+      '<span class="muted s-fs13">' + H("Why sign in?") + info(H("Plex only shares your libraries and what’s playing with apps that hold a token for your account, so this step is required. " +
       "“Sign In with Plex” opens plex.tv; once you approve “Dionysus”, Plex gives this app a token. It’s kept only in this app’s config folder and is used to read from your server — " +
       "it can’t see your password. If you already have a token, you can paste it instead."), T("signing in")) + "</span></div></section>";
 
     // ---- TrueNAS
     const guessTn = ST.host ? "https://" + ST.host : "https://192.168.1.10";
     const pf = ST.platform || {};
-    out += '<section class="card' + (integrationMark("truenas", "TrueNAS") ? " hasfp" : "") + '" id="truenas">' + integrationMark("truenas", "TrueNAS") + "<h2>" + brand("truenas") + 'TrueNAS <span class="muted" style="font-weight:400;font-size:14px">· ' + H("optional, recommended") + "</span></h2>" +
+    out += '<section class="card' + (integrationMark("truenas", "TrueNAS") ? " hasfp" : "") + '" id="truenas">' + integrationMark("truenas", "TrueNAS") + "<h2>" + brand("truenas") + 'TrueNAS <span class="muted s-fw400_fs14">· ' + H("optional, recommended") + "</span></h2>" +
       // where this is running: TrueNAS for certain (the API, or the host's version file), or another Linux host
       '<div class="lights">' + light(pf.truenas ? "ok" : pf.truenas === false ? "off" : "warn", T("Platform"), esc(msg(pf.label || "")) +
         (pf.truenas === null || pf.truenas === undefined ? " · " + esc(T("Connect the API, or mount the host’s /etc/version at /host/etc/version in the app’s YAML, to be sure")) : pf.how === "kernel" ? " · " + esc(T("told by the kernel; the API would add the version")) : ""),
@@ -4251,10 +4286,10 @@ PCI18N.ready.then(function () {
       '<div class="grid">' +
       textInput("truenas", "url", T("TrueNAS address"), "s-turl", H("https:// is used automatically — TrueNAS revokes API keys sent over plain http."), guessTn) +
       secretInput("truenas", "api_key", T("API key"), "s-tkey") + "</div>" +
-      '<div class="chk" style="margin-top:12px">' + infoOrGap("", "") + '<label><input type="checkbox" data-check="truenas.verify_tls"' + (S.truenas.verify_tls ? " checked" : "") +
+      '<div class="chk s-mt12">' + infoOrGap("", "") + '<label><input type="checkbox" data-check="truenas.verify_tls"' + (S.truenas.verify_tls ? " checked" : "") +
       ">" + H("Verify the certificate against a CA (leave off for TrueNAS’s self-signed one: it’s pinned on first use instead)") + "</label>" + revertBtn("truenas", "verify_tls", "") + "</div>" +
       details("apikey", H("How to create an API key"),
-        "<ol style=\"margin:8px 0 0;padding-left:20px\"><li>" + H("In TrueNAS, open your user menu (top right) → <strong>API Keys</strong>.") + "</li>" +
+        "<ol class=\"s-m8-0-0_pl20\"><li>" + H("In TrueNAS, open your user menu (top right) → <strong>API Keys</strong>.") + "</li>" +
         "<li>" + H("Choose <strong>Add</strong>, name it “plex-cache”, and save.") + "</li>" +
         "<li>" + H("Copy the key it shows (it’s only shown once) and paste it above.") + "</li></ol>",
         !(c.truenas_key && c.truenas_key.status === "ok")) +
@@ -4285,7 +4320,7 @@ PCI18N.ready.then(function () {
     out += themesCard();
     // ---- Updates
     out += '<section class="card" id="updates"><h2>' + icon("updates") + H("Updates") + '</h2>' +
-      '<div class="chk" style="margin-top:8px">' + info(H("Every 6 hours the app asks GitHub for the branch’s newest finished build — a small download, nothing about your setup is sent — " +
+      '<div class="chk s-mt8">' + info(H("Every 6 hours the app asks GitHub for the branch’s newest finished build — a small download, nothing about your setup is sent — " +
         "and, when there’s a newer one, says so under the app’s name and in Home Assistant’s update entity. Check Now asks straight away; Update Now has TrueNAS pull it."), T("update check")) +
       '<label><input type="checkbox" data-check="general.update_check"' + (g.update_check ? " checked" : "") + ">" + H("Check GitHub for new versions") + "</label>" + revertBtn("general", "update_check", "") + updateLine() + "</div>" + mirrorUpdates() + "</section>";
     out += diskSpeedCard();
@@ -4308,7 +4343,7 @@ PCI18N.ready.then(function () {
       else said.push(H("{name} runs {version}: it’s asked to update, since this one is up to date (how that went: the Version light under Mirror Dionysus).", { name: lk.name, version: lk.version_there }));
     });
     if (!said.length) return "";
-    return '<div class="det" style="margin-top:8px">' + said.join(" ") + " " +
+    return '<div class="det s-mt8">' + said.join(" ") + " " +
       H("A paired Dionysus behind this one is asked to update from here, the update its own check finds; the side asked can turn that off under <a href=\"/system#peer\" data-nav>Mirror Dionysus</a>.") + "</div>";
   }
   let UPDATING = false;  // Update Now pressed on this page: said as updating until the page comes back on the new build
@@ -4324,8 +4359,8 @@ PCI18N.ready.then(function () {
     const u = ST.updates || {};
     if (!S.general.update_check) return "";
     const stage = updateStage(u);
-    const build = '<span class="muted" style="font-size:13px">' + (u.channel === "dev" ? H("Dev build v{version}{commit}.", { version: ST.version, commit: u.commit ? " (" + u.commit + ")" : "" }) : H("Stable build v{version}.", { version: ST.version })) + "</span> ";
-    if (stage === "updating") return build + '<span class="muted" style="font-size:13px">' + H("Updating: TrueNAS is pulling the newer image and restarting the app. This page comes back by itself.") + "</span>";
+    const build = '<span class="muted s-fs13">' + (u.channel === "dev" ? H("Dev build v{version}{commit}.", { version: ST.version, commit: u.commit ? " (" + u.commit + ")" : "" }) : H("Stable build v{version}.", { version: ST.version })) + "</span> ";
+    if (stage === "updating") return build + '<span class="muted s-fs13">' + H("Updating: TrueNAS is pulling the newer image and restarting the app. This page comes back by itself.") + "</span>";
     const btn = ' <button class="btn sm' + (u.checking || stage === "checking" ? " spinning" : "") + '" type="button" data-act="updates-check"' + (u.checking || stage === "checking" ? " disabled" : "") + ">" + (u.checking || stage === "checking" ? H("Checking…") : H("Check Now")) + "</button>" +
       (stage === "button" ? ' <button class="btn sm pri" type="button" data-act="updates-apply">' + H("Update Now") + "</button>" : "");
     let line = "";
@@ -4334,7 +4369,7 @@ PCI18N.ready.then(function () {
       (stage === "needkey" ? " " + H("To install it from here, add a TrueNAS API key in <a href=\"/system#truenas\" data-nav>System → TrueNAS</a>; TrueNAS will pull the image and restart the app.") : "");
     else if (u.checked) line = H("Up to date (checked {when}).", { when: ago(u.checked) });
     else if (u.error) line = H("Couldn’t check: {why}", { why: u.error });
-    return build + '<span class="muted" style="font-size:13px">' + line + "</span>" + btn;
+    return build + '<span class="muted s-fs13">' + line + "</span>" + btn;
   }
   function mqttLights() {
     const m = ST.mqtt || {}, M = S.mqtt, steps = m.steps || {};
@@ -4360,11 +4395,11 @@ PCI18N.ready.then(function () {
     } else if (m.state === "connecting") txt = H("Connecting…");
     return '<div class="acts"><button class="btn" data-act="mqtt-retry"' + (m.state === "connecting" ? " disabled" : "") + ">" +
       (m.state === "connected" ? H("Reconnect") : H("Reconnect Now")) + "</button>" +
-      (txt ? '<span class="muted" style="font-size:13px">' + txt + "</span>" : "") + "</div>";
+      (txt ? '<span class="muted s-fs13">' + txt + "</span>" : "") + "</div>";
   }
   function mqttCard() {
     const M = S.mqtt, on = M.enabled;
-    let out = '<section class="card" id="mqtt"><h2>' + brand("mqtt") + 'MQTT · ' + brand("homeassistant") + 'Home Assistant · ' + brand("nodered") + 'Node-RED · ' + brand("openhab") + 'openHAB <span class="muted" style="font-weight:400;font-size:14px">· ' + H("and more · optional") + "</span></h2>" +
+    let out = '<section class="card" id="mqtt"><h2>' + brand("mqtt") + 'MQTT · ' + brand("homeassistant") + 'Home Assistant · ' + brand("nodered") + 'Node-RED · ' + brand("openhab") + 'openHAB <span class="muted s-fw400_fs14">· ' + H("and more · optional") + "</span></h2>" +
       '<p class="hint">' + H("Publishes status and lots of metrics, and takes commands to switch features and run jobs.") +
       info(H("MQTT is a common way for home automation and monitoring tools to share data, through a <strong>broker</strong> that everything connects to. " +
         "Dionysus publishes everything as one JSON message on <code>{base}/state</code> (every {n} s, and straight away after a change), " +
@@ -4377,7 +4412,7 @@ PCI18N.ready.then(function () {
         "“Allow control” for a watch-only connection. Broker ACLs can limit this login to the <code>{base}/#</code> and <code>{prefix}/#</code> topics.",
         { base: M.base_topic, n: M.interval, prefix: M.discovery_prefix }), "MQTT") + "</p>" +
       '<div class="lights">' + mqttLights() + "</div>" + mqttRetryLine() +
-      '<div class="chk" style="margin-top:12px">' + infoOrGap("", "") + '<label><input type="checkbox" data-check="mqtt.enabled"' + (on ? " checked" : "") + ">" + H("Publish over MQTT") + "</label></div>";
+      '<div class="chk s-mt12">' + infoOrGap("", "") + '<label><input type="checkbox" data-check="mqtt.enabled"' + (on ? " checked" : "") + ">" + H("Publish over MQTT") + "</label></div>";
     if (!on) return out + "</section>";
     out += '<div class="grid">' +
       textInput("mqtt", "host", T("Broker address"), "s-mhost", H("For Home Assistant’s Mosquitto add-on, Home Assistant’s IP."), "192.168.1.20") +
@@ -4389,7 +4424,7 @@ PCI18N.ready.then(function () {
       select("mqtt", "language", T("Language in Home Assistant"), PCI18N.LANGUAGES.map(function (l) { return [l[0], l[0] === "en" ? T("{name} — original", { name: l[1] }) : l[1]]; }),
         { s: H("Names, descriptions and status text."), more: H("Home Assistant doesn’t tell MQTT devices which language it uses, so pick it here. " +
           "Entity IDs stay the same in every language, so automations keep working when you change it. This page follows your browser instead (menu at the top right).") }) + "</div>" +
-      '<div class="chk" style="margin-top:12px">' + infoOrGap("", "") + '<label><input type="checkbox" data-check="mqtt.tls"' + (M.tls ? " checked" : "") + ">" + H("Use TLS") + "</label>" + revertBtn("mqtt", "tls", "") +
+      '<div class="chk s-mt12">' + infoOrGap("", "") + '<label><input type="checkbox" data-check="mqtt.tls"' + (M.tls ? " checked" : "") + ">" + H("Use TLS") + "</label>" + revertBtn("mqtt", "tls", "") +
       (M.tls ? info(H("Leave off for a self-signed certificate, or when connecting by IP to a broker whose certificate names a domain (such as a Let’s Encrypt one). " +
           "Off, its certificate is pinned on first use, and must be the same on every connection after that; on, it’s checked against your system’s certificate authorities."), T("Verify")) +
         '<label><input type="checkbox" data-check="mqtt.verify_tls"' + (M.verify_tls ? " checked" : "") + ">" + H("Verify the broker’s certificate") + "</label>" + revertBtn("mqtt", "verify_tls", "") :
@@ -4422,7 +4457,7 @@ PCI18N.ready.then(function () {
   function diskSpeedCard() {
     const g = S.general, b = ST.benchmark, speeds = g.disk_speeds || {};
     const ds = (ST.zfs.datasets || []).filter(function (d) { return d.keys.length; });
-    let out = '<section class="card" id="disk-speed"><div class="head"><h2>' + icon("speed") + H("Disk Speed") + '</h2><span style="flex:1"></span>' +
+    let out = '<section class="card" id="disk-speed"><div class="head"><h2>' + icon("speed") + H("Disk Speed") + '</h2><span class="s-flex1"></span>' +
       '<button class="btn' + (b.running ? " spinning" : "") + '" data-act="benchmark"' + (b.running || !ds.length ? " disabled" : "") + ">" +
       (b.running ? (b.progress ? H("Measuring {n} of {total}…", { n: b.progress.done + 1, total: b.progress.total }) : H("Measuring…")) : H("Benchmark Now")) + "</button></div>" +
       '<p class="hint">' + H("How fast each dataset reads when nothing is cached.") + info(H("The app uses it to tell a cache hit from a disk read " +
@@ -4432,7 +4467,7 @@ PCI18N.ready.then(function () {
       "so one file that happened to be cached already doesn’t skew it. It takes a few seconds per dataset, only reads, and is harmless. " +
       "Run it again after adding disks or SSDs, or type a speed in by hand."), T("disk speed")) + "</p>";
     if (!ds.length) {
-      out += '<p class="muted" style="margin:0">' + H("Datasets appear here once a library’s files are readable (see Media Mappings above).") + "</p>";
+      out += '<p class="muted s-m0">' + H("Datasets appear here once a library’s files are readable (see Media Mappings above).") + "</p>";
     } else {
       out += '<div class="tbl-wrap"><table class="tbl mid"><thead><tr><th scope="col">' + H("Dataset") + '</th><th scope="col">' + H("Libraries") + '</th><th scope="col">' + H("Uncached speed") +
         '</th><th scope="col">' + H("Measured") + "</th></tr></thead><tbody>";
@@ -4489,12 +4524,19 @@ PCI18N.ready.then(function () {
     if (tls.changed) return certChanged(name, title, tls.changed, testing);
     if (tls.verify === "ca") return light("ok", T("Certificate fully verified"), T("Checked against your system’s certificate authorities on every connection, like a browser."), testing);
     if (tls.verify === "pin") return light("ok", T("Certificate pinned ({fp})", { fp: fpShort(tls.pin) }), T("{title} must answer with this very certificate from now on: anything else is refused before the key is sent.", { title: title }), testing);
-    return light("off", T("Certificate pinned on first connection"), T("The first certificate {title} answers with is pinned, and every connection after that must show it.", { title: title }), testing);
+    return light("off", T("Certificate not confirmed yet"), T("Nothing is sent to {title} until you confirm the certificate it answers with: it’s shown here once it has answered, and every connection after that must show it.", { title: title }), testing);
   }
   function fpShort(fp) { fp = String(fp || "").toUpperCase(); return fp ? fp.slice(0, 4) + "-" + fp.slice(4, 8) + "-" + fp.slice(8, 12) : ""; }
   // the pinned certificate and the one answering now, each its identicon and code, with the one act that changes anything
+  // (none pinned yet: the one answering, alone, to be confirmed before anything is sent — F-2026-053)
   function certChanged(service, title, ch, testing) {
-    const act = '<button class="btn" type="button" data-act="tls-trust" data-service="' + esc(service) + '" title="' + H("Reads the certificate the service answers with now, afresh, and pins it in the old one’s place.") + '">' + H("Trust New Certificate") + "</button>";
+    if (!ch.pinned) {
+      const first = '<button class="btn" type="button" data-act="tls-trust" data-service="' + esc(service) + '" data-fp="' + esc(ch.seen) + '" title="' + H("Pins this certificate, if the service still answers with it: from then on it must answer with this very one.") + '">' + H("Trust This Certificate") + "</button>";
+      return '<div class="lightrow"><span class="light l-fail" aria-hidden="true"></span><div class="grow"><div class="what">' + H("{title}’s certificate isn’t confirmed yet — nothing was sent to it", { title: title }) + "</div>" +
+        '<div class="det">' + H("Check this fingerprint against the one {title} shows for its own certificate, then trust it. If they differ, don’t: something on the network may be standing in for it.", { title: title }) + "</div>" +
+        '<div class="det fp"><span class="fpstack">' + identicon(ch.seen, "md") + '<span class="fpcode" title="' + esc(ch.seen) + '">' + esc(fpShort(ch.seen)) + '</span><span class="fpname">' + H("answering now") + "</span></span></div></div>" + (testing ? "" : first) + "</div>";
+    }
+    const act = '<button class="btn" type="button" data-act="tls-trust" data-service="' + esc(service) + '" data-fp="' + esc(ch.seen) + '" title="' + H("Pins the certificate shown as answering now in the old one’s place, if the service still answers with it.") + '">' + H("Trust New Certificate") + "</button>";
     return '<div class="lightrow"><span class="light l-fail" aria-hidden="true"></span><div class="grow"><div class="what">' + H("{title}’s certificate changed — refused, nothing was sent to it", { title: title }) + "</div>" +
       '<div class="det">' + H("If you renewed or reinstalled {title}, trust the new certificate. If you didn’t, don’t: something on the network may be standing in for it.", { title: title }) + "</div>" +
       '<div class="det fp"><span class="fpstack">' + identicon(ch.pinned, "md") + '<span class="fpcode" title="' + esc(ch.pinned) + '">' + esc(fpShort(ch.pinned)) + '</span><span class="fpname">' + H("pinned") + '</span></span><span aria-hidden="true">→</span>' +
@@ -4539,7 +4581,7 @@ PCI18N.ready.then(function () {
       '<p class="hint">' + H("Tick the libraries to cache.") + info(H("Unticked libraries are skipped by every feature and by the health checks. " +
       "Plex lists each library’s folders as it sees them inside its own app; if this app has a folder mounted somewhere else, choose where. " +
       "Folders marked ✓ contain that library’s files. A library is only cached once all its folders are found."), T("media mappings")) + "</p>";
-    if (!locs.length) return out + '<p class="muted" style="margin:0">' + (librariesPending() || ST.checking ? H("Reading your libraries from Plex…") : H("Your library folders appear here once Plex is connected.")) + "</p></section>";
+    if (!locs.length) return out + '<p class="muted s-m0">' + (librariesPending() || ST.checking ? H("Reading your libraries from Plex…") : H("Your library folders appear here once Plex is connected.")) + "</p></section>";
     const healthAt = ST.health ? ST.health.at : 0;
     out += '<div class="tbl-wrap"><table class="tbl"><thead><tr>' + [N("Cache"), N("Library"), N("Plex folder"), N("In this app")].map(function (c) {
       return '<th scope="col">' + H(c) + "</th>"; }).join("") + "</tr></thead><tbody>";
@@ -4588,7 +4630,7 @@ PCI18N.ready.then(function () {
       // One tick box and name per library, spanning all of its folders.
       const span = libRows.length > 1 ? ' rowspan="' + libRows.length + '"' : "";
       const libCells = tick ? "<td" + span + ">" + tick + "</td><td" + span + ">" + esc(l.library) +
-        (libRows.length > 1 ? '<div class="muted" style="font-size:12px">' + PH(libRows.length, "{n} folder", "{n} folders") + "</div>" : "") + "</td>" : "";
+        (libRows.length > 1 ? '<div class="muted s-fs12">' + PH(libRows.length, "{n} folder", "{n} folders") + "</div>" : "") + "</td>" : "";
       out += '<tr class="' + (excluded ? "excl" : "") + (tick ? "" : " cont") + '">' + libCells + '<td class="mono">' + esc(l.plex_path) + "</td><td>" +
         light(st, lightText, detail, mapBusy) +
         '<select aria-label="' + H("Where {path} is mounted in this app", { path: l.plex_path }) + '" data-map="' + esc(l.plex_path) + '">' + opts + "</select>" +
@@ -4597,7 +4639,7 @@ PCI18N.ready.then(function () {
     });
     out += "</tbody></table></div>";
     out += details("mounting", H("Mounting media in this app"),
-      "<p style=\"margin:8px 0 0\">" + H("Each library folder needs to be mounted (read-only) into this app. You can mount one shared folder that holds everything, " +
+      "<p class=\"s-m8-0-0\">" + H("Each library folder needs to be mounted (read-only) into this app. You can mount one shared folder that holds everything, " +
       "or each library separately. If you use the same container paths as your Plex app, nothing needs choosing here. " +
       "Mounts are set in TrueNAS: Apps → this app → Edit.") + "</p>");
     return out + "</section>";
@@ -4639,7 +4681,7 @@ PCI18N.ready.then(function () {
   function toolOf(name) { return TOOLS.filter(function (t) { return t.page === name; })[0]; }
   const TOOL_PAGES = { optimizer: 1, convert: 1, dataset: 1, merge: 1, versions: 1, folders: 1, unlink: 1, sync: 1, filechecks: 1, plexchecks: 1, mirrorchecks: 1 };
   function toolsNav(current) {
-    return '<div class="lctl" style="margin-bottom:14px"><div class="seg small" role="tablist" aria-label="' + H("Tools") + '">' +
+    return '<div class="lctl s-mb14"><div class="seg small" role="tablist" aria-label="' + H("Tools") + '">' +
       '<a role="tab" href="/tools" data-nav aria-selected="' + (current === "tools") + '">' + H("All tools") + "</a>" +
       TOOLS.map(function (t) { return '<a role="tab" href="/' + t.page + '" data-nav aria-selected="' + (current === t.page) + '">' + esc(T(t.short || t.name)) + "</a>"; }).join("") + "</div></div>";
   }
@@ -4698,7 +4740,7 @@ PCI18N.ready.then(function () {
       : PH(c.partial, "{n} found so far — still counting", "{n} found so far — still counting", { n: fmtNum(c.partial) }))
       : H("Not in yet")) + '</div><div class="det">' + why +
       (pct != null ? " " + H("{done} of {total} · {pct}%", { done: fmtNum(p.done || 0), total: fmtNum(p.total), pct: pct }) : "") + "</div>" +
-      (pct != null ? '<div class="meter thin" role="progressbar" aria-label="' + esc(T("Progress")) + '" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + pct + '"><div style="width:' + pct + '%"></div></div>'
+      (pct != null ? '<div class="meter thin" role="progressbar" aria-label="' + esc(T("Progress")) + '" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + pct + '"><div data-css="width:' + pct + '%"></div></div>'
         : '<div class="meter thin busy" role="progressbar" aria-label="' + esc(T("Progress")) + '" aria-busy="true"><div></div></div>') + "</div>";
   }
   // whether something red on a tool's page stops part of it (or a check page's checks couldn't all run), in library ``key``
@@ -4753,7 +4795,7 @@ PCI18N.ready.then(function () {
       const spct = pg.total ? Math.round(100 * (pg.done || 0) / pg.total) : null;
       return '<div class="migprog"><div class="what">' + H("Scanning…") + '</div><div class="det">' + H("Reading the library from Plex (and its mirror’s, if it has one).") +
         (spct != null ? " " + H("{done} of {total} · {pct}%", { done: fmtNum(pg.done || 0), total: fmtNum(pg.total), pct: spct }) : "") + "</div>" +
-        (spct != null ? '<div class="meter thin" role="progressbar" aria-label="' + esc(T("Progress")) + '" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + spct + '"><div style="width:' + spct + '%"></div></div>'
+        (spct != null ? '<div class="meter thin" role="progressbar" aria-label="' + esc(T("Progress")) + '" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + spct + '"><div data-css="width:' + spct + '%"></div></div>'
           : '<div class="meter thin busy" role="progressbar" aria-label="' + esc(T("Progress")) + '" aria-busy="true"><div></div></div>') + "</div>";
     }
     if (pg.queued && !(ST.job && ST.job.kind === "tool" && ST.job.running)) return '<div class="migprog"><div class="what">' + H("Queued") + '</div><div class="det">' + H("Starts once the file job before it is done (<a href=\"/processes\" data-nav>Processes</a>).") + "</div></div>";
@@ -5113,7 +5155,7 @@ PCI18N.ready.then(function () {
   // the Scan button (with a tool's own options before it), and what the last scan found
   function toolScanBar(name, t) {
     const sc = t.scan, u = TOOL[name], mine = sc && String(sc.library) === String(u.key), scanning = toolScanning(name, t);
-    return '<div class="row" style="align-items:center;gap:12px;flex-wrap:wrap">' +
+    return '<div class="row s-aic_gap12_wrap">' +
       '<button class="btn" type="button" data-act="tool-scan" data-tool="' + name + '"' + (t.running || scanning ? " disabled" : "") + ">" + (scanning ? H("Scanning…") : mine ? H("Scan Again") : H("Scan")) + "</button>" +
       (mine && !scanning ? '<span class="det">' + H("Scanned {when}", { when: ago(sc.at) }) + "</span>" : "") + "</div>" +
       (scanning && !(t.running && t.progress) ? '<div class="migprog"><div class="meter thin busy" role="progressbar" aria-label="' + esc(T("Progress")) + '" aria-busy="true"><div></div></div></div>' : "") +
@@ -5180,7 +5222,7 @@ PCI18N.ready.then(function () {
   // the short one, always shown, is the page's description above (toolBlurb)
   function toolHead(name, title, help) {
     const sec = "tool-" + name;
-    return '<div class="head"><h2>' + icon(name) + esc(title) + '</h2><span style="flex:1"></span>' + guideBtn(sec) + "</div>" +
+    return '<div class="head"><h2>' + icon(name) + esc(title) + '</h2><span class="s-flex1"></span>' + guideBtn(sec) + "</div>" +
       (guides[sec] ? '<div class="guide toolguide"><div><p>' + help + "</p></div></div>" : "");
   }
   // a tool's title, from the Tools page's list
@@ -5236,7 +5278,7 @@ PCI18N.ready.then(function () {
     }
     out += applyBox(box, FILE_TOOLS[name] || PLEX_TOOLS[name] ? gate : null);  // (right before Apply)
     const pageIds = u.pageCan || [], pageAll = pageIds.length && pageIds.every(function (id) { return u.sel[id]; });
-    out += '<div class="row" style="align-items:center;gap:12px;flex-wrap:wrap;margin-top:10px"><label class="det"><input type="checkbox" data-act="tool-all" data-tool="' + name + '"' + (all ? " checked" : "") + "> " +
+    out += '<div class="row s-aic_gap12_wrap_mt10"><label class="det"><input type="checkbox" data-act="tool-all" data-tool="' + name + '"' + (all ? " checked" : "") + "> " +
       (rows.length > pageIds.length ? H("All {n} (every page)", { n: fmtNum(rows.length) }) : H("All")) + "</label>" +
       (rows.length > pageIds.length ? '<label class="det"><input type="checkbox" data-act="tool-pagesel" data-tool="' + name + '"' + (pageAll ? " checked" : "") + "> " + H("This page") + "</label>" : "");
     if (!gate.ready) u.confirm = false;
@@ -5709,7 +5751,7 @@ PCI18N.ready.then(function () {
   function menuCount(el, c, bad) {
     if (!el) return;
     const busy = c.s === "pending", html = busy ? (c.partial ? fmtNum(c.partial) : "…") : c.s === "failed" ? "!" : c.s === "done" && (c.n || bad) ? fmtNum(c.n) : "";
-    if (el.dataset.html !== html) { el.dataset.html = html; el.innerHTML = html; }
+    if (el.dataset.html !== html) { el.dataset.html = html; setHtml(el, html); }
     el.hidden = !html;
     const tone = partialTone(c, bad), failNow = tone === "fail" || (!busy && (bad || c.s === "failed"));
     el.classList.toggle("busy", busy);
@@ -5736,7 +5778,7 @@ PCI18N.ready.then(function () {
       if (sub.hidden !== !onTools) sub.hidden = !onTools;
       if (onTools && sub.dataset.for !== page) {
         sub.dataset.for = page;
-        sub.innerHTML = TOOLS.map(function (t) { return '<a class="subnav' + (page === t.page ? " on" : "") + '" href="/' + t.page + '" data-nav' + (page === t.page ? ' aria-current="page"' : "") + ">" + icon(t.page) + esc(T(t.short || t.name)) + "</a>"; }).join("");
+        setHtml(sub, TOOLS.map(function (t) { return '<a class="subnav' + (page === t.page ? " on" : "") + '" href="/' + t.page + '" data-nav' + (page === t.page ? ' aria-current="page"' : "") + ">" + icon(t.page) + esc(T(t.short || t.name)) + "</a>"; }).join(""));
       }
     }
     const dot = document.getElementById("dot-health");
@@ -5744,18 +5786,18 @@ PCI18N.ready.then(function () {
     dot.className = "dot " + (!c ? "" : c.fail ? "fail" : c.warn ? "warn" : "ok");
     menuCount(document.getElementById("count-tools"), countOf("tools"), TOOLS.some(function (t) { return toolBad(t.page); }));
     const bfp = document.getElementById("brandfp"), ownId = (((ST.peer || {}).own || {}).identity || {}).id || ((ST.peer || {}).own || {}).fingerprint || "";
-    if (bfp && bfp.dataset.fp !== ownId) { bfp.dataset.fp = ownId; bfp.innerHTML = ownId ? identicon(ownId, "menu") : ""; bfp.title = ownId ? T("{name} identity", { name: ((ST.peer || {}).own || {}).name || T("This Dionysus") }) + " " + ownId : ""; }
+    if (bfp && bfp.dataset.fp !== ownId) { bfp.dataset.fp = ownId; setHtml(bfp, ownId ? identicon(ownId, "menu") : ""); bfp.title = ownId ? T("{name} identity", { name: ((ST.peer || {}).own || {}).name || T("This Dionysus") }) + " " + ownId : ""; }
     const ver = document.getElementById("version"), up = ST.updates || {};
     // the stages: updating (asked of TrueNAS, until this page comes back on the new build), checking (just started, GitHub not
     // asked yet), an update to have (a button when TrueNAS can do it, else a link), or nothing to say
     const stage = updateStage(up);
-    ver.innerHTML = '<a class="verlink" href="' + esc(up.url || up.repo || "#") + '" target="_blank" rel="noopener" title="' + H("This build on GitHub") + '">v' + esc(ST.version) + "</a>" +
+    setHtml(ver, '<a class="verlink" href="' + esc(up.url || up.repo || "#") + '" target="_blank" rel="noopener" title="' + H("This build on GitHub") + '">v' + esc(ST.version) + "</a>" +
       (stage === "updating" ? '<span class="update quiet">' + H("Updating…") + "</span>"
         : stage === "checking" ? '<span class="update quiet">' + H("checking…") + "</span>"
         : stage === "button" ? '<button type="button" class="update" data-act="updates-apply">' + H("Update now") + "</button>"
         : stage === "needkey" ? '<a class="update" href="/system#updates" data-nav>' + H("Update available") + "</a>"
         : stage === "link" ? '<a class="update" href="' + esc(up.repo) + (up.channel === "dev" ? "/commits/dev" : "/releases") + '" target="_blank" rel="noopener">' +
-          (up.latest && up.latest !== ST.version.replace(/-dev$/, "") ? H("v{version} available ↗", { version: up.latest }) : H("newer dev build ↗")) + "</a>" : "");
+          (up.latest && up.latest !== ST.version.replace(/-dev$/, "") ? H("v{version} available ↗", { version: up.latest }) : H("newer dev build ↗")) + "</a>" : ""));
     let bar = /** @type {HTMLElement | null} */ (document.getElementById("userbar"));
     if (!bar) {
       // Top right: the language menu and the sign-out button.
@@ -5766,8 +5808,8 @@ PCI18N.ready.then(function () {
       if (ST.auth && ST.auth.enabled) {
         const who = document.createElement("span");
         // The user name only shows on hover, so the bar stays short.
-        who.innerHTML = '<button type="button" class="signout" title="' + H("Sign out {user}", { user: ST.auth.user }) + '" aria-label="' + H("Sign out {user}", { user: ST.auth.user }) + '">' +
-          '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M17 7l-1.41 1.41L18.17 11H8v2h10.17l-2.58 2.58L17 17l5-5zM4 5h8V3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h8v-2H4V5z"/></svg></button>';
+        setHtml(who, '<button type="button" class="signout" title="' + H("Sign out {user}", { user: ST.auth.user }) + '" aria-label="' + H("Sign out {user}", { user: ST.auth.user }) + '">' +
+          '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M17 7l-1.41 1.41L18.17 11H8v2h10.17l-2.58 2.58L17 17l5-5zM4 5h8V3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h8v-2H4V5z"/></svg></button>');
         who.className = "whobox";
         who.querySelector("button").addEventListener("click", function () { api("/logout", {}).then(function () { location.reload(); }); });
         bar.appendChild(who);
@@ -5775,7 +5817,7 @@ PCI18N.ready.then(function () {
       document.querySelector(".shell").appendChild(bar);
     }
     applyTheme();
-    main.innerHTML = PAGES[page]();
+    setHtml(main, PAGES[page]());
     fitBars();
     fitPosters();
     reattachInfo();
@@ -5851,7 +5893,7 @@ PCI18N.ready.then(function () {
       if (!editing() && !selecting() && !interacting()) render();
       lookIfDue();
     }).catch(function () {
-      if (!ST) main.innerHTML = '<p class="muted">' + H("Can’t reach the Dionysus service. Retrying…") + "</p>";
+      if (!ST) setHtml(main, '<p class="muted">' + H("Can’t reach the Dionysus service. Retrying…") + "</p>");
       else if (UPDATING || (ST.updates || {}).updating) render();  // (away while it restarts: still "Updating…")
     });
   }
@@ -5908,7 +5950,7 @@ PCI18N.ready.then(function () {
   function showInfo(btn, pinned) {
     if (popFor && popFor !== btn.dataset.info) document.querySelectorAll('.info[aria-expanded="true"]').forEach(function (b) { b.setAttribute("aria-expanded", "false"); });
     popFor = btn.dataset.info; popPinned = !!pinned;
-    pop.innerHTML = INFO[popFor] || "";
+    setHtml(pop, INFO[popFor] || "");
     pop.hidden = false;
     if (topLayer && !popUp) { pop.showPopover(); popUp = true; }
     btn.setAttribute("aria-expanded", "true");
@@ -5935,7 +5977,7 @@ PCI18N.ready.then(function () {
     if (!b) { hideInfo(); return; }
     b.setAttribute("aria-expanded", "true");
     b.setAttribute("aria-describedby", "infopop");
-    pop.innerHTML = INFO[popFor] || "";
+    setHtml(pop, INFO[popFor] || "");
     placeInfo(b);
   }
   const hoverable = window.matchMedia && window.matchMedia("(hover: hover)").matches;
@@ -6384,7 +6426,7 @@ PCI18N.ready.then(function () {
     }
     else if (act === "tls-trust") {  // a service's new certificate pinned in the old one's place (tlspin.py)
       el.disabled = true;
-      api("/api/tls/trust", { service: el.dataset.service }).then(function (got) {
+      api("/api/tls/trust", { service: el.dataset.service, fingerprint: el.dataset.fp || "" }).then(function (got) {
         if (got.error) { toast(msg(got.error), true); load(); return; }
         toast(T("New certificate trusted"));
         ST.testing = true; render(); setTimeout(load, 1500);
@@ -6474,13 +6516,13 @@ PCI18N.ready.then(function () {
     if (i === covHover) return;
     covHover = i;
     const body = main.querySelector("#cov-body");
-    if (body) body.innerHTML = covBody();
+    if (body) setHtml(body, covBody());
   });
   main.addEventListener("pointerleave", function () {
     if (covHover == null) return;
     covHover = null;
     const body = main.querySelector("#cov-body");
-    if (body) body.innerHTML = covBody();
+    if (body) setHtml(body, covBody());
   }, true);
 
   main.addEventListener("input", /** @param {On<Event>} e */ function (e) {
@@ -6490,7 +6532,7 @@ PCI18N.ready.then(function () {
       covRange = Number(el.value);
       covHover = null;
       const cc = main.querySelector("#coverage");
-      if (cc) cc.outerHTML = coverageCard();
+      if (cc) setHtml(cc, coverageCard(), "outer");
       const sl2 = main.querySelector("#cov-range");
       if (sl2) sl2.focus();
       return;
@@ -6502,9 +6544,9 @@ PCI18N.ready.then(function () {
         refreshRevert(np[0], np[1]);
         if (np[0] === "warmup") {  // the sizing table follows as you type
           const siz2 = main.querySelector(".sizing");
-          if (siz2) siz2.outerHTML = sizingHtml(true);
+          if (siz2) setHtml(siz2, sizingHtml(true), "outer");
           const est2 = main.querySelector(".est");
-          if (est2) est2.outerHTML = estimateHtml();
+          if (est2) setHtml(est2, estimateHtml(), "outer");
         }
       }
       return;
@@ -6518,9 +6560,9 @@ PCI18N.ready.then(function () {
       refreshRamLines();
       if (parts[0] === "warmup") {
         const est = main.querySelector(".est");
-        if (est) est.outerHTML = estimateHtml();
+        if (est) setHtml(est, estimateHtml(), "outer");
         const siz = main.querySelector(".sizing");
-        if (siz) siz.outerHTML = sizingHtml(true);
+        if (siz) setHtml(siz, sizingHtml(true), "outer");
       }
     }
   });

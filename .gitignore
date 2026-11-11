@@ -5,8 +5,8 @@ node_modules/
 # Local run settings (contain your Plex token and TrueNAS API key)
 .dev-config/
 .DS_Store
-.devtools
-.devtools.before-toml
+.callboard
+.callboard.before-toml
 .claude
 CLAUDE.md
 

@@ -94,11 +94,14 @@ class SyncthingClient:
 
     def __init__(self, url: str, api_key: str, timeout: float = 10, tls: ssl.SSLContext | None = None):
         """``tls``: the context the connection is verified with (tlspin, through Syncthing.client: the pin, or full
-        verification); without one, the certificate isn't checked — tests and keyless probes only."""
+        verification); without one, a keyless probe's certificate isn't checked (there's nothing to take), and a keyed client
+        gets a pinning context with no pin, which refuses every certificate before the key is sent (F-2026-053)."""
         self.url, self.key, self.timeout = url.rstrip("/"), api_key, timeout
         self.after_tls: Callable[[bool], object] | None = None  # called with whether the connection was made (app.tls_ok / tls_refused)
         if tls is not None:
             self.ctx = tls
+        elif api_key:
+            self.ctx = tlspin.context(False)
         else:
             self.ctx = ssl.create_default_context()  # (its own certificate is self-signed: not checked)
             self.ctx.check_hostname = False

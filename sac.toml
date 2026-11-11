@@ -1,0 +1,47 @@
+# Security Audit Coverage (sac): this project's settings. Public on purpose: nothing here names an auditor.
+# The release rules (they do) are the private audits repo's rules.toml.
+
+[project]
+name = 'TrueNAS-Plex-Caching'
+mode = 'owner'
+
+[code]
+include = ['plexcache/**/*.py', 'plexcache/web/*.js', 'plexcache/web/*.html', 'plexcache/web/*.css', 'Dockerfile', 'compose.yaml', '.github/workflows/*.yml', 'dev/auditgui.py', 'dev/auditgui.html', 'dev/auditrun.py', 'dev/auditor_*.py', 'dev/style.py']
+
+[records]
+public = 'security/audits'
+private = '../TrueNAS-Plex-Caching-audits'
+
+[git]
+
+[versions]
+
+[cves]
+
+[dev]
+
+[tests]
+paths = ['tests/test*.py']
+command = ['python3', '-m', 'unittest']
+module = '{module}.{class}.{name}'
+
+[prompt]
+path = 'PROMPT.md'
+light = 'PROMPT-light.md'
+
+[page]
+port = 0
+idle = 1800
+quiet = 1800
+open = true
+name = 'sac'
+bench = true
+own_cases = true
+
+[public]
+detail = 'summary'
+embargo = 'release'
+advisories = 'security/advisories'
+sources = ['osv', 'nvd', 'ghsa']
+
+[levels]

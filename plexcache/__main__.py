@@ -9,6 +9,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .app import App
+from .i18n import M
 from .server import serve
 
 log = logging.getLogger("plexcache")
@@ -96,6 +97,11 @@ def main() -> int:
         log.warning("web UI login is off (PLEXCACHE_USERNAME / PLEXCACHE_PASSWORD not set): anyone on the network can use it")
     elif app.auth.default_password:
         log.warning("PLEXCACHE_PASSWORD is still the default; sign-in is refused until it's changed")
+    if os.environ.get("PLEXCACHE_URL") and not os.environ.get("PLEXCACHE_TRUSTED_PROXY"):
+        # (F-2026-051: without it, X-Forwarded-For is anyone's, so every client behind the proxy counts as the proxy)
+        log.warning("PLEXCACHE_URL is set but PLEXCACHE_TRUSTED_PROXY isn't: every client behind the proxy counts as the proxy's address")
+        app.activity.event("settings", M("PLEXCACHE_URL is set without PLEXCACHE_TRUSTED_PROXY: every browser behind the proxy counts as one, "
+                                          "so a few wrong passwords from one of them lock out all of them. Set PLEXCACHE_TRUSTED_PROXY to the proxy’s address in the app’s YAML."), "warn")
     app.start()
     httpd = serve(app, host, port)
 

@@ -89,12 +89,14 @@
   }
   let drawn = {};  // vines already worked out, by size and seed: a page draws again every few seconds, the same each time
   function cached(key, make) { if (!drawn[key]) { if (Object.keys(drawn).length > 400) drawn = {}; drawn[key] = make(); } return drawn[key]; }
-  // A page whose policy takes no style="…" from markup (the dev tools' pages: only their own nonce's styles) still gets
-  // what a drawing sets that way: set again by script, which such a policy allows. (Elsewhere it's the same style again.)
+  // No page's policy takes a data-style="…" from markup (F-2026-058), so a drawing writes its own styles as data-style="…", and
+  // they're set here by script, which the policy allows: only in the drawing just made (el, decor's own element), never
+  // on anything else in the page.
   function styled(el) {
-    Array.prototype.forEach.call(el.querySelectorAll("[style]"), function (n) {
-      const s = n.getAttribute("style");
+    Array.prototype.forEach.call(el.querySelectorAll("[data-style]"), function (n) {
+      const s = n.getAttribute("data-style");
       if (s) /** @type {HTMLElement} */ (n).style.cssText = s;
+      n.removeAttribute("data-style");
     });
   }
   // (``before``: where among el's children it goes, when not at the end)
@@ -155,7 +157,7 @@
     const sh = cached("vshape" + w, function () { return vineShape(w); }), n = sh.xs.length, done = pct / 100 * n; let g = "";
     sh.xs.forEach(function (x, i) {
       const y = sh.ys[i];
-      if (busy) { g += '<circle cx="' + x + '" cy="' + y + '" r="6.5" fill="var(--unripe)"/><circle class="ripen" cx="' + x + '" cy="' + y + '" r="6.5" style="animation-delay:' + r1((Math.max(0, x - 10) / 200) % 1.6 - 1.6) + 's"/>'; return; }
+      if (busy) { g += '<circle cx="' + x + '" cy="' + y + '" r="6.5" fill="var(--unripe)"/><circle class="ripen" cx="' + x + '" cy="' + y + '" r="6.5" data-style="animation-delay:' + r1((Math.max(0, x - 10) / 200) % 1.6 - 1.6) + 's"/>'; return; }
       const f = Math.max(0, Math.min(1, done - i));
       g += '<circle cx="' + x + '" cy="' + y + '" r="6.5" fill="var(--unripe)"/>' + (f > 0 ? '<circle cx="' + x + '" cy="' + y + '" r="6.5" fill="var(--wine)"' + (f < 1 ? ' opacity="' + r1(f) + '"' : "") + "/>" : "");
     });
@@ -186,7 +188,7 @@
       const k = "b" + w + "x" + h + "x" + rad + "x" + bw;
       put(b, "edgevine", { k: k, svg: cached(k, function () {
         const g = edge(w, h, rad, 3, true);
-        return '<svg class="edgevine" width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + " " + h + '" style="left:' + (-bw) + "px;top:" + (-bw) + 'px" aria-hidden="true" focusable="false"><path d="' + g.d +
+        return '<svg class="edgevine" width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + " " + h + '" data-style="left:' + (-bw) + "px;top:" + (-bw) + 'px" aria-hidden="true" focusable="false"><path d="' + g.d +
           '" fill="var(--panel)" stroke="var(--edge)" stroke-width="1.6" stroke-linejoin="round"/></svg>';
       }) });
     });
@@ -428,8 +430,8 @@
     const inner = strip + reel(x0, cy, r), H = 2 * r + 8, id = "pcfilm" + (++maskN);
     // the sprocket holes and the reel's cutouts are see-through: a mask with them black
     return '<svg class="filmband" viewBox="0 0 ' + W + " " + H + '" width="' + W + '" height="' + H + '" aria-hidden="true" focusable="false">' +
-      '<mask id="' + id + '" maskUnits="userSpaceOnUse" x="-50" y="-50" width="' + (W + 100) + '" height="' + (H + 100) + '"><g style="--film:#fff;--film-mark:#fff;--hole:#000">' + inner + "</g></mask>" +
-      '<g mask="url(#' + id + ')" style="--hole:var(--film)' + (second ? ";--film-mark:var(--film-mark-2)" : "") + '">' + inner + "</g></svg>";
+      '<mask id="' + id + '" maskUnits="userSpaceOnUse" x="-50" y="-50" width="' + (W + 100) + '" height="' + (H + 100) + '"><g data-style="--film:#fff;--film-mark:#fff;--hole:#000">' + inner + "</g></mask>" +
+      '<g mask="url(#' + id + ')" data-style="--hole:var(--film)' + (second ? ";--film-mark:var(--film-mark-2)" : "") + '">' + inner + "</g></svg>";
   }
   function film(root) {
     const top = root.querySelector(":scope > .top"), old = root.querySelector(":scope > .filmline");

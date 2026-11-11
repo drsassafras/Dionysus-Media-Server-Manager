@@ -1,7 +1,7 @@
 name: Release
 
-# A version tag pushed (devtools.toml's [tags]: vX.Y.Z a release, vX.Y.Z-rc.N a release candidate, vX.Y.Z-beta.N a
-# preview) starts the release process: the release gate (dev/gate.py: the blocks held as the tag's phase holds them —
+# A version tag pushed (callboard.toml's [tags]: vX.Y.Z a release, vX.Y.Z-rc.N a release candidate, vX.Y.Z-beta.N a
+# preview) starts the release process: the release gate (callboard gate: the blocks held as the tag's phase holds them —
 # a candidate the freeze, a beta the preview's warnings; nothing runs unless [github] enabled and [gates.release]
 # github say so), then the image at that version, then a GitHub Release whose notes are the change notes written
 # since the last release (python3 dev/release.py notes), a pre-release for a candidate or a preview. After a release
@@ -15,27 +15,45 @@ permissions:
   contents: write
   packages: write
   pull-requests: write
+  id-token: write       # (the attestation's signature: the workflow's own identity)
+  attestations: write   # (kept in the repository's attestations, where Update Now looks)
 
 jobs:
   gate:
-    # the release gate, as devtools.toml holds it: skipped (and blocking nothing) when the file says it's off
+    # the release gate, as callboard.toml holds it: skipped (and blocking nothing) when the file says it's off
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
         with:
           fetch-depth: 0
+      # the dev tools (their own project: github.com/drsassafras/callboard), fetched beside the code and named to it
+      # (CALLBOARD_HOME: dev/__init__.py finds the install by that; its bin on the PATH, for `callboard gate`, `callboard tool`)
+      - name: The dev tools
+        env:
+          CALLBOARD_REF: main
+        run: |
+          git clone --quiet --depth 1 --branch "$CALLBOARD_REF" https://github.com/drsassafras/callboard "$RUNNER_TEMP/callboard"
+          echo "CALLBOARD_HOME=$RUNNER_TEMP/callboard" >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP/callboard/bin" >> "$GITHUB_PATH"
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7
         with:
           python-version: "3.15"
       - run: npm ci --prefix dev --no-audit --no-fund
       - run: npx --prefix dev playwright install --with-deps chromium
-      - run: python3 dev/gate.py release --ci
+      - run: callboard gate release --ci
 
   image:
     needs: gate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: The dev tools   # (as the first job has them)
+        env:
+          CALLBOARD_REF: main
+        run: |
+          git clone --quiet --depth 1 --branch "$CALLBOARD_REF" https://github.com/drsassafras/callboard "$RUNNER_TEMP/callboard"
+          echo "CALLBOARD_HOME=$RUNNER_TEMP/callboard" >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP/callboard/bin" >> "$GITHUB_PATH"
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4
       - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6  # v4
         with:
@@ -64,10 +82,12 @@ jobs:
           pull: true
       - name: Optimizer tests inside the image
         run: >
-          docker run --rm -v "$PWD:/src:ro" -w /src --entrypoint python plex-cache:test
+          docker run --rm -v "$PWD:/src:ro" -v "$CALLBOARD_HOME:/callboard:ro" -e CALLBOARD_HOME=/callboard -w /src
+          --entrypoint python plex-cache:test
           -W ignore -m unittest -v tests.test_plexcache.FixtureTests tests.test_plexcache.OptimizerTests
           tests.test_plexcache.CoverArtTests
       - name: Push
+        id: push
         env:
           TAGS: ${{ steps.meta.outputs.tags }}
         run: |
@@ -75,6 +95,15 @@ jobs:
             docker tag plex-cache:test "$tag"
             docker push "$tag"
           done
+          # the digest every tag now points at: what the attestation below vouches for, and what Update Now checks
+          digest="$(docker inspect --format '{{index .RepoDigests 0}}' plex-cache:test | cut -d@ -f2)"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      # This build's provenance, signed with the workflow's own identity and kept in the repository's attestations: an app
+      # pressing Update Now pulls only an image attested here (plexcache/updates.py verify_image, F-2026-043)
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
+        with:
+          subject-name: ghcr.io/${{ github.repository_owner }}/plex-cache
+          subject-digest: ${{ steps.push.outputs.digest }}
 
   release:
     needs: image
@@ -83,6 +112,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
         with:
           fetch-depth: 0
+      - name: The dev tools   # (as the first job has them)
+        env:
+          CALLBOARD_REF: main
+        run: |
+          git clone --quiet --depth 1 --branch "$CALLBOARD_REF" https://github.com/drsassafras/callboard "$RUNNER_TEMP/callboard"
+          echo "CALLBOARD_HOME=$RUNNER_TEMP/callboard" >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP/callboard/bin" >> "$GITHUB_PATH"
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7
         with:
           python-version: "3.15"
@@ -108,6 +144,13 @@ jobs:
         with:
           ref: dev
           fetch-depth: 0
+      - name: The dev tools   # (as the first job has them)
+        env:
+          CALLBOARD_REF: main
+        run: |
+          git clone --quiet --depth 1 --branch "$CALLBOARD_REF" https://github.com/drsassafras/callboard "$RUNNER_TEMP/callboard"
+          echo "CALLBOARD_HOME=$RUNNER_TEMP/callboard" >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP/callboard/bin" >> "$GITHUB_PATH"
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7
         with:
           python-version: "3.15"

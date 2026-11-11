@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The audits page: security audits without the commands (python3 dev/audit.py gui, or a on devtools's board).
+"""The audits page: security audits without the commands (python3 dev/audit.py gui, or a on callboard's board).
 
     Overview     what the Security Audit block says, what waits to be audited before a push, the files waiting for you
                  to commit
@@ -15,7 +15,7 @@
     Rules        the private rules.toml, checked before it's saved
 
 A page on this computer only (127.0.0.1, a port of its own), for as long as it's open, and for the browser that opened the
-address it printed only (its one-time code, swapped for a cookie: dev/devpage.py's Session): everything it reads or
+address it printed only (its one-time code, swapped for a cookie: callboard/devpage.py's Session): everything it reads or
 changes needs that cookie and the token the page was given, and a page of another site's name pointed here is refused. It writes files (the
 audit records, a finding's status, rules.toml) and never commits: what's new is on the Overview, for you to commit.
 """
@@ -31,9 +31,11 @@ import tomllib
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-from dev import audit, auditfix, auditrun, devpage  # noqa: E402
-from dev.checks import Outcome  # noqa: E402
-from dev.progress import counted  # noqa: E402
+from dev import audit, auditfix, auditrun  # noqa: E402
+
+from callboard import devpage  # noqa: E402
+from callboard.checks import Outcome  # noqa: E402
+from callboard.progress import counted  # noqa: E402
 
 PAGE = os.path.join(ROOT, "dev", "auditgui.html")
 GONE = 180.0   # (seconds without a beat from a tab: it's closed. A tab in the background beats only once a minute or so,
@@ -144,8 +146,8 @@ class Data:
         sensitive = list(rule.get("sensitive", {}).get("paths", []))
         m = audit.measure(audits)
         now = time.time()
-        from dev import checks
-        r = checks.levels("audit")   # (the rules this checkout's role holds the audits to: devtools.toml)
+        from callboard import checks
+        r = checks.levels("audit")   # (the rules this checkout's role holds the audits to: callboard.toml)
         outcomes: list[Outcome] = [audit.coverage_check(m, audits, now, sensitive, r.value("grace_days") if r else None,
                                                         r.value("grace_share") if r else None, r.level("unaudited") if r else "warn"),
                                    audit.config_check(have_private, rule, r.level("config") if r else "warn", r.level("unknown") if r else "info")]
@@ -472,8 +474,8 @@ class Data:
                 text = fh.read()
         except OSError:
             text = ""
-        from dev import checks
-        r = checks.levels("audit")   # (the dev rule: devtools.toml's [audit] for this checkout's role)
+        from callboard import checks
+        r = checks.levels("audit")   # (the dev rule: callboard.toml's [audit] for this checkout's role)
         dev = {"grace_days": r.value("grace_days"), "grace_share": r.value("grace_share"), "level": r.level("unaudited"), "role": r.ctx.role} if r else {}
         return {"text": text, "path": path, "problems": check_rules(text) if text else ["there's no rules.toml"], "dev": dev}
 
@@ -515,7 +517,7 @@ def check_rules(text: str) -> list[str]:
 
 # ---------------------------------------------------------------- the server
 def serve(data: Data, open_browser: bool = True, port: int = 0, ready=None, keep: bool = False) -> int:
-    """The audits page, served by dev/devpage.py's server (its session, token and beats are the dev pages' shared ones),
+    """The audits page, served by callboard/devpage.py's server (its session, token and beats are the dev pages' shared ones),
     for as long as it's open and IDLE after. With ``keep`` (dev/audit.py gui), its address and keys are kept (_kept_path)
     so that, started again, it comes back on the same ones: a tab still open reconnects by itself, and no new one opens
     unless none does. A tab's beat hears when the page's code has changed since the server started (_code)."""

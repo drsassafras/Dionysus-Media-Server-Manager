@@ -1,4 +1,4 @@
-# devtools.toml — what this project's checks are held to, and where. dev/policy.py reads it for every tool, the board, the
+# callboard.toml — what this project's checks are held to, and where. callboard/policy.py reads it for every tool, the board, the
 # UI and GitHub alike; the UI's Config tabs write it (unless [config] read_only). A rule not set here is off: nothing in
 # any tool's code decides a level or a threshold.
 #
@@ -14,6 +14,10 @@ read_only = false
 # the file the code's version is read from (__version__ = "X.Y.Z"): a beta or release candidate of another version is
 # stale, and puts the code in no phase
 version_file = "plexcache/__init__.py"
+# the package the tests' coverage is measured on, and the folder under ~/.cache where this project's tools keep what
+# they fetched and saved (the check tools at their versions, the coverage the tests saved)
+package = "plexcache"
+cache = "plex-cache"
 
 # ---------------------------------------------------------------- the branches, and the role each one's code has
 # A branch's role decides which rules hold for its code (local work takes its branch's role). The most specific pattern
@@ -125,17 +129,17 @@ cmd = "python3 tests/run.py tests.test_plexcache.WebBuildTests"
 [integrations.types]
 title = "Python Validation"
 kind = "checks"
-cmd = "python3 dev/typecheck.py"
+cmd = "callboard tool typecheck"
 
 [integrations.build]
 title = "Build Validation"
 kind = "checks"
-cmd = "python3 dev/buildcheck.py"
+cmd = "callboard tool buildcheck"
 
 [integrations.coverage]
 title = "Coverage"
 kind = "coverage"
-cmd = "python3 dev/coverage.py --devtools"
+cmd = "callboard tool coverage --callboard"
 after = ["unit"]
 
 [integrations.audit]
@@ -147,21 +151,21 @@ needs = ["dev/audit.toml"]
 [integrations.i18n]
 title = "Translations"
 kind = "i18n"
-cmd = "python3 dev/i18n.py --devtools"
+cmd = "python3 dev/i18n.py --callboard"
 
 [integrations.release]
 title = "Release checks"
 kind = "release"
-cmd = "python3 dev/release.py --devtools"
+cmd = "python3 dev/release.py --callboard"
 after = ["unit"]
 
 [integrations.upkeep]
 title = "Dependencies"
 kind = "upkeep"
-cmd = "python3 dev/upkeep.py --devtools"
+cmd = "python3 dev/upkeep.py --callboard"
 
 [integrations.style]
-title = "Style Approval"
+title = "Wardrobe"
 kind = "style"
 cmd = "python3 dev/style.py check"
 
@@ -304,6 +308,6 @@ move = "minor"
 [upkeep.feature]
 move = "none"
 
-# Style Approval: looks waiting for approval.
+# Wardrobe (the style review): looks waiting for approval.
 [style]
 waiting = "warn"

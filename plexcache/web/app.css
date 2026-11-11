@@ -878,3 +878,68 @@ svg.edgevine{position:absolute;overflow:visible;pointer-events:none;z-index:-1}
 /* System → Themes: each theme on a row, its buttons at the end */
 .themelist{margin:12px 0 6px}
 .themerow{align-items:center;flex-wrap:wrap}
+
+/* What were the page's style="…" attributes (F-2026-058: the CSP takes none). Each class is one element's own look, as
+   the attribute had it: !important, as an attribute outranks the stylesheet's other rules. */
+.s-aic_gap12_wrap { align-items: center !important; gap: 12px !important; flex-wrap: wrap !important; }
+.s-aic_gap12_wrap_mt10 { align-items: center !important; gap: 12px !important; flex-wrap: wrap !important; margin-top: 10px !important; }
+.s-bgc-audio { background: var(--c-audio) !important; }
+.s-bgc-movie { background: var(--c-movie) !important; }
+.s-bgc-res { background: var(--c-res) !important; }
+.s-bgc-tv { background: var(--c-tv) !important; }
+.s-bgguide-bg_bcguide-line_cink { background: var(--guide-bg) !important; border-color: var(--guide-line) !important; color: var(--ink) !important; }
+.s-dflex_aic_gap8_m6-0-2 { display: flex !important; align-items: center !important; gap: 8px !important; margin: 6px 0 2px !important; }
+.s-dflex_gap10_aic_m4-0-8_wrap { display: flex !important; gap: 10px !important; align-items: center !important; margin: 4px 0 8px !important; flex-wrap: wrap !important; }
+.s-dflex_jcsb_fs13 { display: flex !important; justify-content: space-between !important; font-size: 13px !important; }
+.s-dflex_jcsb_gap10_wrap_aic { display: flex !important; justify-content: space-between !important; gap: 10px !important; flex-wrap: wrap !important; align-items: center !important; }
+.s-dflex_wrap_gap10_aic_jcsb { display: flex !important; flex-wrap: wrap !important; gap: 10px !important; align-items: center !important; justify-content: space-between !important; }
+.s-dflex_wrap_jcsb_gap10_aib { display: flex !important; flex-wrap: wrap !important; justify-content: space-between !important; gap: 10px !important; align-items: baseline !important; }
+.s-dflex_wrap_jcsb_gap8_aib { display: flex !important; flex-wrap: wrap !important; justify-content: space-between !important; gap: 8px !important; align-items: baseline !important; }
+.s-flex1 { flex: 1 !important; }
+.s-flex1-1-0 { flex: 1 1 0 !important; }
+.s-fs12 { font-size: 12px !important; }
+.s-fs13 { font-size: 13px !important; }
+.s-fs13_m10-0-0 { font-size: 13px !important; margin: 10px 0 0 !important; }
+.s-fs13_m8-0-0 { font-size: 13px !important; margin: 8px 0 0 !important; }
+.s-fs13_mt12 { font-size: 13px !important; margin-top: 12px !important; }
+.s-fs13_mt6 { font-size: 13px !important; margin-top: 6px !important; }
+.s-fs14 { font-size: 14px !important; }
+.s-fs28 { font-size: 28px !important; }
+.s-fw400_fs14 { font-weight: 400 !important; font-size: 14px !important; }
+.s-fw600 { font-weight: 600 !important; }
+.s-fw600_m12-0-8 { font-weight: 600 !important; margin: 12px 0 8px !important; }
+.s-m0 { margin: 0 !important; }
+.s-m0-0-10 { margin: 0 0 10px !important; }
+.s-m0-0-12 { margin: 0 0 12px !important; }
+.s-m14-0-0 { margin: 14px 0 0 !important; }
+.s-m16-0-8 { margin: 16px 0 8px !important; }
+.s-m18-0 { margin: 18px 0 !important; }
+.s-m4-0-0 { margin: 4px 0 0 !important; }
+.s-m4-0-0-18 { margin: 4px 0 0 18px !important; }
+.s-m4-0-0-26 { margin: 4px 0 0 26px !important; }
+.s-m6-0-0 { margin: 6px 0 0 !important; }
+.s-m6-0-12 { margin: 6px 0 12px !important; }
+.s-m8-0 { margin: 8px 0 !important; }
+.s-m8-0-0 { margin: 8px 0 0 !important; }
+.s-m8-0-0_fw600 { margin: 8px 0 0 !important; font-weight: 600 !important; }
+.s-m8-0-0_pl20 { margin: 8px 0 0 !important; padding-left: 20px !important; }
+.s-m8-0-12 { margin: 8px 0 12px !important; }
+.s-maxw420 { max-width: 420px !important; }
+.s-maxw520 { max-width: 520px !important; }
+.s-maxw520_mt4 { max-width: 520px !important; margin-top: 4px !important; }
+.s-maxw980 { max-width: 980px !important; }
+.s-mb14 { margin-bottom: 14px !important; }
+.s-mb20 { margin-bottom: 20px !important; }
+.s-mb6 { margin-bottom: 6px !important; }
+.s-minw200 { min-width: 200px !important; }
+.s-minw240 { min-width: 240px !important; }
+.s-mt0 { margin-top: 0 !important; }
+.s-mt10 { margin-top: 10px !important; }
+.s-mt12 { margin-top: 12px !important; }
+.s-mt14 { margin-top: 14px !important; }
+.s-mt4 { margin-top: 4px !important; }
+.s-mt6 { margin-top: 6px !important; }
+.s-mt8 { margin-top: 8px !important; }
+.s-mt8_maxw520 { margin-top: 8px !important; max-width: 520px !important; }
+.s-w60p { width: 60% !important; }
+.s-wspre { white-space: pre-wrap !important; }

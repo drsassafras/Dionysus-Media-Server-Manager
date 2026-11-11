@@ -4,8 +4,8 @@
     python3 tests/run.py <module>         # another test module, by its import name
     python3 tests/run.py -j 1             # one test at a time, in this process (also PLEXCACHE_TEST_JOBS=1)
     python3 tests/run.py -j 4             # four workers (the default: two per core)
-    python3 tests/run.py --exclude WebBuildTests   # all but that class (devtools runs it in a section of its own)
-    python3 tests/run.py --coverage       # and what of plexcache/ it ran, every worker's, saved for dev/coverage.py
+    python3 tests/run.py --exclude WebBuildTests   # all but that class (callboard runs it in a section of its own)
+    python3 tests/run.py --coverage       # and what of plexcache/ it ran, every worker's, saved for callboard/coverage.py
 
 The tests are shared out among worker processes: a test at a time, except that a class set up once for all its tests
 (setUpClass) goes as a whole, its tests together and in order in one worker. Each worker imports the module itself (its
@@ -16,22 +16,22 @@ default is two workers per core. The warnings options the run was started with (
 test, or -j 1, it runs in this process, as unittest would.
 
 PLEXCACHE_PROGRESS=bar draws the bar even when the output isn't a terminal (a log shown on one later); COLUMNS then says
-how wide. PLEXCACHE_PROGRESS=feed sends it to devtools's board instead (dev/board.py), which draws it in the tests' section.
+how wide. PLEXCACHE_PROGRESS=feed sends it to callboard's board instead (callboard/board.py), which draws it in the tests' section.
 
-GitHub runs the suite with unittest itself (build.yml), one test at a time: this file is for runs by hand, devtools
+GitHub runs the suite with unittest itself (build.yml), one test at a time: this file is for runs by hand, callboard
 and dev/future.py.
 
 On a terminal, one line is redrawn as tests finish:
 
     [##########----------]  57 passed · 2 failed · 1 warning · 118 total  ServerTests.test_export_has_no_secrets
 
-The counts are the same everywhere (dev/progress.py's ``counts``): passed, failed, the warnings the run printed, and
-the total — on the bar, in its result line at the end, and on devtools's board (where the result line leaves them to the
+The counts are the same everywhere (callboard/progress.py's ``counts``): passed, failed, the warnings the run printed, and
+the total — on the bar, in its result line at the end, and on callboard's board (where the result line leaves them to the
 bar). When the output isn't a terminal (CI, a log file), it prints a line every 10%.
 Failures are listed in full at the end, as unittest normally does, and the
 exit code is non-zero if anything failed.
 
-A stop signal (SIGTERM: what devtools sends when you press Enter) ends the run at
+A stop signal (SIGTERM: what callboard sends when you press Enter) ends the run at
 once, mid-test. The tests that were running when it came aren't counted as failed:
 the run says how many tests ran and how many weren't run, and exits with 130.
 """
@@ -54,23 +54,25 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 os.chdir(ROOT)
 
-from dev import coverage, policy  # noqa: E402 — (--coverage: what the tests ran, for dev/coverage.py; policy: what the run is held to)
-from dev.progress import FEED as FEED_MARK  # noqa: E402 — (a record's mark: run's FEED says whether there's a board)
-from dev.progress import OFF, RED, Progress, detail, drawn, feeding, short_version, tell, tested, timed  # noqa: E402 — the bar the dev tools share (dev/upkeep.py's too)
-from dev.progress import result as result_line  # noqa: E402 — (``result`` is run's: the result line every dev tool says)
+import dev  # noqa: E402, F401 — (puts the callboard install on the path: dev/__init__.py)
+
+from callboard import coverage, policy  # noqa: E402 — (--coverage: what the tests ran, for callboard/coverage.py; policy: what the run is held to)
+from callboard.progress import FEED as FEED_MARK  # noqa: E402 — (a record's mark: run's FEED says whether there's a board)
+from callboard.progress import OFF, RED, Progress, detail, drawn, feeding, short_version, tell, tested, timed  # noqa: E402 — the bar the dev tools share (dev/upkeep.py's too)
+from callboard.progress import result as result_line  # noqa: E402 — (``result`` is run's: the result line every dev tool says)
 
 FEED = feeding()  # (read before main() takes PLEXCACHE_PROGRESS out of the tests' environment)
-# What devtools told this run (the integration that runs the suite, the project's devtools.toml, the code's role and the
+# What callboard told this run (the integration that runs the suite, the project's callboard.toml, the code's role and the
 # rest of its context), taken here and then out of the environment (main): the tests, and every tool they run, see none
 # of it — a tool a test runs reads its own rules as it would by hand, and the suite's verdict is the same wherever
 # it's run. The verdict reads what was taken.
-CONTEXT_KEYS = ("DEVTOOLS_INTEGRATION", "DEVTOOLS_CONFIG", "DEVTOOLS_ROLE", "DEVTOOLS_PHASE", "DEVTOOLS_TAG", "DEVTOOLS_BRANCH",
-                "DEVTOOLS_DIFF", "DEVTOOLS_GATE", "DEVTOOLS_BASE", "DEVTOOLS_CODE", "DEVTOOLS_COPY", "DEVTOOLS_COMMIT",
-                "DEVTOOLS_REPO", "DEVTOOLS_HEAD")
+CONTEXT_KEYS = ("CALLBOARD_INTEGRATION", "CALLBOARD_CONFIG", "CALLBOARD_ROLE", "CALLBOARD_PHASE", "CALLBOARD_TAG", "CALLBOARD_BRANCH",
+                "CALLBOARD_DIFF", "CALLBOARD_GATE", "CALLBOARD_BASE", "CALLBOARD_CODE", "CALLBOARD_COPY", "CALLBOARD_COMMIT",
+                "CALLBOARD_REPO", "CALLBOARD_HEAD")
 CONTEXT = {k: os.environ[k] for k in CONTEXT_KEYS if k in os.environ}
-CONFIG = policy.find_file()   # (DEVTOOLS_CONFIG's, or this folder's; "" when there's none: nothing held)
-# The rules (devtools.toml's [unit], [future]…: the integration that runs this suite, DEVTOOLS_INTEGRATION): what a failed
-# test, a warning the run printed and a skipped test are held as. Read through dev/policy.py; nothing here decides.
+CONFIG = policy.find_file()   # (CALLBOARD_CONFIG's, or this folder's; "" when there's none: nothing held)
+# The rules (callboard.toml's [unit], [future]…: the integration that runs this suite, CALLBOARD_INTEGRATION): what a failed
+# test, a warning the run printed and a skipped test are held as. Read through callboard/policy.py; nothing here decides.
 SCHEMA = policy.Schema("tests", "Tests", {
     "failures": policy.Setting("level", "a test that failed (or errored)"),
     "warnings": policy.Setting("level", "a warning the run printed"),
@@ -85,10 +87,10 @@ CHECKS_AS = {"failures": "errors", "warnings": "warnings", "skipped": "informati
 
 
 def verdict(failed: int, warned: int, skipped: int) -> int:
-    """The run's exit code, from what it's held to (dev/policy.py's: 0 passed, 1 a failure, 3 only notes, 4 warnings held
-    as such); without a devtools.toml, 1 when anything failed. Says the note the board shows (progress.status)."""
-    from dev.progress import counted, status
-    id_ = CONTEXT.get("DEVTOOLS_INTEGRATION", "") or "unit"
+    """The run's exit code, from what it's held to (callboard/policy.py's: 0 passed, 1 a failure, 3 only notes, 4 warnings held
+    as such); without a callboard.toml, 1 when anything failed. Says the note the board shows (progress.status)."""
+    from callboard.progress import counted, status
+    id_ = CONTEXT.get("CALLBOARD_INTEGRATION", "") or "unit"
     if not CONFIG:
         return 1 if failed else 0
     try:
@@ -97,7 +99,7 @@ def verdict(failed: int, warned: int, skipped: int) -> int:
             id_ = next((i["id"] for i in cfg.integrations(all_=True) if i["kind"] == "tests"), id_)
         r = policy.rules(id_, policy.context(env=CONTEXT, cfg=cfg), cfg)
     except policy.ConfigError as e:
-        print(f"    devtools.toml: {e}")
+        print(f"    callboard.toml: {e}")
         return 2
     held = {k: r.level(CHECKS_AS.get(k, k) if r.schema.kind == "checks" else k) for k in ("failures", "warnings", "skipped")}
     levels = [held["failures"]] * failed + [held["warnings"]] * warned + [held["skipped"]] * skipped
@@ -129,7 +131,7 @@ TIMES = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.
 
 
 def ran_on() -> list[str]:
-    """On devtools's board, after a run's result: what it ran on, read now (so Current Tests and Future Tests, the same
+    """On callboard's board, after a run's result: what it ran on, read now (so Current Tests and Future Tests, the same
     suite on this machine and in the next Python's image, show where they differ) — the software the app and its tests
     lean on most, the most first (the board leaves the last off when there's no room): Python, Node (the web's checks),
     MKVToolNix and ffmpeg (the optimizer's tools), OpenSSL (every https and TLS connection). One that isn't there is left
@@ -239,7 +241,7 @@ def run_here(module: str, suite, total: int, tty: bool, started: float) -> int:
     unittest.registerResult(result)
 
     def stop(*_):
-        # Stopped from outside (devtools's Enter): end now, without waiting for the test that's running.
+        # Stopped from outside (callboard's Enter): end now, without waiting for the test that's running.
         # That test didn't finish, so it isn't a failure; only the tests that finished are counted.
         if tty:
             sys.stdout.write("\r\033[K")
@@ -377,7 +379,7 @@ def failure_name(text: str) -> tuple[str, str]:
 
 def detailed(passed: int, failed: list[str], warned: int, total: int, took: float, workers: int, stopped: bool = False,
              times: dict | None = None, skipped: int = 0) -> None:
-    """The run's page in the devtools UI (dev/progress.py's detail): the counts, each failure as unittest printed it, what
+    """The run's page in the callboard UI (callboard/progress.py's detail): the counts, each failure as unittest printed it, what
     the suite ran on, and the slowest classes (the times run_parallel keeps for its sharing-out)."""
     detail({"kind": "tests", "passed": passed, "failed": len(failed), "warnings": warned, "skipped": skipped, "total": total, "not_run": max(0, total - passed - len(failed)),
             "took": round(took, 1), "workers": workers, "stopped": stopped, "ran_on": ran_on(),
@@ -394,7 +396,7 @@ def run_parallel(module: str, units: list, total: int, jobs: int, tty: bool, sta
     failures: list[str] = []
 
     def failed(text: str):
-        """A failure, kept for the end; on devtools's board said now too (a "tell" record: the board puts it above itself as
+        """A failure, kept for the end; on callboard's board said now too (a "tell" record: the board puts it above itself as
         it comes, not once the run is over), so it isn't printed again at the end there."""
         failures.append(text)
         if FEED:
@@ -437,7 +439,7 @@ def run_parallel(module: str, units: list, total: int, jobs: int, tty: bool, sta
         return verdict(bad, progress.warned, SKIPPED[0])
 
     def stop(*_):
-        # devtools's Enter: every worker ends now, mid-test (they have the signal too, as its process group); the
+        # callboard's Enter: every worker ends now, mid-test (they have the signal too, as its process group); the
         # tests that were running aren't failures.
         os._exit(finish(130, stopped=True))
     signal.signal(signal.SIGTERM, stop)
@@ -655,7 +657,7 @@ def _run(module: str, jobs_n: int, excluded: set[str], started: float) -> int:
     total = suite.countTestCases()
     tty = drawn(sys.stdout)
     os.environ.pop("PLEXCACHE_PROGRESS", None)  # (this run's, not the tests': one that runs tests/run.py itself says its own)
-    for k in CONTEXT_KEYS:   # (devtools's context: this run's, taken above — not the tests')
+    for k in CONTEXT_KEYS:   # (callboard's context: this run's, taken above — not the tests')
         os.environ.pop(k, None)
     units = _units(suite) if jobs_n > 1 else None
     if not units or len(units) < 2:

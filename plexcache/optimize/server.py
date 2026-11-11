@@ -4,9 +4,8 @@ It does one thing — optimize the file it's given — and nothing on its own: t
 decides what to optimize and when (it knows what's playing and what was just added), sends
 one file at a time, and reads the result back.
 
-    GET  /healthz        ok, and what the app needs to tell why it can't use the optimizer:
-                         its version, whether it has a token (never the token) and how many
-                         media folders it may write
+    GET  /healthz        ok, its version and whether it has a token (never the token); while it
+                         has none, what's wrong with it, for the app's setup page
     GET  /api/status     tools and versions, the file being optimized, recent results
     POST /api/check      {"path", "images"}: is the file optimized, and if not why
     POST /api/rewrite    {"path"}: write any file again, byte for byte, so it takes its dataset's
@@ -282,9 +281,12 @@ def make_handler(svc: Service):
 
         def do_GET(self):
             if self.path == "/healthz":
-                return self._send(200, {"ok": True, "service": "optimizer", "version": VERSION, "token": bool(svc.token),
-                                        "token_problem": svc.token_problem(), "token_file": svc.token_file,
-                                        "roots": len(svc.roots), "uid": os.getuid(), "gid": os.getgid()})
+                # (open to anything on the app's network: ok and the version only. While there's no token there's nothing to
+                # protect yet and nothing it can do, so it says what's wrong with the token, for the app's setup page: F-2026-045)
+                hz = {"ok": True, "service": "optimizer", "version": VERSION, "token": bool(svc.token)}
+                if not svc.token:
+                    hz.update(token_problem=svc.token_problem(), token_file=svc.token_file, uid=os.getuid())
+                return self._send(200, hz)
             if self.path == "/api/status":
                 if self._authed():
                     self._send(200, svc.status())

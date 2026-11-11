@@ -31,6 +31,7 @@ METHODS = {
     "the apps and their containers": ("app.query",),
     "an update: pulling the image": ("app.pull_images",),
     "an update: restarting the app": ("app.redeploy",),
+    "an update: the image pulled": ("app.image.query",),
     "the snapshots of a dataset": ("pool.snapshot.query", "zfs.snapshot.query"),  # (pool.snapshot.* from 25.04, zfs.snapshot.* before)
     "taking a snapshot": ("pool.snapshot.create", "zfs.snapshot.create"),
     "deleting a snapshot the app took": ("pool.snapshot.delete", "zfs.snapshot.delete"),

@@ -1,5 +1,6 @@
 """HTTP server: the web UI plus a small JSON API (standard library only)."""
 
+import base64
 import hashlib
 import ipaddress
 import json
@@ -22,8 +23,16 @@ log = logging.getLogger("plexcache")
 WEB_DIR = os.path.join(os.path.dirname(__file__), "web")
 PAGES = {"/", "/health", "/caching", "/ssd", "/library", "/tools", "/optimizer", "/convert", "/dataset", "/merge", "/versions", "/folders", "/unlink", "/filechecks", "/plexchecks", "/mirrorchecks", "/processes", "/sync", "/mirrors", "/activity", "/system", "/features", "/settings", "/mirror"}  # the last three: links from before (0.15; Mirror Checks, once Mirror Health)
 MAX_BODY = 1024 * 1024
+# routes that send a saved token to an address the request names: refused with the login off, when every request is
+# anyone's on the network (F-2026-052)
+SIGNED_ONLY = {"/api/plex2/address"}
 HEALTH_WAIT = 120  # seconds a library's first Library Health answer is waited for (the evaluator's: evaluate.py)
-CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+# The refusal page's own look (_refuse): a page that may not load the stylesheet, so its one <style>, allowed by its hash
+REFUSED_CSS = "p{font:16px system-ui;margin:3em auto;max-width:36em}"
+# style-src takes no 'unsafe-inline' (F-2026-058): the pages' looks are app.css's, what a script works out is set through
+# the CSSOM (app.js setHtml), and the one <style> is allowed by its hash
+CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'sha256-"
+       + base64.b64encode(hashlib.sha256(REFUSED_CSS.encode()).digest()).decode() + "'; img-src 'self' data:; "
        "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'")
 
 
@@ -265,13 +274,13 @@ def make_handler(app):
             if not logged:
                 app.activity.event("settings", M("refused a request from {address}: {why}", address=address, why=reason), "warn")
             if path in PAGES or path == "/login":
-                page = "<!doctype html><meta charset=utf-8><title>Dionysus</title><p style=\"font:16px system-ui;margin:3em auto;max-width:36em\">"
+                page = "<!doctype html><meta charset=utf-8><title>Dionysus</title><style>" + REFUSED_CSS + "</style><p>"
                 return self._send(403, (page + _html(str(why)) + "</p>").encode(), "text/html; charset=utf-8")
             return self._error(why, 403)
 
         def _signed_in(self, path: str) -> bool:
             """Let the request through, or answer it with the sign-in page / a 401."""
-            if not auth.enabled or path in OPEN_PATHS or path.startswith("/static/") or auth.request_ok(self.headers, self.client_address[0]):
+            if not auth.enabled or path in OPEN_PATHS or path.startswith("/static/") or auth.request_ok(self.headers, auth.client(self.headers, self.client_address[0])):
                 return True
             if path in PAGES:
                 self._file(os.path.join(WEB_DIR, "login.html"))
@@ -504,7 +513,7 @@ def make_handler(app):
             if path == "/login":
                 return self._login(body)
             if path == "/logout":
-                auth.revoke(auth.cookie_value(self.headers))
+                auth.revoke(auth.cookie_value(self.headers), auth.client(self.headers, self.client_address[0]))
                 return self._send(200, b'{"ok": true}', "application/json", {"Set-Cookie": auth.cookie("", 0)})
             if not self._signed_in(path):
                 return
@@ -526,7 +535,7 @@ def make_handler(app):
             if not isinstance(user, str) or not isinstance(pw, str) or len(user) > 256 or len(pw) > 1024:
                 return self._error(M("username and password must be text"), 400)
             user = user.strip()  # (a space from autofill or a paste shouldn't refuse the sign-in)
-            address = self.client_address[0]
+            address = auth.client(self.headers, self.client_address[0])
             if auth.locked_out(address):
                 return self._error(M("Too many wrong passwords from this device. Try again in 15 minutes."), 429)
             ok = auth.check_password(user, pw)
@@ -540,7 +549,7 @@ def make_handler(app):
                 app.activity.event("settings", M("signed in to the web UI"))
                 https = (self.headers.get("X-Forwarded-Proto") or "").lower() == "https"
                 return self._send(200, b'{"ok": true}', "application/json",
-                                  {"Set-Cookie": auth.cookie(auth.new_session(), SESSION_DAYS * 86400, secure=https)})
+                                  {"Set-Cookie": auth.cookie(auth.new_session(address), SESSION_DAYS * 86400, secure=https)})
             app.activity.event("settings", M("failed sign-in from {address}", address=self.address_string()), "warn")
             return self._error(M("wrong username or password"), 401)
 
@@ -556,7 +565,11 @@ def make_handler(app):
                         ok, why = app.feature_available(feature)
                         if not ok:
                             raise SettingsError(why)
-                app.settings.update(body)
+                app.settings.update(body, api=True)
+                moved = list(app.settings.moved)
+                if moved:  # (a service moved to another host: its secret and pin went with the old one, F-2026-035)
+                    app.activity.event("settings", M("{services} moved to another address: sign in or enter the key again, for the new one",
+                                                     services=", ".join(moved)), "warn")
                 if getattr(app, "ha", None):
                     app.ha.wake.set()  # Home Assistant shows the change straight away
                 if (body.get("general") or {}).get("update_check") is True and getattr(app, "updates", None):
@@ -570,7 +583,7 @@ def make_handler(app):
                         app.syncthing.throttle_tick()  # (what's held follows the settings at once)
                 elif set(body) != {"themes"}:  # (a theme changes nothing a check looks at)
                     app.run_checks_async(rescan="excluded_libraries" in body.get("general", {}))
-                return self._json({"settings": app.settings.public()})
+                return self._json({"settings": app.settings.public(), "moved": moved})
             if path in ("/api/themes/upload", "/api/themes/remove"):
                 return self._themes(path, body)
             if path == "/api/test":
@@ -580,7 +593,10 @@ def make_handler(app):
                 service = str(body.get("service") or "")
                 if not re.fullmatch(r"(plex|truenas|syncthing|mqtt|plex2:[A-Za-z0-9_-]{1,64})", service):
                     raise SettingsError(M("unknown service"))
-                got = app.trust_certificate(service)
+                fp = str(body.get("fingerprint") or "").lower()
+                if not re.fullmatch(r"[0-9a-f]{64}", fp):
+                    raise SettingsError(M("the certificate’s fingerprint is missing"))
+                got = app.trust_certificate(service, fp)
                 if "error" not in got:
                     app.test_connections_async(then_checks=False)
                 return self._json(got)
@@ -858,6 +874,8 @@ def make_handler(app):
                     app.test_connections_async(then_checks=True, rescan=True)
                 return self._json({"done": bool(token)})
             if path in ("/api/plex2/servers", "/api/plex2/address", "/api/plex2/forget", "/api/plex2/refresh", "/api/plex2/choose"):
+                if path in SIGNED_ONLY and not auth.enabled:
+                    raise SettingsError(M("Entering an address by hand needs a sign-in: set PLEXCACHE_USERNAME and PLEXCACHE_PASSWORD in the app’s YAML."))
                 try:
                     return self._json(jsonable(_plex2_call(app, path, body)))
                 except ValueError as e:

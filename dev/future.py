@@ -3,7 +3,7 @@
 3.15) and, in place of each tool's pin, upstream's newest pre-release where it has one ahead of its stable release —
 else that stable release — with every warning an error and the web's checks a year ahead (four years of browsers, not five), so what the next releases deprecate or remove shows up here
 before it reaches the image. Local only: GitHub runs the tests on the Python the app ships with (3.15); this is the
-"future" track, run by hand or in a cron of your own (devtools runs it after the current tests pass), and nothing in it
+"future" track, run by hand or in a cron of your own (callboard runs it after the current tests pass), and nothing in it
 gates a build.
 
     python3 dev/future.py              # the image on python:3.16.0a1-slim-trixie (or whatever the newest 3.16 is) and the tools' newest
@@ -51,8 +51,11 @@ from dataclasses import dataclass
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-from dev import policy, upkeep  # noqa: E402 — the exit codes; the pins, the stable releases and the version arithmetic are its
-from dev.progress import Progress, detail, feeding, record, result, said, timed  # noqa: E402 — the bar the dev tools share (on devtools's board: sent to it)
+import dev  # noqa: E402 — (puts the callboard install on the path: dev/__init__.py)
+from dev import upkeep  # noqa: E402 — the exit codes; the pins, the stable releases and the version arithmetic are its
+
+from callboard import policy  # noqa: E402 — the exit codes; the pins, the stable releases and the version arithmetic are its
+from callboard.progress import Progress, detail, feeding, record, result, said, timed  # noqa: E402 — the bar the dev tools share (on callboard's board: sent to it)
 
 WARN = ["-X", "dev", "-W", "error::DeprecationWarning", "-W", "error::PendingDeprecationWarning", "-W", "error::SyntaxWarning"]
 IMAGE = "plex-cache:future"
@@ -66,18 +69,24 @@ WEB_VOLUME = "plexcache-future-web"
 BROWSERS_VOLUME = "plexcache-future-browsers"
 # The web checks a year ahead: dev/web.js takes dev/package.json's "futureBrowserslist" (one year less of browsers)
 WEB_TARGETS = ["-e", "PLEXCACHE_WEB_TARGETS=future"]
-# devtools's context, told to the suite in the container (tests/run.py's CONTEXT_KEYS): its exit code is what this
+# callboard's context, told to the suite in the container (tests/run.py's CONTEXT_KEYS): its exit code is what this
 # block's rules hold its failures, warnings and skipped tests as — the Future Tests' own, not a guess from a checkout
 # git can't read there (/src is the host's, owned by another user)
-CONTEXT_KEYS = ("DEVTOOLS_ROLE", "DEVTOOLS_PHASE", "DEVTOOLS_TAG", "DEVTOOLS_BRANCH", "DEVTOOLS_DIFF", "DEVTOOLS_GATE",
-                "DEVTOOLS_BASE", "DEVTOOLS_CODE")
+CONTEXT_KEYS = ("CALLBOARD_ROLE", "CALLBOARD_PHASE", "CALLBOARD_TAG", "CALLBOARD_BRANCH", "CALLBOARD_DIFF", "CALLBOARD_GATE",
+                "CALLBOARD_BASE", "CALLBOARD_CODE")
+
+
+def install_mount() -> list[str]:
+    """The docker run arguments that give the container the callboard install (its own project, not under /src): mounted
+    read-only at /callboard, and named to the code there (CALLBOARD_HOME: dev/__init__.py finds it by that)."""
+    return ["-v", f"{dev.HOME}:/callboard:ro", "-e", "CALLBOARD_HOME=/callboard"]
 
 
 def suite_context() -> list[str]:
     """The docker run -e arguments that tell the suite inside whose rules it's held to: this block's integration (Future
-    Tests: ``future`` unless devtools named another), the project's file as the container sees it, the role and the rest."""
-    env = {"DEVTOOLS_INTEGRATION": os.environ.get("DEVTOOLS_INTEGRATION") or "future", "DEVTOOLS_CONFIG": "/src/devtools.toml",
-           "DEVTOOLS_REPO": "/src", **{k: os.environ[k] for k in CONTEXT_KEYS if k in os.environ}}
+    Tests: ``future`` unless callboard named another), the project's file as the container sees it, the role and the rest."""
+    env = {"CALLBOARD_INTEGRATION": os.environ.get("CALLBOARD_INTEGRATION") or "future", "CALLBOARD_CONFIG": "/src/callboard.toml",
+           "CALLBOARD_REPO": "/src", **{k: os.environ[k] for k in CONTEXT_KEYS if k in os.environ}}
     return [a for k, v in env.items() for a in ("-e", f"{k}={v}")]
 
 
@@ -580,14 +589,14 @@ def count_tests(tests: list[str], exclude: list[str] | None = None) -> int:
     return n
 
 
-# the tests that need the tools the image builds (ffmpeg, MKVToolNix, oxipng, jpegtran): on devtools's board they run in it
+# the tests that need the tools the image builds (ffmpeg, MKVToolNix, oxipng, jpegtran): on callboard's board they run in it
 # once it's built, and the rest of the suite on the plain Python image meanwhile (image_route)
 IMAGE_CLASSES = ("CoverArtTests", "FixtureTests", "OptimizerTests")
 OUT = threading.Lock()   # (two runs at once write the output: a line each, whole)
 
 
 class OneBar:
-    """On devtools's board, the Future Tests block's one bar while the image builds and the suite runs in two parts at once
+    """On callboard's board, the Future Tests block's one bar while the image builds and the suite runs in two parts at once
     (the build's steps, the tests on the plain Python image, then the tests in the image): their counts added up, its
     total the build's steps and every test from the start, its workers those at work now, its label what moved last.
     Each part's own bar records (tests/run.py's) come here instead of to the board."""
@@ -621,8 +630,8 @@ ONE: list[OneBar | None] = [None]   # (the board's one bar, while image_route ru
 
 class Line:
     """One line of the terminal, redrawn as the build moves (a plain line now and then when the output isn't a terminal).
-    On devtools's board (PLEXCACHE_PROGRESS=feed), its Future Tests section's bar instead, the suite's own (bar "tests",
-    dev/progress.py's): one bar for the run, the build's steps then the tests (the suite in the image goes on from the
+    On callboard's board (PLEXCACHE_PROGRESS=feed), its Future Tests section's bar instead, the suite's own (bar "tests",
+    callboard/progress.py's): one bar for the run, the build's steps then the tests (the suite in the image goes on from the
     steps: PLEXCACHE_BAR_BEFORE), its total the steps and the tests in the checkout (TESTS) until the suite counts its
     own."""
 
@@ -673,7 +682,7 @@ class Line:
 
 
 # A build step that couldn't fetch what it needed (a download refused, DNS, a tag not published yet): not a failure of the
-# code, so the run says "not run, try again" (exit 5, dev/policy.py's NOTRUN: devtools shows it grey) rather than red
+# code, so the run says "not run, try again" (exit 5, callboard/policy.py's NOTRUN: callboard shows it grey) rather than red
 FETCH_FAILED = re.compile(r"curl: \(\d+\)|TLS connect error|Connection reset by peer|Could not resolve host|failed to fetch|manifest unknown|manifest for .* not found|"
                           r"TLS handshake timeout|unexpected EOF|i/o timeout|Temporary failure in name resolution|Hash Sum mismatch|Failed to fetch", re.I)
 
@@ -745,7 +754,7 @@ def build_image(tag: str, args: list[str], verbose: bool) -> bool:
 
 # what the container gets before the suite runs in it (as root, for this run only): the page tests' node (the channel's
 # build, fetched here and mounted in; Debian's package when it can't be had), which the image doesn't carry (it serves no
-# pages through it), and rsync, which devtools's tests copy with, and git, which the build check's test lists the checkout
+# pages through it), and rsync, which callboard's tests copy with, and git, which the build check's test lists the checkout
 # with (the image has no use for either; the checkout is the host's, so git is told it's safe to read)
 NODE_SETUP = ("if [ -f /node.tar.xz ]; then python -c \"import tarfile; tarfile.open('/node.tar.xz').extractall('/opt', filter='tar')\" && "
         "PATH=\"$(echo /opt/node-*/bin):$PATH\" && export PATH; fi; "
@@ -754,7 +763,7 @@ NODE_SETUP = ("if [ -f /node.tar.xz ]; then python -c \"import tarfile; tarfile.
         "if command -v node >/dev/null 2>&1 && ! node -v >/dev/null 2>&1; then (apt-get update && apt-get install -y --no-install-recommends libatomic1) >/dev/null 2>&1; "
         "node -v >/dev/null 2>&1 || echo '    node does not start: the page tests fail'; fi; "
         "command -v node >/dev/null 2>&1 || (apt-get update && apt-get install -y --no-install-recommends nodejs) >/dev/null 2>&1 || echo '    node not added: the page tests skip'; "
-        # and rsync, which devtools's tests copy with, and git, which the build check's test lists the checkout with (the
+        # and rsync, which callboard's tests copy with, and git, which the build check's test lists the checkout with (the
         # image has no use for either; the checkout is the host's, so git is told it's safe to read)
         "command -v rsync >/dev/null 2>&1 && command -v git >/dev/null 2>&1 || (apt-get update && apt-get install -y --no-install-recommends rsync git) "
         ">/dev/null 2>&1 || echo '    rsync and git not added'; git config --global --add safe.directory /src 2>/dev/null || true")
@@ -770,15 +779,15 @@ def test_classes() -> list[str]:
 
 
 class Detail:
-    """The run's page in the devtools UI (dev/progress.py's detail), when the board asks for one (DEVTOOLS_DETAIL): a folder
+    """The run's page in the callboard UI (callboard/progress.py's detail), when the board asks for one (CALLBOARD_DETAIL): a folder
     mounted into each container at /detail, where its tests/run.py writes its own (the counts, the failures, what it ran
     on); written out at the end with the channels' choices, the build and each part's result — nothing otherwise."""
 
     def __init__(self):
-        self.folder = tempfile.mkdtemp(prefix="plex-cache-future-detail-") if os.environ.get("DEVTOOLS_DETAIL") else ""
+        self.folder = tempfile.mkdtemp(prefix="plex-cache-future-detail-") if os.environ.get("CALLBOARD_DETAIL") else ""
 
     def mount(self, name: str) -> list[str]:
-        return ["-v", f"{self.folder}:/detail", "-e", f"DEVTOOLS_DETAIL=/detail/{name}.json"] if self.folder else []
+        return ["-v", f"{self.folder}:/detail", "-e", f"CALLBOARD_DETAIL=/detail/{name}.json"] if self.folder else []
 
     def write(self, tag: str, picks: list[Pick], built: bool | None, results: dict[str, tuple[int, str]], note: str = "") -> None:
         if not self.folder:
@@ -797,7 +806,7 @@ class Detail:
 
 
 def parallel_route(tag: str, args: list[str], picks: list[Pick], node_pick: Pick | None, exclude: list[str] | None) -> int:
-    """On devtools's board, the whole suite: the image built and, meanwhile, every test that doesn't need its tools
+    """On callboard's board, the whole suite: the image built and, meanwhile, every test that doesn't need its tools
     (IMAGE_CLASSES do) run on the plain Python image; those in the image once it's built. One bar for the three
     (OneBar), each failure said as it comes (tests/run.py's), the result line the image's run's (its tools' versions)."""
     one = ONE[0] = OneBar(TESTS[0])
@@ -820,7 +829,7 @@ def parallel_route(tag: str, args: list[str], picks: list[Pick], node_pick: Pick
             return
         suite = f"python {' '.join(WARN)} tests/run.py" + "".join(f" --exclude {c}" for c in leave) + f" -j{jobs}"
         cmd = ["docker", "run", "--rm", "--name", f"{named}-{name}", "-e", "PLEXCACHE_PROGRESS=feed", "-e", "CI=1", "-e", f"PLEXCACHE_PINS={json.dumps(pins)}", *WEB_TARGETS, *suite_context(),
-               "--user", "0", "-v", f"{ROOT}:/src:ro", *mount, *page.mount(name), "-w", "/src", "--entrypoint", "sh", image, "-c", f"{NODE_SETUP}; {BROWSER_SETUP}; exec {suite}"]
+               "--user", "0", "-v", f"{ROOT}:/src:ro", *install_mount(), *mount, *page.mount(name), "-w", "/src", "--entrypoint", "sh", image, "-c", f"{NODE_SETUP}; {BROWSER_SETUP}; exec {suite}"]
         last = ""
         with subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True, errors="replace") as proc:
             for line in proc.stdout or []:
@@ -921,7 +930,7 @@ def image_route(python: str, tag: str | None, tests: list[str], verbose: bool, s
     if not built:
         print(f"\nThe image doesn't build on python:{tag} (no such tag yet, or the build fails there).")
         return 1
-    run = lambda *args: subprocess.run(["docker", "run", "--rm", "-v", f"{ROOT}:/src:ro", "-w", "/src", "--entrypoint", "python", IMAGE, *args],  # noqa: E731
+    run = lambda *args: subprocess.run(["docker", "run", "--rm", "-v", f"{ROOT}:/src:ro", *install_mount(), "-w", "/src", "--entrypoint", "python", IMAGE, *args],  # noqa: E731
                                        stdout=None if verbose else subprocess.DEVNULL, stderr=None if verbose else subprocess.DEVNULL).returncode
     if run("-c", "import sys, compression.zstd; print('Python', sys.version.split()[0])"):
         print("\nThe image's Python lacks the stdlib zstd the block estimates use.")
@@ -930,7 +939,7 @@ def image_route(python: str, tag: str | None, tests: list[str], verbose: bool, s
     # here and mounted in (Debian's package when it can't be had), added to the container for this run only, as root. The
     # suite runs through tests/run.py (its progress bar on a terminal: -t) unless particular tests are named; CI=1: the
     # dependency check, dev/upkeep.py, is for a run by hand in the checkout, not this one.
-    leave = "".join(f" --exclude {c}" for c in exclude or [])   # (classes another section runs: devtools's style guide)
+    leave = "".join(f" --exclude {c}" for c in exclude or [])   # (classes another section runs: callboard's style guide)
     # its workers two per core Docker has (its VM's, set to half the machine's: cores_hint), not the machine's: the rest
     # of the machine runs the other blocks' tests meanwhile, and too many workers starve them (a test that waits on a
     # timer fails; memory runs short)
@@ -942,7 +951,7 @@ def image_route(python: str, tag: str | None, tests: list[str], verbose: bool, s
     mount += install_web(picks, IMAGE, list(mount))
     node = f"{NODE_SETUP}; {BROWSER_SETUP}"
     tty = ["-t"] if sys.stdout.isatty() else []
-    if feeding():  # (on devtools's board: tests/run.py's bar sent to it, through docker's output)
+    if feeding():  # (on callboard's board: tests/run.py's bar sent to it, through docker's output)
         tty = ["-e", "PLEXCACHE_PROGRESS=feed"]
     # shown on a terminal later (a log, PLEXCACHE_PROGRESS=bar): tests/run.py's bar all the same, as wide as that terminal
     elif not tty and os.environ.get("PLEXCACHE_PROGRESS") == "bar":
@@ -953,7 +962,7 @@ def image_route(python: str, tag: str | None, tests: list[str], verbose: bool, s
     pins = {"Python": upkeep._arg("PYTHON_TAG")().split("-")[0], "Node": upkeep._arg("NODE_TAG")().split("-")[0],
             "MKVToolNix": upkeep._arg("MKVTOOLNIX")(), "ffmpeg": upkeep._arg("FFMPEG")()}
     page = Detail()
-    run = ["docker", "run", "--rm", *tty, "-e", "CI=1", "-e", f"PLEXCACHE_BAR_BEFORE={BUILD_STEPS[0]}", "-e", f"PLEXCACHE_PINS={json.dumps(pins)}", *WEB_TARGETS, *suite_context(), "--user", "0", "-v", f"{ROOT}:/src:ro", *mount, *page.mount("image"), "-w", "/src", "--entrypoint", "sh", IMAGE, "-c",
+    run = ["docker", "run", "--rm", *tty, "-e", "CI=1", "-e", f"PLEXCACHE_BAR_BEFORE={BUILD_STEPS[0]}", "-e", f"PLEXCACHE_PINS={json.dumps(pins)}", *WEB_TARGETS, *suite_context(), "--user", "0", "-v", f"{ROOT}:/src:ro", *install_mount(), *mount, *page.mount("image"), "-w", "/src", "--entrypoint", "sh", IMAGE, "-c",
            f"{node}; exec {suite}"]
     if feeding():   # (on the board: the suite's output passed on as it comes, its result line kept for the block's)
         last = ""
@@ -1088,7 +1097,7 @@ def main() -> int:
     ap.add_argument("--local", action="store_true", help="run on an interpreter of this machine instead of inside the image")
     ap.add_argument("--syncthing", action="store_true", help="instead: download Syncthing's newest pre-release, start it, and run the live tests against it")
     ap.add_argument("-v", "--verbose", action="store_true", help="the build's and the tools' full output (quiet otherwise: one progress line, the log kept)")
-    ap.add_argument("--exclude", action="append", metavar="CLASS", help="the whole suite but this class (devtools: the style guide, in a section of its own); again for another")
+    ap.add_argument("--exclude", action="append", metavar="CLASS", help="the whole suite but this class (callboard: the style guide, in a section of its own); again for another")
     ap.add_argument("tests", nargs="*", default=["tests.test_plexcache"], help="what to run (default: the whole suite)")
     args = ap.parse_args()
     if args.syncthing:

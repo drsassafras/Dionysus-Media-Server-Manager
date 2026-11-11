@@ -12,6 +12,8 @@ on:
 permissions:
   contents: read
   packages: write
+  id-token: write       # (the attestation's signature: the workflow's own identity)
+  attestations: write   # (kept in the repository's attestations, where Update Now looks)
 
 jobs:
   test:
@@ -20,6 +22,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      # the dev tools (their own project: github.com/drsassafras/callboard), fetched beside the code and named to it
+      # (CALLBOARD_HOME: dev/__init__.py finds the install by that; its bin on the PATH, for `callboard gate`, `callboard tool`)
+      - name: The dev tools
+        env:
+          CALLBOARD_REF: main
+        run: |
+          git clone --quiet --depth 1 --branch "$CALLBOARD_REF" https://github.com/drsassafras/callboard "$RUNNER_TEMP/callboard"
+          echo "CALLBOARD_HOME=$RUNNER_TEMP/callboard" >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP/callboard/bin" >> "$GITHUB_PATH"
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7
         with:
           python-version: "3.15"
@@ -37,18 +48,18 @@ jobs:
       - name: Style guide
         if: ${{ !cancelled() }}   # (its answer either way, whatever the tests did)
         run: python -W error::DeprecationWarning -W error::PendingDeprecationWarning -m unittest tests.test_plexcache.StyleGuideTests -v
-      # the Python validation (dev/typecheck.py), as devtools's Python Validation block runs it: the type check
+      # the Python validation (callboard tool typecheck), as callboard's Python Validation block runs it: the type check
       # (pyrightconfig.json: an error is a fault — an undefined name, a variable read before it's set — a warning an
       # annotation that says less than the code does) and Ruff's lint (ruff.toml: unused imports, likely bugs, the import
       # order, security…), each at zero and kept there; Ruff's findings are annotated on their lines
       - name: Python validation
         if: ${{ !cancelled() }}
-        run: python dev/typecheck.py   # (each tool at its version in dev/tools.toml, moved by dev/upkeep.py)
-      # the build validation (dev/buildcheck.py), as devtools's Build Validation block runs it: ShellCheck on dev/devtools,
+        run: callboard tool typecheck   # (each tool at its version in dev/tools.toml, moved by dev/upkeep.py)
+      # the build validation (callboard tool buildcheck), as callboard's Build Validation block runs it: ShellCheck on the shell scripts,
       # actionlint on these workflows (and ShellCheck on each step's script), hadolint on the Dockerfile; kept at zero
       - name: Build validation
         if: ${{ !cancelled() }}
-        run: python dev/buildcheck.py
+        run: callboard tool buildcheck
 
   image:
     needs: test
@@ -56,6 +67,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: The dev tools   # (as the first job has them)
+        env:
+          CALLBOARD_REF: main
+        run: |
+          git clone --quiet --depth 1 --branch "$CALLBOARD_REF" https://github.com/drsassafras/callboard "$RUNNER_TEMP/callboard"
+          echo "CALLBOARD_HOME=$RUNNER_TEMP/callboard" >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP/callboard/bin" >> "$GITHUB_PATH"
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4
       - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6  # v4
         with:
@@ -89,13 +107,14 @@ jobs:
         run: docker run --rm -v "$PWD:/src:ro" -w /src --entrypoint python plex-cache:test dev/versions.py
       - name: Optimizer tests inside the image
         run: >
-          docker run --rm -v "$PWD:/src:ro" -w /src --entrypoint python plex-cache:test
+          docker run --rm -v "$PWD:/src:ro" -v "$CALLBOARD_HOME:/callboard:ro" -e CALLBOARD_HOME=/callboard -w /src
+          --entrypoint python plex-cache:test
           -W ignore -m unittest -v tests.test_plexcache.FixtureTests tests.test_plexcache.OptimizerTests
           tests.test_plexcache.CoverArtTests
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7
         with:
           python-version: "3.15"
-      # the CVEs to act on (dev/cves.py, as devtools's Dependencies block says them): in this image (Trivy), the
+      # the CVEs to act on (dev/cves.py, as callboard's Dependencies block says them): in this image (Trivy), the
       # web's npm packages (OSV) and the tools the image is built with (NVD). Each one a warning on the run, never a
       # failure: what someone else is already fixing isn't said
       - name: CVEs to act on
@@ -103,6 +122,7 @@ jobs:
         continue-on-error: true   # (whatever happens here, the image is still pushed)
         run: python dev/upkeep.py --cves plex-cache:test
       - name: Push
+        id: push
         env:
           TAGS: ${{ steps.meta.outputs.tags }}
         run: |
@@ -110,3 +130,12 @@ jobs:
             docker tag plex-cache:test "$tag"
             docker push "$tag"
           done
+          # the digest every tag now points at: what the attestation below vouches for, and what Update Now checks
+          digest="$(docker inspect --format '{{index .RepoDigests 0}}' plex-cache:test | cut -d@ -f2)"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      # This build's provenance, signed with the workflow's own identity and kept in the repository's attestations: an app
+      # pressing Update Now pulls only an image attested here (plexcache/updates.py verify_image, F-2026-043)
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
+        with:
+          subject-name: ghcr.io/${{ github.repository_owner }}/plex-cache
+          subject-digest: ${{ steps.push.outputs.digest }}

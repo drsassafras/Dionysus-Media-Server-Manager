@@ -10,6 +10,7 @@ so setting aside is a rename; a synced folder carries the move to the other site
 import os
 import shutil
 import stat
+import tempfile
 
 TRASH = ".plexcache-trash"
 
@@ -97,6 +98,31 @@ def copy_keeping_dates(src: str, dst: str) -> None:
         os.utime(dst, ns=(st.st_atime_ns, st.st_mtime_ns))
 
 
+def _copy_beside(src: str, path: str) -> str:
+    """``src`` copied to a new file beside ``path`` (a random name the kernel made for us alone, so nothing planted at a
+    guessable name — a symlink — is ever written through: F-2026-046), the dates kept. Its path, for an os.replace."""
+    fd, tmp = tempfile.mkstemp(prefix=".plexcache-copy-", dir=os.path.dirname(path))
+    try:
+        with os.fdopen(fd, "wb") as out, open(src, "rb") as inp:
+            shutil.copyfileobj(inp, out, 1 << 20)
+        try:
+            shutil.copystat(src, tmp)
+        except PermissionError:
+            st = os.stat(src)
+            try:
+                os.chmod(tmp, stat.S_IMODE(st.st_mode))
+            except OSError:
+                pass
+            os.utime(tmp, ns=(st.st_atime_ns, st.st_mtime_ns))
+    except OSError:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+    return tmp
+
+
 def make_real(path: str) -> dict:
     """A link — a hard link (two paths to one file) or a symlink — replaced by a file of its own at the
     same path: the bytes copied beside it, then swapped in, the dates kept. {"bytes": copied}."""
@@ -111,9 +137,8 @@ def make_real(path: str) -> dict:
         return {"bytes": 0, "already": True}  # (a file of its own already)
     else:
         raise ValueError("not a file or a link")
-    tmp = os.path.join(os.path.dirname(path), ".plexcache-copy-" + os.path.basename(path))
+    tmp = _copy_beside(src, path)  # (the bytes and the dates: Plex and the folder sync see the same file)
     try:
-        copy_keeping_dates(src, tmp)  # (the bytes and the dates: Plex and the folder sync see the same file)
         os.replace(tmp, path)   # (the old path's inode drops a link; a symlink is replaced by the file)
     except OSError:
         try:
@@ -184,9 +209,8 @@ def copy_from(path: str, src: str) -> dict:
         raise ValueError("the backup's copy isn't there")
     if os.path.lexists(path):
         _plain(path)
-    tmp = os.path.join(os.path.dirname(path), ".plexcache-copy-" + os.path.basename(path))
+    tmp = _copy_beside(src, path)
     try:
-        copy_keeping_dates(src, tmp)
         os.replace(tmp, path)
     except OSError:
         try:

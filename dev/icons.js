@@ -20,7 +20,7 @@
 //   icon-maskable-512.png  the same for Android's shaped icons (purpose "maskable"): full bleed, the theatre inside the
 //                          middle 80% circle every mask keeps
 //
-// And the dev tools' pages' tab icon (dev/devpage.py puts it on each of them): the film reel under the app's page titles,
+// And the dev tools' pages' tab icon (callboard/devpage.py puts it on each of them): the film reel under the app's page titles,
 // as decor.js draws it for a tab (PCDECOR.tab: simpler the smaller it's shown), in Dionysus's film colour with light
 // cutouts, at the sizes it's drawn for
 //

@@ -532,7 +532,7 @@ class FakeTrueNAS:
                     continue
                 elif req["method"] == "core.get_methods":  # (every method this TrueNAS has, by name; methods_missing: left out)
                     have = ["auth.login_with_api_key", "system.version", "system.host_id", "interface.query", "pool.query", "pool.dataset.query", "zfs.dataset.query", "disk.query",
-                            "app.query", "app.pull_images", "app.redeploy", "core.get_methods"] + \
+                            "app.query", "app.pull_images", "app.redeploy", "app.image.query", "core.get_methods"] + \
                            [self.snapshot_api + x for x in (".query", ".create", ".delete", ".rollback")]
                     result = {m: {"description": ""} for m in have if m not in self.methods_missing}
                 elif req["method"] == "system.version":

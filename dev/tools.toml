@@ -1,5 +1,5 @@
-# The check tools: each at one version, fetched at it by dev/checks.py the first time it's needed (into
-# ~/.cache/plex-cache/tools/), so devtools's board and GitHub run the same one. dev/upkeep.py moves a patch or minor release
+# The check tools: each at one version, fetched at it by callboard/checks.py the first time it's needed (into
+# ~/.cache/plex-cache/tools/), so callboard's board and GitHub run the same one. dev/upkeep.py moves a patch or minor release
 # here by itself and makes a major a prompt (``major``: how many leading numbers make one, as its Dep says); dev/future.py
 # tries each one's newest pre-release where there is one.
 #
@@ -31,7 +31,7 @@ package = "ruff"
 upstream = "pypi"
 major = 2
 
-# Build Validation (dev/buildcheck.py): the shell script, the workflows and the Dockerfile.
+# Build Validation (callboard/buildcheck.py): the shell script, the workflows and the Dockerfile.
 [shellcheck]
 name = "ShellCheck"
 version = "0.11.0"
@@ -92,7 +92,7 @@ url = "https://github.com/hadolint/hadolint/releases/download/v{version}/hadolin
 "linux-x86_64" = "c7187db94eeeeca956519a6af171adc31453941a1e777961f6e680f697c8c507"
 "linux-arm64" = "f6198ef8090f404dbb771abfee086eb8c48ac177f30da7fd3510aca35b344b5d"
 
-# The dependency check's image scan (dev/cves.py, in devtools's Dependency Versions block): the CVEs in what the published
+# The dependency check's image scan (dev/cves.py, in callboard's Dependency Versions block): the CVEs in what the published
 # images carry (Debian's packages, the Python and pip of the base image).
 [trivy]
 name = "Trivy"

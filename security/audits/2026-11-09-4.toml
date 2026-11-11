@@ -1,0 +1,34 @@
+# Public security audits (dev/audit.py record).
+id = "2026-11-09-4"
+date = 2026-11-09
+commit = "99c6f5abd44b142c184c2e954d4c5d3a76f5379f"
+kind = "partial"
+scope = [
+    "plexcache/tlspin.py", "plexcache/app.py:tls_context", "plexcache/app.py:tls_ok", "plexcache/app.py:tls_refused", "plexcache/app.py:trust_certificate", "plexcache/server.py:_post_settings",
+    "plexcache/plex2.py:set_address", "plexcache/syncthing.py:SyncthingClient.__init__", "plexcache/mqttclient.py:start_tls", "plexcache/web/app.js:certLight", "plexcache/web/app.js:certChanged",
+]
+uncommitted = true
+prints = [
+    "0379be3e7176", "051c473ba63b", "0768c637dd0b", "0b0fedeaa9a0", "0e00933b3cfc", "0e1626a79ddd",
+    "0f2bdae09974", "0f41e33c1d44", "13efb9de51d3", "17043e347c8e", "172cbba4656f", "1810aa45ae60",
+    "1bbfc68fca19", "1ec8cc590e70", "244d1a045b37", "26df55614c45", "2b38f0da4f0e", "2c44ac505437",
+    "2f76dd9148d6", "2fe8894d01e5", "3084d7ba336b", "343a3193f3a5", "34ac97ec738c", "361d90278925",
+    "37bcf084ac90", "387e7a1db6c2", "38cb15a7be60", "3a2a7feefbfd", "3cd0fac268af", "3ea8e2ad8ca8",
+    "412b37ede261", "41e21dec790d", "43571657a223", "43ca958f5aa7", "45cba6f76d78", "47b3b944fd89",
+    "48c6a4ceb990", "492e4766e967", "4b78492b587d", "4e6846d076d3", "50e607f8c8e0", "5360db32fbb1",
+    "5609318c3ebc", "57b4ae7066bb", "5fa79c1d21f4", "61b10558f4d4", "6233b7b9672e", "6477a91115ff",
+    "64f7105e9b5f", "67d5e37a770e", "687e4be41999", "6ab1327f45e0", "6cc7c9357c1c", "6ddafa091387",
+    "706f2888d59d", "740af2e65d50", "77f574707c80", "78f8057b0545", "7b796457ccf0", "7bb40d25b3d3",
+    "7c51f7798abb", "7ed6b9e88af1", "816f5c3a8898", "82a26e1bdf17", "83cbe7629c23", "842e99d05b72",
+    "849a711b3f29", "8501f529e664", "85df31a10a2a", "8629546ca0e8", "8792a5446935", "89bb0ec91527",
+    "8dbba32e7111", "8de98da316fe", "8e16ddb72294", "9192a3512adb", "93b363c8d39d", "94a9c97176e9",
+    "9bcaa18287bf", "9ca4b93f9ce5", "9de121717511", "9ee83eabdf2e", "a322627d3cdb", "a5a2ed616a2d",
+    "a6014d3522a3", "a6120265c449", "a62dcf8389c1", "a7bcb5928bf8", "a7e4379ce1ee", "a868598853fc",
+    "a91b075711a4", "a9f0bfcc01e6", "aa015ee71c15", "ab73403a4aca", "af6294fec4c4", "afcaaae202ee",
+    "b0d56d17e8d3", "b0e832ed064f", "b259da76037b", "b47a8567acc5", "b9a38b71aa4b", "bd1b68a35c9f",
+    "c4efeec1c44e", "c64c6a144ab7", "ca52f1edd800", "ca9482a9c3ae", "cb6fb5d1d0a8", "cc6af42f3e8c",
+    "cf03918872ee", "d13b952ffe3f", "d153dfb7dd1d", "d898e189abf8", "da5158b130f0", "df1e62ed4307",
+    "df6b48071ac6", "e6237df3c9ed", "e75bf1e7b3ae", "e792a685f656", "e86d4a1f5fbe", "ec9e8c140f99",
+    "f03b786f7e2d", "f09ea8b4f735", "f0ad031978be", "f202d4c31d84", "f38d2b68d9d2", "f46ca42ddd33",
+    "f47cbe6cf5bd", "f9b0f5815f0e", "ff5931a5985d",
+]

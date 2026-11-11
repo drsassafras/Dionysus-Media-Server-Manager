@@ -2,8 +2,8 @@
 """Translation catalogs: find every translatable text and check each language has it.
 
     python3 dev/i18n.py check              # translations match their English (catalogs may lag the code)
-    python3 dev/i18n.py --devtools           # devtools's Translations block: how far the catalogs are, overall; between
-                                           # releases it only tells; at release (devtools.toml: the release role) every text must be there
+    python3 dev/i18n.py --callboard           # callboard's Translations block: how far the catalogs are, overall; between
+                                           # releases it only tells; at release (callboard.toml: the release role) every text must be there
     python3 dev/i18n.py check --release    # ...and catalogs in step with the code: nothing missing or unused
     python3 dev/i18n.py check --complete   # ...and every text translated
     python3 dev/i18n.py status             # how much of each language is translated
@@ -45,8 +45,10 @@ PKG = os.path.join(ROOT, "plexcache")
 WEB = os.path.join(PKG, "web")
 CATALOGS = os.path.join(WEB, "i18n")
 sys.path.insert(0, ROOT)
-from dev import policy  # noqa: E402 — the rules (devtools.toml)
+import dev  # noqa: E402, F401 — (puts the callboard install on the path: dev/__init__.py)
 from plexcache.i18n import CODES  # noqa: E402
+
+from callboard import policy  # noqa: E402 — the rules (callboard.toml)
 
 TRANSLATED = [c for c in CODES if c not in ("en", "en-US", "en-GB")]
 VARIANTS = ("en-US", "en-GB")
@@ -59,7 +61,7 @@ _PLACE = re.compile(r"\{(\w+)\}")
 _TAG = re.compile(r"</?([a-zA-Z][a-zA-Z0-9]*)")
 
 
-# The rules (devtools.toml's [i18n], read through dev/policy.py): what the catalogs are held to for the code's role.
+# The rules (callboard.toml's [i18n], read through callboard/policy.py): what the catalogs are held to for the code's role.
 SCHEMA = policy.Schema("i18n", "Translations", {
     "targets": policy.Setting("targets", "each language's share of the texts translated (a code, a group, or \"*\" for the rest)", unit="%"),
     "unused": policy.Setting("level", "catalog entries the code no longer uses, and texts the catalogs haven't got yet (what sync fixes)"),
@@ -69,8 +71,8 @@ GROUPS: dict[str, list[str]] = {}   # (named groups of languages a target may na
 
 
 def rules_now() -> policy.Rules | None:
-    """[i18n]'s rules for the code's role (DEVTOOLS_ROLE, or this checkout's branch); None without a devtools.toml."""
-    from dev import checks
+    """[i18n]'s rules for the code's role (CALLBOARD_ROLE, or this checkout's branch); None without a callboard.toml."""
+    from callboard import checks
     return checks.levels("i18n")
 
 
@@ -88,8 +90,8 @@ def targets_now() -> dict[str, float]:
 
 
 def strict_now() -> bool:
-    """Where the catalogs gate — complete, every text translated — decided once, for devtools's Translations block and
-    the suite's TranslationTests alike: every language's target is 100%, held as a failure (devtools.toml's [i18n] for
+    """Where the catalogs gate — complete, every text translated — decided once, for callboard's Translations block and
+    the suite's TranslationTests alike: every language's target is 100%, held as a failure (callboard.toml's [i18n] for
     the code's role: main must ship complete, hot releases included). Everywhere else the catalogs may lag the code."""
     r = rules_now()
     if r is None:
@@ -395,7 +397,7 @@ def needed(keys: dict, cat: dict) -> dict:
 
 
 def page(keys: dict, problems: list[str], strict: bool) -> dict:
-    """The Translations page in the devtools UI (dev/progress.py's detail): how far each language is, what each still
+    """The Translations page in the callboard UI (callboard/progress.py's detail): how far each language is, what each still
     needs (its export), what's wrong in its catalog, and the English that doesn't go through the helpers."""
     from plexcache.i18n import LANGUAGES
     names = dict(LANGUAGES)
@@ -424,7 +426,7 @@ def catalog(code: str) -> str:
 
 def present_check(keys: dict, base: str, level: str) -> list:
     """Diff mode: the texts added since ``base`` (keys no catalog at ``base`` had) that a catalog hasn't translated."""
-    from dev.checks import Finding
+    from callboard.checks import Finding
     found = []
     for code in TRANSLATED:
         rel = os.path.join("plexcache", "web", "i18n", f"{code}.json")
@@ -468,21 +470,21 @@ def leftovers() -> list[str]:
 
 def main(argv: list[str]) -> int:
     cmd = argv[1] if len(argv) > 1 else "check"
-    cmd = "--devtools" if cmd == "--tnsync" else cmd   # (the flag's old name still read)
+    cmd = "--callboard" if cmd == "--tnsync" else cmd   # (the flag's old name still read)
     problems: list[str] = []
     keys = all_keys(problems)
-    if cmd == "--devtools":
-        # devtools's Translations block: the overall share translated, and each language against its target (devtools.toml's
+    if cmd == "--callboard":
+        # callboard's Translations block: the overall share translated, and each language against its target (callboard.toml's
         # [i18n] targets for the code's role: 0 between releases, where the catalogs may lag — the block only tells, grey;
         # 100 on main, which must ship complete — a language short is a finding, held as the rule says). The same common
         # checks code and result line as the other check tools.
-        from dev import checks
-        from dev.checks import Check, Finding, Outcome
-        from dev.progress import counted
+        from callboard import checks
+        from callboard.checks import Check, Finding, Outcome
+        from callboard.progress import counted
         r = rules_now()
         targets = targets_now()
         strict = strict_now()
-        shown = page(keys, problems, strict)   # (its page in the devtools UI: the one account, the numbers below from it)
+        shown = page(keys, problems, strict)   # (its page in the callboard UI: the one account, the numbers below from it)
         shown["targets"] = targets
         left = {lang["code"]: lang["total"] - lang["done"] for lang in shown["languages"] if lang["done"] < lang["total"]}
         facts = [f"{shown['pct']:.1f}% translated", counted(len(TRANSLATED), "language"), counted(len(keys), "text")]

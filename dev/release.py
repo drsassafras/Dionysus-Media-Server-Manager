@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""The release checks: what has to be true of dev before it's released (merged into main and tagged). devtools runs them
+"""The release checks: what has to be true of dev before it's released (merged into main and tagged). callboard runs them
 in a block of their own, on the code it copies; what each is held as — told (info) between releases, a failure at
-release — is devtools.toml's [release] for the code's role (dev/policy.py), so a dev run can't fail on what only a
+release — is callboard.toml's [release] for the code's role (callboard/policy.py), so a dev run can't fail on what only a
 release needs.
 
-    python3 dev/release.py           # each check, a line each; what to do for one that fails; the exit code dev/policy.py's
-    python3 dev/release.py --devtools  # devtools's Release block, every run: the same checks as an overall readiness —
+    python3 dev/release.py           # each check, a line each; what to do for one that fails; the exit code callboard/policy.py's
+    python3 dev/release.py --callboard  # callboard's Release block, every run: the same checks as an overall readiness —
                                      # "4 of 7 ready", what's still to go — grey between releases (exit 3), red (1)
                                      # where the role holds them as failures
-    python3 dev/release.py start     # tag the code a preview (v0.17.0-beta.1: devtools.toml's [tags]); push the tag to start it
+    python3 dev/release.py start     # tag the code a preview (v0.17.0-beta.1: callboard.toml's [tags]); push the tag to start it
     python3 dev/release.py candidate # tag a release candidate (v0.17.0-rc.1): the freeze, and the release pull request
     python3 dev/release.py hotfix <name>   # a hotfix/<name> branch off the release branch
     python3 dev/release.py tick <item>     # a manual release item done (the UI's Gates page does the same)
@@ -22,19 +22,18 @@ The checks:
 * the MQTT settings: every setting (plexcache/config.py's DEFAULTS) either a control over MQTT or listed as kept off it,
   with why (plexcache/homeassistant.py: CONTROL_SETTINGS, PER_LIBRARY_CONTROLS, NOT_OVER_MQTT), and nothing listed that's gone;
 * the MQTT docs: the README's topics and commands (MQTT – other tools) the ones the code has;
-* the coverage: the release bar (dev/coverage.py: 98% of every line run, each file at 90%), from what the tests saved;
+* the coverage: the release bar (callboard/coverage.py: 98% of every line run, each file at 90%), from what the tests saved;
 * the security audits: dev/audit.py's release rules, as a release's code holds them;
 * the looks: every look the app wears approved into the style guide (dev/style.py), none waiting;
-* the change notes: one written since the last release (a file under the notes folder, devtools.toml's [release] notes_dir);
-* the manual items: each of devtools.toml's [release] manual_items ticked for the version (the UI's Gates page, or tick).
+* the change notes: one written since the last release (a file under the notes folder, callboard.toml's [release] notes_dir);
+* the manual items: each of callboard.toml's [release] manual_items ticked for the version (the UI's Gates page, or tick).
 
-The released version is read from git: the repository devtools runs in (DEVTOOLS_REPO, which devtools sets, since the code it
+The released version is read from git: the repository callboard runs in (CALLBOARD_REPO, which callboard sets, since the code it
 tests may be a copy from git rather than a checkout), else this folder.
 """
 
 import ast
 import fnmatch
-import json
 import os
 import re
 import subprocess
@@ -46,11 +45,13 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:  # (run as a script: dev/ is on the path, not the project)
     sys.path.insert(0, ROOT)
 
-from dev import checks, policy  # noqa: E402 — the check tools' shared code, and the rules (devtools.toml)
-from dev.checks import Check, Finding, Outcome  # noqa: E402
+import dev  # noqa: E402, F401 — (puts the callboard install on the path: dev/__init__.py)
+
+from callboard import checks, notes, policy  # noqa: E402 — the check tools' shared code, the notes and ticks, the rules (callboard.toml)
+from callboard.checks import Check, Finding, Outcome  # noqa: E402
 
 VERSION_FILE = os.path.join(ROOT, "plexcache", "__init__.py")
-# The rules (devtools.toml's [release]): what each check is held as. Between releases told (info), at release a check (fail).
+# The rules (callboard.toml's [release]): what each check is held as. Between releases told (info), at release a check (fail).
 SCHEMA = policy.Schema("release", "Release checks", {
     "version": policy.Setting("level", "the version a new X.Y.0 above what's released, not tagged yet"),
     "translations": policy.Setting("level", "every text translated in every language"),
@@ -77,12 +78,12 @@ class Result:
 
 
 def _repo() -> str:
-    """The repository worked on: DEVTOOLS_REPO (devtools, the UI: the project the page serves), else this one."""
-    return os.environ.get("DEVTOOLS_REPO") or ROOT
+    """The repository worked on: CALLBOARD_REPO (callboard, the UI: the project the page serves), else this one."""
+    return os.environ.get("CALLBOARD_REPO") or ROOT
 
 
 def _version_file() -> str:
-    return os.path.join(_repo(), "plexcache", "__init__.py") if os.environ.get("DEVTOOLS_REPO") else VERSION_FILE
+    return os.path.join(_repo(), "plexcache", "__init__.py") if os.environ.get("CALLBOARD_REPO") else VERSION_FILE
 
 
 def _git(*args: str) -> str | None:
@@ -153,7 +154,7 @@ def check_version(text: str | None = None) -> Result:
 
 def check_translations() -> Result:
     """Every text translated in every language. (Only that: the catalogs in step with the code, and each translation
-    matching its English, are the suite's TranslationTests, which devtools --release runs as for a release.)"""
+    matching its English, are the suite's TranslationTests, which callboard --release runs as for a release.)"""
     from dev import i18n
     name = "Translations"
     keys = i18n.all_keys([])
@@ -248,8 +249,8 @@ def check_mqtt_docs(readme: str | None = None, source: str | None = None) -> Res
 
 
 def check_coverage() -> Result:
-    """The release's coverage bar (dev/coverage.py): 98% of every line run, each file at 90%, from what the tests saved."""
-    from dev import coverage
+    """The release's coverage bar (callboard/coverage.py): 98% of every line run, each file at 90%, from what the tests saved."""
+    from callboard import coverage
     name = "Coverage"
     saved, why = coverage.load()
     if saved is None:
@@ -258,23 +259,23 @@ def check_coverage() -> Result:
     files, _ = coverage.measure(saved["hit"], fresh_days=r.value("fresh_days"))
     outcome = coverage.release_check(files, r.value("every_line"), r.value("each_file"))
     if r.value("every_line") is None and r.value("each_file") is None:
-        return Result(name, True, "no coverage bar set for the release role (devtools.toml [coverage.release])")
+        return Result(name, True, "no coverage bar set for the release role (callboard.toml [coverage.release])")
     line = outcome.facts[0] if outcome.facts else ""
     if not outcome.findings:
         return Result(name, True, line)
     todo = [f.message if f.path == "plexcache" else f"{f.path}: {f.message}" for f in outcome.findings[:15]]
-    todo.append("python3 dev/coverage.py --missing says which lines; add tests (or run where the optimizer's tools are).")
+    todo.append("callboard tool coverage --missing says which lines; add tests (or run where the optimizer's tools are).")
     return Result(name, False, line, todo)
 
 
 def check_audits() -> Result:
     """The security audits' release rules (dev/audit.py --release), as a release run holds them."""
-    from dev.progress import FEED
+    from callboard.progress import FEED
     name = "Security audits"
     try:
         env = {k: v for k, v in os.environ.items() if k != "PLEXCACHE_PROGRESS"}   # (its words for a reader, not the board's feed)
         env.update(policy.context().__class__(**{**policy.context().__dict__, "role": "release", "diff": False}).env())   # (as the release holds it)
-        env["DEVTOOLS_INTEGRATION"] = "audit"
+        env["CALLBOARD_INTEGRATION"] = "audit"
         got = subprocess.run([sys.executable, os.path.join(ROOT, "dev", "audit.py")],
                              capture_output=True, text=True, timeout=300, cwd=ROOT, env=env)
     except (OSError, subprocess.TimeoutExpired) as e:
@@ -314,19 +315,8 @@ def last_release_tag() -> str:
 
 def change_notes() -> list[str]:
     """The change notes written since the last release: the .md files added under the notes folder since the release tag
-    (committed or not), in name order."""
-    where = notes_dir()
-    tag = last_release_tag()
-    added = set()
-    if tag:
-        got = _git("diff", "--name-only", "--diff-filter=A", f"{tag}..HEAD", "--", where) or ""
-        added |= {ln.strip() for ln in got.splitlines() if ln.strip()}
-    else:
-        got = _git("ls-files", "--", where) or ""
-        added |= {ln.strip() for ln in got.splitlines() if ln.strip()}
-    got = _git("ls-files", "--others", "--exclude-standard", "--", where) or ""
-    added |= {ln.strip() for ln in got.splitlines() if ln.strip()}
-    return sorted(a for a in added if a.endswith(".md"))
+    (committed or not), in name order (callboard/notes.py: what the UI's Gates page lists)."""
+    return notes.change_notes(_repo(), notes_dir(), last_release_tag())
 
 
 def release_notes() -> str:
@@ -369,26 +359,21 @@ def check_change_notes() -> Result:
 
 
 def manual_file(version: str) -> str:
-    return os.path.join(_repo(), notes_dir(), f"manual-{version}.json")
+    return notes.manual_file(_repo(), notes_dir(), version)
 
 
 def manual_state(version: str) -> dict[str, bool]:
-    """What's ticked of the manual release items for that version (the UI's Gates page writes it)."""
-    try:
-        with open(manual_file(version), encoding="utf-8") as fh:
-            got = json.load(fh)
-        return {str(k): bool(v) for k, v in got.items()} if isinstance(got, dict) else {}
-    except (OSError, ValueError):
-        return {}
+    """What's ticked of the manual release items for that version (the UI's Gates page writes it: callboard/notes.py)."""
+    return notes.manual_state(_repo(), notes_dir(), version)
 
 
 def check_manual() -> Result:
-    """Every manual release item ticked (devtools.toml's [release] manual_items; the ticks per version, in the notes folder)."""
+    """Every manual release item ticked (callboard.toml's [release] manual_items; the ticks per version, in the notes folder)."""
     name = "Manual items"
     r = checks.levels("release")
     items = r.items("manual_items") if r else []
     if not items:
-        return Result(name, True, "none to do (devtools.toml's [release] manual_items)")
+        return Result(name, True, "none to do (callboard.toml's [release] manual_items)")
     try:
         with open(VERSION_FILE, encoding="utf-8") as fh:
             version = version_of(fh.read()) or ""
@@ -399,7 +384,7 @@ def check_manual() -> Result:
     if not left:
         return Result(name, True, f"all {len(items)} ticked for {version}")
     return Result(name, False, f"{len(left)} of {len(items)} to do for {version}",
-                  [*left, "Tick each one on the devtools UI's Gates page once it's done (or python3 dev/release.py tick <item>)."])
+                  [*left, "Tick each one on the callboard UI's Gates page once it's done (or python3 dev/release.py tick <item>)."])
 
 
 CHECKS: list[Callable[[], Result]] = [check_version, check_translations, check_mqtt_settings, check_mqtt_docs,
@@ -410,7 +395,7 @@ KEYS = {check_version: "version", check_translations: "translations", check_mqtt
 
 
 def summary(results: list[Result]) -> str:
-    """The block's line on devtools's board: the ones that failed, else that all passed."""
+    """The block's line on callboard's board: the ones that failed, else that all passed."""
     failed = [r for r in results if not r.ok]
     if not failed:
         return f"all {len(results)} passed: " + "; ".join(f"{r.name.lower()} {r.line}" for r in results)
@@ -418,7 +403,7 @@ def summary(results: list[Result]) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = ["--devtools" if a == "--tnsync" else a for a in (sys.argv[1:] if argv is None else argv)]   # (the flag's old name still read)
+    args = ["--callboard" if a == "--tnsync" else a for a in (sys.argv[1:] if argv is None else argv)]   # (the flag's old name still read)
     if args[:1] == ["notes"]:
         sys.stdout.write(release_notes())
         return 0
@@ -433,9 +418,9 @@ def main(argv: list[str] | None = None) -> int:
         try:
             return step(args[0], args[1:])
         except policy.ConfigError as e:
-            print(f"devtools.toml: {e}")
+            print(f"callboard.toml: {e}")
             return 2
-    board = "--devtools" in args   # (devtools's Release block, every run: readiness between releases, the check on one)
+    board = "--callboard" in args   # (callboard's Release block, every run: readiness between releases, the check on one)
     rules = checks.levels("release")
     levels = {k: (rules.level(k) if rules else "fail") for k in KEYS.values()}
     skipped = [k for k in KEYS.values() if rules and rules.skipped(k)]
@@ -515,7 +500,7 @@ def step(cmd: str, args: list[str]) -> int:
             return 1
         phase = "preview" if cmd == "start" else "freeze"
         if not cfg.phase_role(phase):
-            print(f"[phases.{phase}] has no role in devtools.toml: a {phase} tag would change nothing")
+            print(f"[phases.{phase}] has no role in callboard.toml: a {phase} tag would change nothing")
             return 1
         tag = next_tag(cfg, phase, version)
         msg = f"{version} {'preview' if phase == 'preview' else 'release candidate'}"
@@ -543,12 +528,7 @@ def step(cmd: str, args: list[str]) -> int:
         if not args:
             print("usage: python3 dev/release.py tick <item> [--undo]")
             return 2
-        state = manual_state(version)
-        state[args[0]] = "--undo" not in args
-        os.makedirs(os.path.dirname(manual_file(version)), exist_ok=True)
-        with open(manual_file(version), "w", encoding="utf-8") as fh:
-            json.dump(state, fh, indent=1, sort_keys=True)
-        print(f"{args[0]}: {'done' if state[args[0]] else 'to do'} for {version} ({os.path.relpath(manual_file(version), _repo())})")
+        print(notes.tick(_repo(), notes_dir(), version, args[0], "--undo" not in args))
         return 0
     return 2
 

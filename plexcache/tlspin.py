@@ -6,10 +6,11 @@ What's here is the way out: each service's connection is verified one of two way
 
 * **Full verification** (the service's ``verify_tls``): the CA and the name, as any https client — for a real
   certificate (a reverse proxy, a CA of your own). Off by default, since the certificates above would all be refused.
-* **Pinned on first use** (``pin_tls``, the default): the first successful connection's certificate is remembered — its
-  SHA-256, in the ``tls`` settings section, by service — and every later connection must answer with that very
-  certificate. Nothing to set up, and an attacker on the network can't stand in for the server after the first
-  connection. A changed certificate (TrueNAS regenerates its own now and then) is refused, the lights say so, and the
+* **Pinned, once confirmed** (``pin_tls``, the default): the first connection reads the certificate and stops there,
+  before anything is sent (CertUnconfirmed); the System page shows its fingerprint, and once a person confirms it
+  (Trust This Certificate) it's remembered — its SHA-256, in the ``tls`` settings section, by service — and every
+  connection must answer with that very certificate. Nothing goes to whatever answers first, and an attacker on the
+  network can't stand in for the server after the confirmation (F-2026-053). A changed certificate (TrueNAS regenerates its own now and then) is refused, the lights say so, and the
   System page's card offers **Trust New Certificate**, with the old and new fingerprints drawn as identicons
   (integrationLights), so what's being trusted can be seen before it is.
 
@@ -33,6 +34,11 @@ class CertChanged(ssl.SSLCertVerificationError):
     page's Trust New Certificate), never silently."""
 
 
+class CertUnconfirmed(CertChanged):
+    """The service answered, but no certificate is pinned for it yet: refused before anything is sent, until a person
+    confirms the one it answered with (the System page's Trust This Certificate, F-2026-053)."""
+
+
 class Context(ssl.SSLContext):
     """An ``ssl.SSLContext`` that can verify by pin after the handshake (``pinning``), and check the certificate for a
     name other than the address reached (``name``: Plex's plex.direct). ``seen`` carries the last handshake's
@@ -41,6 +47,7 @@ class Context(ssl.SSLContext):
     pinning = False
     pin = ""
     seen = ""
+    observe = False  # (a connection that sends no secret: its certificate read for the page, never refused for want of a pin)
     name: str | None = None
 
     def wrap_socket(self, sock, *args, server_hostname=None, **kw):
@@ -50,6 +57,10 @@ class Context(ssl.SSLContext):
         if self.pinning:
             got = hashlib.sha256(s.getpeercert(binary_form=True) or b"").hexdigest()
             self.seen = got
+            if not self.pin and not self.observe:
+                s.close()
+                raise CertUnconfirmed(str(M("The server answered with a certificate ({new}) that hasn’t been confirmed yet: nothing was sent to it. "
+                                            "Check it and trust it on the System page.", new=short(got))))
             if self.pin and got != self.pin:
                 s.close()
                 raise CertChanged(str(M("The server’s certificate changed: {new} answered where {old} is pinned. If the service really has "
@@ -75,7 +86,8 @@ def host_on_this_machine(host: str) -> bool:
 
 def context(verify: bool, pin: str = "", name: str | None = None) -> Context:
     """The context a service's connection is made with: full verification (``verify``, or a ``name`` to check the
-    certificate for), else verification by ``pin`` — empty on first use, when ``seen`` says what to pin."""
+    certificate for), else verification by ``pin`` — empty until a person confirms one, when every connection is refused
+    and ``seen`` says what answered."""
     ctx = Context(ssl.PROTOCOL_TLS_CLIENT)
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
     ctx.name = name or None

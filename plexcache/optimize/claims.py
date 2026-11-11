@@ -12,6 +12,7 @@ ignored after STALE and tidied away.
 """
 
 import json
+import math
 import os
 import re
 import time
@@ -19,6 +20,30 @@ import time
 STALE = 6 * 3600         # a claim older than this is ignored (and removed)
 PEER_DAYS = 30           # another system counts as sharing the folder if seen this recently
 _ID = re.compile(r"[A-Za-z0-9_-]{4,64}")
+MAX_SYNCED = 1024 * 1024  # a claim or marker larger than this isn't read: the other site's files are synced in, not ours (F-2026-059)
+
+
+def read_synced(path: str) -> dict | None:
+    """A JSON file in a library's .plexcache folder (a claim, a system's marker), which Syncthing may have brought from
+    another site as anything: its object, with "at" a number — else None (missing, too large, not JSON, not an
+    object), so a malformed one is skipped rather than breaking every reader of the folder (F-2026-059)."""
+    try:
+        with open(path, "rb") as fh:
+            raw = fh.read(MAX_SYNCED + 1)
+    except OSError:
+        return None
+    if len(raw) > MAX_SYNCED:
+        return None
+    try:
+        data = json.loads(raw)
+    except (ValueError, RecursionError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    at = data.get("at", 0)
+    if isinstance(at, bool) or not isinstance(at, (int, float)) or not math.isfinite(at):
+        data["at"] = 0
+    return data
 
 
 def _write(path: str, data: dict) -> None:
@@ -35,12 +60,7 @@ def mark(folder: str, instance: str, info: dict | None = None, now: float | None
     if not _ID.fullmatch(instance):
         raise ValueError("bad instance")
     path = os.path.join(folder, ".plexcache", "systems", f"{instance}.json")
-    data: dict = {}
-    try:
-        with open(path, encoding="utf-8") as fh:
-            data = json.load(fh) or {}
-    except (OSError, ValueError):
-        data = {}
+    data: dict = read_synced(path) or {}
     data.update(info or {})
     data.update(instance=instance, at=now or time.time())
     _write(path, data)
@@ -75,10 +95,8 @@ def claim(folder: str, key: str, instance: str, release: bool = False, now: floa
         if not (name.startswith(key + ".") and name.endswith(".json")) or ".sync-conflict-" in name:  # (a sync's conflict copy: not a claim)
             continue
         p = os.path.join(cdir, name)
-        try:
-            with open(p, encoding="utf-8") as fh:
-                c = json.load(fh)
-        except (OSError, ValueError):
+        c = read_synced(p)
+        if c is None:
             continue
         if now - float(c.get("at") or 0) > STALE:
             try:

@@ -8,6 +8,7 @@ so a push that is still building, or failed, isn't offered. A dev build also com
 the number being the same between releases. Nothing is sent but ordinary downloads.
 """
 
+import base64
 import json
 import logging
 import os
@@ -27,6 +28,22 @@ BRANCH = {"stable": "main", "dev": "dev"}
 SOURCE = f"{RAW}/main/plexcache/__init__.py"
 EVERY = 6 * 3600
 RETRY = 3600
+# The image Update Now has TrueNAS pull, and the tag each channel's install runs (compose.yaml; dev/compose.dev.yaml).
+OWNER = REPO_URL.split("/")[3].lower()
+IMAGE = f"{OWNER}/plex-cache"
+IMAGE_TAG = {"stable": "latest", "dev": "dev"}
+REGISTRY = "https://ghcr.io"
+# Update Now's checked digest, kept until the restarted app compares it with the image TrueNAS holds for the tag (F-2026-050:
+# TrueNAS pulls by tag, so the tag could have moved between the check and the pull)
+PULLED = "update-pulled.json"
+PULLED_FOR = 24 * 3600
+PROVENANCE = "https://slsa.dev/provenance/v1"
+MANIFEST_TYPES = ", ".join(("application/vnd.oci.image.index.v1+json", "application/vnd.oci.image.manifest.v1+json",
+                            "application/vnd.docker.distribution.manifest.list.v2+json", "application/vnd.docker.distribution.manifest.v2+json"))
+
+
+class NotOurBuild(ValueError):
+    """The image a tag points at isn't one this project's own GitHub build made (or that couldn't be checked)."""
 
 
 def source_for(channel: str, sha: str | None = None) -> str:
@@ -76,12 +93,17 @@ class UpdateChecker:
         self.updating: float | None = None  # when Update Now was asked (TrueNAS pulls and restarts: this process ends)
         self.wake = threading.Event()
         self.first_delay = 5  # a check soon after every start, once startup has settled
+        self.started = time.time()  # (pulled_check compares only in a process started after Update Now's ask)
 
     def start(self):
         threading.Thread(target=self._loop, name="updates", daemon=True).start()
 
     def _loop(self):
         self.app.stopping.wait(self.first_delay)
+        try:
+            self.pulled_check()
+        except Exception:  # only a warning's chance lost: the update itself is done
+            log.exception("comparing the pulled image")
         while not self.app.stopping.is_set():
             wait = EVERY
             if self.app.settings.section("general").get("update_check", True):
@@ -141,6 +163,107 @@ class UpdateChecker:
         if getattr(self.app, "ha", None):
             self.app.ha.wake.set()
         return True
+
+    def _get(self, url: str, headers: dict | None = None, method: str = "GET", limit: int = 4 * 1024 * 1024):
+        """(the answer's headers, its body): a GET or HEAD with its own headers, the body read up to ``limit``."""
+        req = urllib.request.Request(url, method=method, headers={"User-Agent": f"plex-cache/{self.app.version}", **(headers or {})})
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                return resp.headers, (resp.read(limit) if method != "HEAD" else b"")
+        except urllib.error.HTTPError as e:
+            e.close()
+            raise
+
+    def image_digest(self, tag: str) -> str:
+        """The digest ("sha256:…") the registry serves for the image at ``tag`` now: an anonymous pull token, then the
+        manifest's own digest (a HEAD: nothing pulled)."""
+        _, body = self._get(f"{REGISTRY}/token?scope=repository:{IMAGE}:pull&service=ghcr.io")
+        token = (json.loads(body or b"{}") or {}).get("token") or ""
+        if not token:
+            raise NotOurBuild(M("GitHub’s registry gave no pull token for {image}.", image=IMAGE))
+        headers, _ = self._get(f"{REGISTRY}/v2/{IMAGE}/manifests/{tag}", {"Authorization": f"Bearer {token}", "Accept": MANIFEST_TYPES}, "HEAD")
+        digest = str(headers.get("Docker-Content-Digest") or "")
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+            raise NotOurBuild(M("GitHub’s registry didn’t say which image {image}:{tag} is.", image=IMAGE, tag=tag))
+        return digest
+
+    def attested(self, digest: str) -> bool:
+        """Whether this project's own GitHub build attested the image ``digest``: the repository's attestations (only its
+        workflows, with the attestations permission, can add one) list a build provenance whose subject is that digest and
+        whose workflow is this repository's. Read from GitHub's API, over https with its certificate verified."""
+        _, body = self._get(f"{API}/attestations/{digest}", {"Accept": "application/vnd.github+json"})
+        for att in (json.loads(body or b"{}") or {}).get("attestations") or []:
+            env = ((att or {}).get("bundle") or {}).get("dsseEnvelope") or {}
+            try:
+                stmt = json.loads(base64.b64decode(env.get("payload") or ""))
+            except (ValueError, TypeError):
+                continue
+            if stmt.get("predicateType") != PROVENANCE:
+                continue
+            subjects = {"sha256:" + str((s.get("digest") or {}).get("sha256") or "") for s in stmt.get("subject") or [] if isinstance(s, dict)}
+            workflow = (((stmt.get("predicate") or {}).get("buildDefinition") or {}).get("externalParameters") or {}).get("workflow") or {}
+            if digest in subjects and str(workflow.get("repository") or "").lower() == REPO_URL.lower():
+                return True
+        return False
+
+    def verify_image(self) -> str:
+        """Before Update Now has TrueNAS pull: the image this channel's tag points at now is one this project's GitHub build
+        made and attested (F-2026-043) — else NotOurBuild, and nothing is pulled. The digest checked."""
+        tag = IMAGE_TAG.get(self.channel, "latest")
+        try:
+            digest = self.image_digest(tag)
+            ok = self.attested(digest)
+        except NotOurBuild:
+            raise
+        except (OSError, ValueError) as e:
+            raise NotOurBuild(M("The image couldn’t be checked against GitHub’s build, so it isn’t pulled: {why}",
+                                why=str(getattr(e, "reason", None) or e))) from None
+        if not ok:
+            raise NotOurBuild(M("The image at {image}:{tag} ({digest}) isn’t one this project’s GitHub build made: not pulled.",
+                                image=IMAGE, tag=tag, digest=digest[:19]))
+        return digest
+
+    def pulled(self, digest: str) -> None:
+        """Update Now asked TrueNAS to pull this channel's tag after checking ``digest``: kept for pulled_check."""
+        self.app._save_json(PULLED, {"digest": digest, "tag": IMAGE_TAG.get(self.channel, "latest"), "at": time.time()})
+
+    def pulled_check(self) -> bool | None:
+        """After the restart Update Now brought: whether the image TrueNAS holds for the tag (app.image.query's repo_digests)
+        is the one checked before the pull (F-2026-050). True, or False with a warning in the activity log, and the note
+        dropped; None when there's nothing to compare yet (no update asked, this process from before it, TrueNAS not
+        reached), the note kept a day at most."""
+        want = self.app._load_json(PULLED)
+        if not isinstance(want, dict) or not isinstance(want.get("digest"), str):
+            return None
+        at = want.get("at") if isinstance(want.get("at"), (int, float)) else 0
+        if time.time() - at > PULLED_FOR:
+            self._drop_pulled()
+            return None
+        if at >= self.started:  # (the process that asked: TrueNAS hasn't pulled yet, the tag still names the old image)
+            return None
+        tag = f"ghcr.io/{IMAGE}:{want.get('tag') or 'latest'}"
+        try:
+            with self.app.truenas() as tn:
+                images = tn.call("app.image.query", []) or []
+        except Exception:  # noqa: BLE001 — not reached, or not allowed: compared on a later start
+            return None
+        held = [i for i in images if isinstance(i, dict) and tag in (i.get("repo_tags") or [])]
+        if not held:
+            return None
+        digests = {str(d).rpartition("@")[2] for i in held for d in i.get("repo_digests") or []}
+        self._drop_pulled()
+        if want["digest"] in digests:
+            self.app.activity.event("update", M("The image TrueNAS pulled is the one checked against GitHub’s build ({digest})", digest=want["digest"][:19]))
+            return True
+        self.app.activity.event("update", M("The image TrueNAS pulled for {tag} isn’t the one checked against GitHub’s build ({digest}): the tag moved between "
+                                            "the check and the pull. Check the app’s image in TrueNAS.", tag=tag, digest=want["digest"][:19]), "warn")
+        return False
+
+    def _drop_pulled(self) -> None:
+        try:
+            os.remove(os.path.join(self.app.config_dir, PULLED))
+        except OSError:
+            pass
 
     def available(self) -> bool:
         """A newer version — or, on the dev channel, a newer commit of dev than this build's."""

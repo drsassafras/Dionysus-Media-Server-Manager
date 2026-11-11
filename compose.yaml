@@ -39,7 +39,10 @@ services:
       # Put a # in front of both lines to turn the login off (anyone on your network can then use it).
       PLEXCACHE_USERNAME: plex-cache
       PLEXCACHE_PASSWORD: "change-me"
+      # The web UI is plain HTTP on your network: the password and the session cookie travel unencrypted there. For TLS,
+      # put a reverse proxy with HTTPS in front of it and set PLEXCACHE_URL to the address you open it by (README: Who can reach it).
       # PLEXCACHE_URL: https://plexcache.example.com   # only behind a reverse proxy: the address links should use
+      # PLEXCACHE_TRUSTED_PROXY: 172.16.0.1          # …and the address the proxy connects from (its X-Forwarded-For is believed only from there)
     volumes:
       - /mnt/tank/apps/plex-cache:/config        # CHANGE ME: settings and history
       - /mnt/tank/plexfiles:/data:ro             # CHANGE ME: media, same container path as Plex

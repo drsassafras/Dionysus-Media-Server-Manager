@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import random
+import socket
 import threading
 import time
 import urllib.error
@@ -134,6 +135,32 @@ def _host_only(host_header: str | None) -> str | None:
 
 
 LOCAL_SUFFIXES = (".local", ".lan", ".home", ".home.arpa", ".internal", ".localdomain", ".localhost")
+
+
+def _https_only(url) -> str:
+    """A link from outside data as the page may be handed it: only an https:// address (a javascript: or other scheme
+    the metadata named would run on the page when followed: F-2026-037), else ""."""
+    return url if isinstance(url, str) and url.lower().startswith("https://") else ""
+
+
+def _this_machines_address(host: str) -> bool:
+    """Whether ``host`` is this machine itself: loopback, or an address one of its own network interfaces has. A Host
+    header is the browser's (anyone's, with no sign-in), so autodetect looks only here, never at an address a client
+    chose to name: a secret entered later would go to whatever was filled in (F-2026-036)."""
+    if tlspin.host_on_this_machine(host):
+        return True
+    try:
+        want = ipaddress.ip_address(host.strip("[]"))
+    except ValueError:
+        return False  # (a name: it could resolve anywhere)
+    own: set = set()
+    with contextlib.suppress(OSError):
+        own |= {ipaddress.ip_address(i[4][0].split("%")[0]) for i in socket.getaddrinfo(socket.gethostname(), None)}
+    for probe, family in (("192.0.2.1", socket.AF_INET), ("2001:db8::1", socket.AF_INET6)):
+        with contextlib.suppress(OSError, ValueError), socket.socket(family, socket.SOCK_DGRAM) as sk:
+            sk.connect((probe, 9))  # (a UDP connect sends nothing: it only picks the address this machine would send from)
+            own.add(ipaddress.ip_address(sk.getsockname()[0].split("%")[0]))
+    return want in own
 
 
 def _is_local_name(host: str) -> bool:
@@ -329,31 +356,30 @@ class App:
     # ------------------------------------------------------------ the keyed services' TLS (tlspin.py)
     def tls_context(self, name: str, section: dict) -> tlspin.Context:
         """The context a keyed service's connection is verified with: full verification when its verify_tls is on, else
-        its pinned certificate — none yet on first use, when tls_ok pins what answered."""
+        its pinned certificate — none until a person confirms one, and until then every connection is refused before
+        anything is sent (tlspin.CertUnconfirmed, F-2026-053)."""
         if section.get("verify_tls"):
             return tlspin.context(True)
         return tlspin.context(False, self.settings.section("tls")["pins"].get(name, ""))
 
     def tls_ok(self, name: str, ctx: tlspin.Context) -> None:
-        """A keyed connection succeeded: its certificate pinned on first use, and any change note cleared."""
+        """A keyed connection succeeded: any change note cleared. (Nothing is pinned here: only a person's confirmation
+        pins a certificate, trust_certificate.)"""
         self.tls_changed.pop(name, None)
-        if getattr(ctx, "pinning", False) and ctx.seen and not ctx.pin:
-            pins = dict(self.settings.section("tls")["pins"], **{name: ctx.seen})
-            self.settings.update({"tls": {"pins": pins}})
-            self.activity.event("settings", M("{service}’s certificate pinned ({fp}): from now on it must answer with this one",
-                                              service=name, fp=tlspin.short(ctx.seen)))
 
     def tls_refused(self, name: str, ctx: tlspin.Context) -> bool:
-        """Whether a connection's failure was the pin's refusal (the certificate changed): noted for the card's
-        Trust New Certificate, which shows both fingerprints before anything is trusted."""
-        if getattr(ctx, "pinning", False) and ctx.pin and ctx.seen and ctx.seen != ctx.pin:
+        """Whether a connection's failure was the pin's refusal — a certificate other than the pinned one, or one not
+        confirmed yet (no pin): noted for the card's Trust This/New Certificate, which shows the fingerprints before
+        anything is trusted."""
+        if getattr(ctx, "pinning", False) and ctx.seen and ctx.seen != ctx.pin:
             self.tls_changed[name] = {"pinned": ctx.pin, "seen": ctx.seen, "at": time.time()}
             return True
         return False
 
-    def trust_certificate(self, name: str) -> dict:
-        """Trust New Certificate (the System page): the certificate the service answers with now read afresh and pinned
-        in the old one's place. {"pinned": its fingerprint} — or {"error"} when nothing answers."""
+    def trust_certificate(self, name: str, expect: str = "") -> dict:
+        """Trust This / New Certificate (the System page): the certificate the service answers with now read afresh and
+        pinned — only when it's the one the page showed (``expect``, its fingerprint), so what's pinned is what the person
+        saw. {"pinned": its fingerprint} — or {"error"} when nothing answers, or another certificate does."""
         urls = {"truenas": self.settings.section("truenas").get("url"), "syncthing": self.settings.section("syncthing").get("url"),
                 "plex": self.settings.section("plex").get("url")}
         if name.startswith("plex2:"):
@@ -365,16 +391,19 @@ class App:
         fp = tlspin.fingerprint(url)
         if not fp:
             return {"error": str(M("Nothing answered with a certificate at {url}.", url=url or "?"))}
+        if fp != (expect or "").lower():
+            return {"error": str(M("{url} answers with another certificate ({fp}) than the one shown: look again before trusting it.", url=url, fp=tlspin.short(fp)))}
+        first = not self.settings.section("tls")["pins"].get(name)
         pins = dict(self.settings.section("tls")["pins"], **{name: fp})
         self.settings.update({"tls": {"pins": pins}})
         self.tls_changed.pop(name, None)
-        self.activity.event("settings", M("{service}’s new certificate trusted ({fp}): from now on it must answer with this one",
-                                          service=name, fp=tlspin.short(fp)), "warn")
+        self.activity.event("settings", M("{service}’s certificate confirmed ({fp}): from now on it must answer with this one", service=name, fp=tlspin.short(fp))
+                            if first else M("{service}’s new certificate trusted ({fp}): from now on it must answer with this one", service=name, fp=tlspin.short(fp)), "warn")
         return {"pinned": fp}
 
     def tls_state(self, name: str, section: dict | None = None) -> dict:
         """How a keyed service's connection is verified, for its card: {"verify": "ca" (full verification) | "pin" (its
-        pinned certificate) | "tofu" (pinned on the next successful connection), "pin": the pin (hex, "" while none),
+        pinned certificate) | "tofu" (none confirmed yet: every connection refused until one is), "pin": the pin (hex, "" while none),
         "changed": {"pinned", "seen", "at"} while it answers with another certificate than its pin (tls_refused)}."""
         sec = section if section is not None else self.settings.section("plex" if name.startswith("plex2:") else name)  # (a mirror follows the plex section's verify_tls)
         pin = self.settings.section("tls")["pins"].get(name, "")
@@ -985,10 +1014,14 @@ class App:
             log.exception("auto-detecting Plex/TrueNAS at %s failed", host)
 
     def _autodetect_inner(self, host: str):
+        if not _this_machines_address(host):
+            return  # (another machine named by a request's Host header: never an address to fill in, F-2026-036)
         s = self.settings.get()
         changed = []
         h = f"[{host}]" if ":" in host else host
-        if not s["plex"]["url"]:
+        # (a service with a secret saved gets no address from a request's Host header: the secret would go there, and anyone on
+        # the network can send a Host header. A blank address with no secret is filled; its secret comes from the user after: F-2026-036)
+        if not s["plex"]["url"] and not s["plex"]["token"]:
             # (https: the token goes nowhere else across the network. Plain http only to this machine, where it may)
             for url in [f"https://{h}:{PLEX_DEFAULT_PORT}"] + ([f"http://{h}:{PLEX_DEFAULT_PORT}"] if tlspin.host_on_this_machine(host) else []):
                 try:
@@ -998,7 +1031,7 @@ class App:
                 self.settings.update({"plex": {"url": url}})
                 changed.append(M("Plex at {url}", url=url))
                 break
-        if not s["truenas"]["url"]:
+        if not s["truenas"]["url"] and not s["truenas"]["api_key"]:
             url = f"https://{h}" + ("" if TRUENAS_PROBE_PORT == 443 else f":{TRUENAS_PROBE_PORT}")
             if probe_truenas(url, timeout=4):
                 self.settings.update({"truenas": {"url": url}})
@@ -1059,7 +1092,7 @@ class App:
             slug = md.get("slug")
             got = {"title": md.get("title", ""), "year": md.get("year"), "type": kind, "summary": md.get("summary", ""),
                    # (its public page as Plex names it; else built from its slug)
-                   "url": md.get("publicPagesURL") or (f"https://watch.plex.tv/{kind}/{urllib.parse.quote(slug)}" if slug and kind in ("movie", "show") else None)
+                   "url": _https_only(md.get("publicPagesURL")) or (f"https://watch.plex.tv/{kind}/{urllib.parse.quote(slug)}" if slug and kind in ("movie", "show") else None)
                    or self._public_page(md),
                    "thumb": md.get("thumb") or ""}
             cache[guid] = got
@@ -1491,6 +1524,7 @@ class App:
             name = None
         if not name:
             raise ValueError(M("Dionysus can’t update itself without the TrueNAS API ([System → TrueNAS](/system#truenas), with a key allowed to manage apps). Update it in TrueNAS: Apps → plex-cache → Update."))
+        digest = self.updates.verify_image()  # (the image the tag points at is GitHub's own build, attested, or nothing is pulled: F-2026-043)
         try:
             with self.truenas() as tn:
                 try:
@@ -1500,8 +1534,10 @@ class App:
         except TrueNASError as e:
             raise ValueError(M("TrueNAS didn’t update {app}: {why}", app=name, why=str(e))) from None
         self.updates.updating = time.time()
-        self.activity.event("update", M("Update asked of TrueNAS: {app} is pulling the newer image and restarting", app=name))
-        return {"updating": True, "app": name}
+        self.updates.pulled(digest)  # (compared with what TrueNAS pulled once restarted: F-2026-050)
+        self.activity.event("update", M("Update asked of TrueNAS: {app} is pulling the newer image ({digest}, checked against GitHub’s build) and restarting",
+                                        app=name, digest=digest[:19]))
+        return {"updating": True, "app": name, "digest": digest}
 
     def run_checks_async(self, rescan: bool = False):
         def work():

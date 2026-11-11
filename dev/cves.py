@@ -1,5 +1,5 @@
 """Known vulnerabilities (CVEs) in what the app runs and is built with: a part of the dependency check (dev/upkeep.py,
-devtools's Dependencies block), looked up once a day with the versions.
+callboard's Dependencies block), looked up once a day with the versions.
 
 It says only what needs doing. A CVE someone else is already fixing stays quiet; one is shown when there's something for
 us to do — always as a warning (the block orange), never a failure:
@@ -26,8 +26,8 @@ reachable" one stays decided with a fix (a fix in a package pulled in by another
 
 Where the CVEs come from: OSV (osv.dev) for the npm packages of dev/package-lock.json and for oxipng (a Rust crate); NVD
 (nvd.nist.gov, by each one's CPE) for the ffmpeg, libjpeg-turbo and MKVToolNix the image is built with;
-Trivy (dev/tools.toml, through dev/checks.py) for the image of the copy being checked (source(): devtools's — the folder for
-devtools local, an export of main for devtools main… — else this checkout), built here from it (build_local): its Debian
+Trivy (dev/tools.toml, through callboard/checks.py) for the image of the copy being checked (source(): callboard's — the folder for
+callboard local, an export of main for callboard main… — else this checkout), built here from it (build_local): its Debian
 packages, and the Python packages the base image carries. Docker not running, or the build failing: the image that copy's
 branch publishes instead (images(): dev on dev, latest on main), said in a note. The pins and the npm lock are the copy's too. NVD answers 5 requests in 30 s without a key; NVD_API_KEY in the environment raises it.
 """
@@ -44,17 +44,21 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT not in sys.path:  # (run as a script: dev/ is on the path, not the project)
+    sys.path.insert(0, ROOT)
+import dev  # noqa: E402, F401 — (puts the callboard install on the path: dev/__init__.py)
+
 CACHE = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "plex-cache", "cves.json")
 SEEN = os.path.join(os.path.dirname(CACHE), "cves-seen.json")   # each image fix as first seen missing: how long it's been
 DAY = 24 * 3600
 
 
 def windows() -> dict[str, float]:
-    """The CVE windows, in days (devtools.toml's [upkeep], through dev/policy.py — nothing here decides them): stale, how long
+    """The CVE windows, in days (callboard.toml's [upkeep], through callboard/policy.py — nothing here decides them): stale, how long
     a CVE may go without a fix (or a fix without reaching us) before it's ours to act on; dormant, how long upstream may make
     no release before no fix is coming; debian_grace, how long after a Debian fix an image without it waits (the weekly
     rebuild takes it); review, how long a decision stands before the CVE is shown again. One not set is no limit."""
-    from dev import checks
+    from callboard import checks
     r = checks.levels("upkeep")
     inf = float("inf")
     if r is None:
@@ -314,15 +318,17 @@ def images(where: str | None = None) -> list[str]:
 
 
 def source() -> str:
-    """The copy whose CVEs are looked at: the one devtools is checking (DEVTOOLS_COPY: the folder for devtools local, an export of
-    the branch or tag for devtools main, dev, release, beta), else this checkout."""
-    return os.environ.get("DEVTOOLS_COPY") or ROOT
+    """The copy whose CVEs are looked at: the one callboard is checking (CALLBOARD_COPY: the folder for callboard local, an export of
+    the branch or tag for callboard main, dev, release, beta), else this checkout."""
+    return os.environ.get("CALLBOARD_COPY") or ROOT
 
 
 def source_branch() -> str:
-    """The branch that copy is of: the one devtools worked out for the code it's checking (dev/policy.py's context:
-    DEVTOOLS_BRANCH), else (no devtools) the branch checked out here; "" when it's neither."""
-    from dev import policy, upkeep
+    """The branch that copy is of: the one callboard worked out for the code it's checking (callboard/policy.py's context:
+    CALLBOARD_BRANCH), else (no callboard) the branch checked out here; "" when it's neither."""
+    from dev import upkeep
+
+    from callboard import policy
     if policy.find_file():
         try:
             return policy.context().branch or upkeep.branch() or ""
@@ -414,7 +420,7 @@ def trivy_vulns(got: dict, image: str) -> list[Vuln]:
 def scan(image: str, local: bool = False) -> list[Vuln]:
     """Trivy's look at an image: published (from its registry, not pulled), or one docker has here (``local``)."""
     sys.path.insert(0, ROOT)
-    from dev import checks
+    from callboard import checks
     cmd, why = checks.command("trivy")
     if not cmd:
         raise OSError(why)
@@ -593,7 +599,7 @@ def judge(vulns: list[Vuln], plan: dict[str, tuple[str, str, str]], released: di
     now = time.time() if now is None else now
     released = released or {}
     w = windows()
-    stale, dormant, debian_grace, review = w["stale"], w["dormant"], w["debian_grace"], w["review"]   # (the windows: devtools.toml's [upkeep] *_days)
+    stale, dormant, debian_grace, review = w["stale"], w["dormant"], w["debian_grace"], w["review"]   # (the windows: callboard.toml's [upkeep] *_days)
     out = Judged()
     seen: set[tuple[str, str]] = set()
     image_fixes: dict[tuple[str, str, str, str], list[Vuln]] = {}   # (kind, package, version, image) → its CVEs: one line each

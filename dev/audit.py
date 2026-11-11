@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Security audits, line by line (devtools's Security Audit block): which app code an audit has seen, what's stale or never
+"""Security audits, line by line (callboard's Security Audit block): which app code an audit has seen, what's stale or never
 audited, and the release rules.
 
-    python3 dev/audit.py                 # the checks (devtools's Security Audit block: devtools.toml's audit integration)
-    python3 dev/audit.py                 # the rules devtools.toml sets for this code's role (DEVTOOLS_ROLE), the release's among them
+    python3 dev/audit.py                 # the checks (callboard's Security Audit block: callboard.toml's audit integration)
+    python3 dev/audit.py                 # the rules callboard.toml sets for this code's role (CALLBOARD_ROLE), the release's among them
     python3 dev/audit.py next            # what most needs an audit, grouped into batches by file
     python3 dev/audit.py start [PATH…]   # the standard prompt, filled in (no paths: a full audit; paths: a partial)
     python3 dev/audit.py record FILE     # a filled-in templates/audit.toml, checked, split and saved
@@ -29,7 +29,7 @@ counts once it is committed, however it's committed (one commit or many, squashe
 lines where git no longer knows its commit. Change a line, or the line next to it, and its fingerprint changes: it needs
 an audit again. Nobody marks lines by hand.
 
-Through dev/checks.py, as every check says it. Exit 0 every rule met, 1 something to audit (devtools's block orange; with
+Through callboard/checks.py, as every check says it. Exit 0 every rule met, 1 something to audit (callboard's block orange; with
 --release, a release rule not met: red), 2 the records couldn't be read.
 """
 
@@ -52,10 +52,12 @@ from dataclasses import dataclass, field
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-from dev import checks, policy  # noqa: E402 — the check tools' shared code, and the rules (devtools.toml)
-from dev.checks import Check, Finding, Outcome  # noqa: E402
-from dev.checks import repo_at as _repo  # noqa: E402 — where git knows these lines (this checkout, or devtools's copy's)
-from dev.progress import counted  # noqa: E402
+import dev  # noqa: E402, F401 — (puts the callboard install on the path: dev/__init__.py)
+
+from callboard import checks, policy  # noqa: E402 — the check tools' shared code, and the rules (callboard.toml)
+from callboard.checks import Check, Finding, Outcome  # noqa: E402
+from callboard.checks import repo_at as _repo  # noqa: E402 — where git knows these lines (this checkout, or callboard's copy's)
+from callboard.progress import counted  # noqa: E402
 
 CONFIG = os.path.join(ROOT, "dev", "audit.toml")
 PUBLIC = os.path.join(ROOT, "security", "audits")
@@ -66,7 +68,7 @@ STATUSES = ("open", "fixed", "mitigated", "accepted", "false-positive")   # (mit
 DONE = ("fixed", "mitigated")   # (the statuses a fix closes it with: Confirm, Mark as fixed, a re-check)
 MAIN = ("affected", "not-affected", "fixed")
 
-# The rules (devtools.toml's [audit], read through dev/policy.py). The private rules.toml keeps what names an auditor
+# The rules (callboard.toml's [audit], read through callboard/policy.py). The private rules.toml keeps what names an auditor
 # (who's accepted, how old a full audit may be, the soak, what blocks): these say what each of its rules is held as.
 SCHEMA = policy.Schema("audit", "Security Audit", {
     "grace_days": policy.Setting("window", "code no audit has seen may wait this many days", unit="days"),
@@ -80,6 +82,8 @@ SCHEMA = policy.Schema("audit", "Security Audit", {
 }, "Which app code the security audits have seen, and the release rules.")
 TYPES = ("vulnerability", "hardening")   # (exploitable, CVSS scored; or hardening, not exploitable: a priority, never a release block)
 PRIORITIES = ("low", "medium", "high")   # (a hardening finding's)
+NO_SEVERITY = "none"   # (shown as "None - False Positive": a severity only a false positive may have, as sac has it)
+UNRATED = ("false-positive", "duplicate")   # (statuses whose finding may have no severity at all: nothing real to rate)
 CODE = ("there", "changed", "gone", "unknown")   # (a finding's lines in the code now: see code_state)
 ID = re.compile(r"^\d{4}-\d{2}-\d{2}-\d+$")
 FINDING_ID = re.compile(r"^F-\d{4}-\d{3,}$")
@@ -154,10 +158,10 @@ def config() -> dict:
 
 def private_root() -> str:
     """The private audits repo's checkout: PLEXCACHE_AUDITS, else dev/audit.toml's ``private`` from the project's folder
-    (the one devtools copied from, when this is its copy)."""
+    (the one callboard copied from, when this is its copy)."""
     if os.environ.get("PLEXCACHE_AUDITS"):
         return os.environ["PLEXCACHE_AUDITS"]
-    base = os.environ.get("DEVTOOLS_REPO") or ROOT
+    base = os.environ.get("CALLBOARD_REPO") or ROOT
     return os.path.normpath(os.path.join(base, config().get("private", "../TrueNAS-Plex-Caching-audits")))
 
 
@@ -236,15 +240,19 @@ def problems(rec: dict, half: str) -> list[str]:
             for key in ("title", "lines", "detail"):
                 if not f.get(key):
                     out.append(f"{name}: no {key}")
-            if f.get("severity") not in SEVERITIES:
-                out.append(f"{name}: severity {f.get('severity')!r} isn't one of {', '.join(SEVERITIES)}")
+            sev, status = f.get("severity"), f.get("status")
+            unrated = (sev == NO_SEVERITY and status == "false-positive") or (sev in (None, "") and status in UNRATED)
+            if sev == NO_SEVERITY and status != "false-positive":
+                out.append(f"{name}: severity 'none' (None - False Positive) is only for a false positive, not {status!r}")
+            elif sev not in SEVERITIES and not unrated:
+                out.append(f"{name}: severity {sev!r} isn't one of {', '.join(SEVERITIES)}")
             kind = f.get("type", "vulnerability")
             if kind not in TYPES:
                 out.append(f"{name}: type {kind!r} isn't one of {', '.join(TYPES)}")
             elif kind == "hardening":
                 if f.get("cvss"):
                     out.append(f"{name}: a hardening finding has no CVSS vector (it isn't exploitable as it is)")
-                if f.get("severity") not in PRIORITIES:
+                if sev not in PRIORITIES and not unrated and sev != NO_SEVERITY:
                     out.append(f"{name}: a hardening finding's priority (severity) is one of {', '.join(PRIORITIES)}")
             elif f.get("cvss"):
                 try:
@@ -650,6 +658,8 @@ def findings_check(audits: list[Audit], level: str = "warn") -> Outcome:
 
 def _rated(f: dict) -> str:
     """A finding's severity, with its CVSS score when it has one (a hardening finding: its priority)."""
+    if f.get("severity") == NO_SEVERITY:
+        return "None - False Positive"
     if f.get("type") == "hardening":
         return f"hardening, {f.get('severity')}"
     try:
@@ -1446,7 +1456,7 @@ def main(argv: list[str] | None = None) -> int:
     m = measure(audits)
     for note in m.notes:
         print(f"  ({note})")
-    if r is None:   # (no devtools.toml: the dev rule as the records tell it, nothing held as a failure)
+    if r is None:   # (no callboard.toml: the dev rule as the records tell it, nothing held as a failure)
         outcomes = [coverage_check(m, audits, now, sensitive, level="warn"), config_check(have_private, rule, "warn")]
         if have_private:
             outcomes.insert(0, findings_check(audits))

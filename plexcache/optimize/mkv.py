@@ -29,6 +29,16 @@ TAG, TARGETS, SIMPLE_TAG, TAG_NAME, TAG_STRING = 0x7373, 0x63C0, 0x67C8, 0x45A3,
 TARGET_UIDS = (0x63C5, 0x63C9, 0x63C4, 0x63C6)  # a tag for a track, edition, chapter or attachment, not the file
 OUR_TAG = "PLEXCACHE_"  # our global tags: PLEXCACHE_OPTIMIZER (version), PLEXCACHE_COVER (Plex's poster)
 MAX_TAGS = 4 * 1024 * 1024  # Tags this large aren't read for ours (they'd be at the start of a tags element anyway)
+MAX_PARTS = 512  # top-level elements read before the first Cluster at most (mkvmerge writes a handful), as filemap.MAX_PARTS
+MAX_ATTACHMENTS = 4096  # attachments (and an attachment's children) walked at most: a file past it isn't one we rewrite (F-2026-056)
+MAX_ELEMENT = 512 * 1024 * 1024  # no element outside the clusters is read into memory past this: not a layout mkvmerge writes (F-2026-047)
+
+
+def _capped(size: int, what: str = "element") -> int:
+    """``size`` as it is when it can be read into memory; past MAX_ELEMENT (or negative) the file isn't one we rewrite."""
+    if size < 0 or size > MAX_ELEMENT:
+        raise NotMatroska(f"{what} of {size} bytes: not a layout mkvmerge writes")
+    return size
 NAMES = {SEEKHEAD: "SeekHead", INFO: "Info", TRACKS: "Tracks", CHAPTERS: "Chapters", ATTACHMENTS: "Attachments",
          TAGS: "Tags", CUES: "Cues", CLUSTER: "Cluster", VOID: "Void"}
 
@@ -99,9 +109,12 @@ def read_layout(path: str) -> dict:
         data = p + n1 + n2
         out = {"segment_data": data, "segment_size": seg_size, "segment_size_at": p + n1, "segment_size_len": n2,
                "front": [], "first_cluster": None, "seek": {}, "tracks": [], "attachments": [], "file_size": os.fstat(fh.fileno()).st_size}
-        # Elements before the first Cluster, by seeking from one to the next
-        p = data
+        # Elements before the first Cluster, by seeking from one to the next: MAX_PARTS at most (F-2026-060)
+        p, parts = data, 0
         while p < out["file_size"]:
+            parts += 1
+            if parts > MAX_PARTS:
+                raise NotMatroska(f"more than {MAX_PARTS} elements before the first Cluster: not a layout mkvmerge writes")
             fh.seek(p)
             hdr = fh.read(16)
             eid, n1 = _vint(hdr, 0, True)
@@ -115,7 +128,7 @@ def read_layout(path: str) -> dict:
             out["front"].append((name, p, n1 + n2 + size))
             if eid == SEEKHEAD:
                 fh.seek(p + n1 + n2)
-                body = fh.read(size)
+                body = fh.read(_capped(size, "SeekHead"))
                 for cid, cs, csz in _children(body):
                     if cid != SEEK:
                         continue
@@ -129,7 +142,7 @@ def read_layout(path: str) -> dict:
                         out["seek"].setdefault(NAMES[sid], data + spos)
             elif eid == TRACKS:
                 fh.seek(p + n1 + n2)
-                out["tracks"] = _tracks(fh.read(size))
+                out["tracks"] = _tracks(fh.read(_capped(size, "Tracks")))
             elif eid == ATTACHMENTS:
                 out["attachments"] = _attachments(fh, p + n1 + n2, size)
             p += n1 + n2 + size
@@ -235,16 +248,22 @@ def _tracks(body: bytes) -> list[dict]:
 
 def _attachments(fh, start: int, size: int) -> list[dict]:
     """Each attachment's name, type, size and position, without reading its data."""
-    files, p, end = [], start, start + size
+    files, p, end, walked = [], start, start + size, 0
     while p < end:
+        walked += 1
+        if walked > MAX_ATTACHMENTS:
+            raise NotMatroska(f"more than {MAX_ATTACHMENTS} attachments: not a layout mkvmerge writes")
         fh.seek(p)
         hdr = fh.read(16)
         eid, n1 = _vint(hdr, 0, True)
         fsize, n2 = _vint(hdr, n1, False)
         if eid == ATTACHED_FILE:
             a = {"name": "", "mime": "", "description": "", "uid": None, "size": 0, "offset": p}
-            q, qend = p + n1 + n2, p + n1 + n2 + fsize
+            q, qend, children = p + n1 + n2, p + n1 + n2 + fsize, 0
             while q < qend:
+                children += 1
+                if children > MAX_ATTACHMENTS:
+                    raise NotMatroska(f"an attachment of more than {MAX_ATTACHMENTS} parts: not a layout mkvmerge writes")
                 fh.seek(q)
                 h2 = fh.read(16)
                 cid, k1 = _vint(h2, 0, True)
@@ -347,7 +366,7 @@ def attachments_element(files: list[dict]) -> bytes:
     body = b""
     for f in files:
         with open(f["path"], "rb") as fh:
-            data = fh.read()
+            data = fh.read(_capped(os.fstat(fh.fileno()).st_size, "attachment"))
         inner = (_element(FILE_DESCRIPTION, f["description"].encode()) if f.get("description") else b"")
         inner += _element(FILE_NAME, f["name"].encode()) + _element(FILE_MIME, f["mime"].encode())
         inner += _element(FILE_DATA, data) + _element(FILE_UID, int(f["uid"]).to_bytes(8, "big"))
@@ -375,7 +394,7 @@ def reorder_tail(path: str, order=("Attachments", "Chapters", "Cues", "Tags"), a
     tail_start = min(lay["seek"][x] for x in wanted) if wanted else lay["file_size"]
     with open(path, "r+b") as fh:
         fh.seek(tail_start)
-        tail = fh.read()
+        tail = fh.read(_capped(lay["file_size"] - tail_start, "tail"))
         els, q = [], 0
         while q < len(tail):
             eid, n1 = _vint(tail, q, True)
@@ -388,7 +407,7 @@ def reorder_tail(path: str, order=("Attachments", "Chapters", "Cues", "Tags"), a
             if any(n == name for n, _ in els):
                 raise NotMatroska(f"{name.lower()} both before and after the video")
             fh.seek(off)
-            els.append((name, fh.read(size)))
+            els.append((name, fh.read(_capped(size, name))))
         if attachments:
             if any(name == "Attachments" for name, _ in els):
                 raise NotMatroska("the file has attachments already")

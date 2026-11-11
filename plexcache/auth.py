@@ -11,12 +11,15 @@ username or password signs everyone out. Scripts can use HTTP Basic auth instead
 
 Wrong passwords are answered after a delay, one at a time: guessing in parallel
 doesn't go any faster. An address that keeps getting it wrong (LOCKOUT_FAILS in a row) is
-refused for a while (LOCKOUT_SECONDS) — signing in from elsewhere still works.
+refused for a while (LOCKOUT_SECONDS) — signing in from elsewhere still works. Behind a
+reverse proxy (its address in PLEXCACHE_TRUSTED_PROXY) the address is the one the proxy names
+(``client``), so one bad client doesn't lock everyone behind the proxy out.
 """
 
 import base64
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import secrets
@@ -24,6 +27,21 @@ import threading
 import time
 
 COOKIE = "pc_session"
+
+
+def _ip(value: str):
+    try:
+        ip = ipaddress.ip_address(value.strip().strip("[]"))
+    except ValueError:
+        return None
+    return getattr(ip, "ipv4_mapped", None) or ip
+
+
+def trusted_proxy(address: str) -> bool:
+    """Whether a connection comes from a reverse proxy the YAML names (PLEXCACHE_TRUSTED_PROXY: its addresses,
+    comma-separated): only its X-Forwarded-For is believed."""
+    me = _ip(address or "")
+    return me is not None and any(_ip(a) == me for a in (os.environ.get("PLEXCACHE_TRUSTED_PROXY") or "").split(",") if a.strip())
 # The example password in compose.yaml. It's public, so it's never accepted: the app can't be
 # used until it's changed (otherwise anyone who read the README could sign in).
 DEFAULT_PASSWORD = "change-me"  # noqa: S105 — (the public example, refused: never a password that signs in)
@@ -99,35 +117,36 @@ class Auth:
             for k in sorted(self._fails, key=lambda k: self._fails[k][1])[:5000]:
                 del self._fails[k]
 
-    def _sign(self, expires: int, sid: str) -> str:
-        # The password is part of what's signed, so changing it ends every session.
-        msg = f"{expires}:{sid}:{self.username}:{hashlib.sha256(self._password.encode()).hexdigest()}".encode()
+    def _sign(self, expires: int, sid: str, address: str = "") -> str:
+        # The password is part of what's signed, so changing it ends every session; and the address the session was
+        # issued to (``client``), so a cookie read off the network works from nowhere else (F-2026-042).
+        msg = f"{expires}:{sid}:{self.username}:{hashlib.sha256(self._password.encode()).hexdigest()}:{address}".encode()
         return hmac.new(self._key, msg, hashlib.sha256).hexdigest()
 
-    def new_session(self) -> str:
+    def new_session(self, address: str = "") -> str:
         expires = int(time.time()) + SESSION_DAYS * 86400
         sid = secrets.token_hex(8)
-        return f"{expires}.{sid}.{self._sign(expires, sid)}"
+        return f"{expires}.{sid}.{self._sign(expires, sid, address)}"
 
-    def _parse(self, token: str | None) -> tuple[int, str] | None:
-        """(expires, session id) of a genuine, unexpired session token."""
+    def _parse(self, token: str | None, address: str = "") -> tuple[int, str] | None:
+        """(expires, session id) of a genuine, unexpired session token, issued to ``address``."""
         parts = (token or "").split(".")
         if len(parts) != 3 or not parts[0].isdigit():
             return None
         expires, sid, sig = int(parts[0]), parts[1], parts[2]
-        if expires <= time.time() or not hmac.compare_digest(sig, self._sign(expires, sid)):
+        if expires <= time.time() or not hmac.compare_digest(sig, self._sign(expires, sid, address)):
             return None
         return expires, sid
 
-    def session_ok(self, token: str | None) -> bool:
+    def session_ok(self, token: str | None, address: str = "") -> bool:
         if self.default_password:
             return False
-        p = self._parse(token)
+        p = self._parse(token, address)
         return p is not None and p[1] not in self._revoked
 
-    def revoke(self, token: str | None) -> None:
+    def revoke(self, token: str | None, address: str = "") -> None:
         """Sign this session out for good (not just in this browser)."""
-        p = self._parse(token)
+        p = self._parse(token, address)
         if not p:
             return
         now = time.time()
@@ -167,7 +186,7 @@ class Auth:
         against the same per-address lockout as the sign-in form (``address``), so guessing is capped either way."""
         if not self.enabled:
             return True
-        if self.session_ok(self.cookie_value(headers)):
+        if self.session_ok(self.cookie_value(headers), address or ""):
             return True
         authz = headers.get("Authorization") or ""
         if authz.startswith("Basic "):
@@ -182,6 +201,19 @@ class Auth:
                 self.note_attempt(address, ok)
             return ok and not self.default_password
         return False
+
+    @staticmethod
+    def client(headers, address: str) -> str:
+        """What a sign-in attempt is counted against (locked_out, note_attempt), and the address a session is bound to:
+        for a connection from a reverse proxy named in PLEXCACHE_TRUSTED_PROXY, the client the proxy names in
+        X-Forwarded-For (its last hop: what the proxy itself appended), else the connection's own address. A client
+        reaching the app directly can't name an address of its own choosing (F-2026-051), and check_password's
+        one-at-a-time delay caps guessing overall either way (F-2026-049)."""
+        if trusted_proxy(address):
+            forwarded = (headers.get("X-Forwarded-For") or "").split(",")[-1].strip()
+            if forwarded:
+                return forwarded[:64]
+        return address
 
     @staticmethod
     def cookie(value: str, max_age: int, secure: bool = False) -> str:

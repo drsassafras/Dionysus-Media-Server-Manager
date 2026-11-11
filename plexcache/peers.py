@@ -19,12 +19,11 @@ From the other systems' markers this module tells:
 Health lists all of it. Without the optimizer service nothing is published, and that's said too.
 """
 
-import json
 import os
 import time
 
 from .i18n import M
-from .optimize.claims import PEER_DAYS
+from .optimize.claims import PEER_DAYS, read_synced
 
 PUBLISH_EVERY = 30 * 60
 TOOL_GAP = 3600  # a file tool run on the other side within this: ours waits
@@ -128,9 +127,10 @@ def read(app) -> dict:
             try:
                 if now - os.stat(p).st_mtime > PEER_DAYS * 86400:
                     continue
-                with open(p, encoding="utf-8") as fh:
-                    marker = json.load(fh)
-            except (OSError, ValueError):
+            except OSError:
+                continue
+            marker = read_synced(p)
+            if marker is None:
                 continue
             e = out.setdefault(n[:-5], {"marker": {}, "libraries": [], "by_library": {}})
             e["marker"] = marker if marker.get("at", 0) >= e["marker"].get("at", 0) else e["marker"]

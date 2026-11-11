@@ -132,15 +132,525 @@
    "sample": "b68e3362bf5f60855b60589b05abdc9eb6a70e1d59c2cdd78f7aae4406b09c22",
    "looks": 6,
    "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "b57ad7440692de6ad843489566eb0192cc0afad33a69a053395a83deea858ae7",
+   "looks": 6,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "db509427f32f75fdee90930291b0959dbae704f4cfffd59d6f34ce8ee7426ec3",
+   "looks": 12,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "a5f51a82dee5185ebd836653bfa67ec7d3cba95e6a0e90f93b626dae202340d2",
+   "looks": 2,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "7871d54f458ed52189e1bbefe9b1d1749254d5def36b97d44cdcb29d9f2770ee",
+   "looks": 6,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "b4ae11bc6580302c7eb90c4ebd983c877fb327ef68cb12e9e00db6f796975555",
+   "looks": 2,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "ff6d29b279a1a668e144d90f62df98216061373683d7201c605be0e7d531321c",
+   "looks": 2,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "b654cbe8de059d17adbfbeedc4660708d2bbe4457aa59f23cd0fd033078fd0c7",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "19eb572928161320043818f1841b1d4c04d0c2df29a43a6524ea89f1b786ae41",
+   "looks": 3,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "17e34d4ab21d6abafee70c7026a3560fd5ac01b87451c88e2f32a23102a6d11b",
+   "looks": 4,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "62e9b706b9145858c1635e222142b7de718d0d7bc34baef20648a9d2446732e1",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "ebc0cb2c25bb5447ade5f65bd00fa1bfeb8f6d67b1cccd5627fac3f1a782e493",
+   "looks": 2,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "03d700366b83c7c77b38e39ee9a534a7940f184f5d0966983c39b58a59af72a1",
+   "looks": 2,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "ac608b4da5f6df93b04ecf0500daddd35e4d028f97b43402978633d61f928066",
+   "looks": 3,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "afbcbcc80dda52cb4b6ea33c4c0507fdc762ad8ff5fb013b4708d1cff9194351",
+   "looks": 2,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "8b26f698d766aa5c63462c067769b46f9acd2dea22b6c86640c83f559a38ef64",
+   "looks": 3,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "a465698d14c3c5fc9989d9b0e8b97f754bcba51c25cfd13a2a73c5ae715d735d",
+   "looks": 2,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "f47e66ed84823c1d06345c4e8357339b84c849e37054d5480dcbb6fd0692e7d0",
+   "looks": 2,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "b46b922f942aa2ad43dd79aa1a63fa12c6a794cde834f83acf6d690d2ab06a49",
+   "looks": 2,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "1b8b749b071f71226346325a4415674351d219414ea94128bfe485aa36d4f107",
+   "looks": 2,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "ef9f7a1cbb968d24aa1844d6b48b87a60fdeae8b21b6764b6169f342842c2417",
+   "looks": 2,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "661c766a7e0381c1dce2ce376113fead46a4af78b8af380afd96d6cb5363430f",
+   "looks": 2,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "e1335bbc7be7c6ed854fa1eb215aefb99a610422a1f27e5a7fd9306569e2dafa",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "e5236a0efd8e6bf290a49966ef0d484f00ed9c418a24c0dcb8a53c109dfa9e9f",
+   "looks": 2,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "172e6de8baea8e126a9fccab96a5b218f46f607af83d83d05151fe4f0ded40ad",
+   "looks": 2,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "04ad7297c5ae3490a3b9c3da4e7e28217f72b85e637b97aef5aa64094463908e",
+   "looks": 2,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "547ce58909773dc24a594bfe98aa70fe1b04734d2556178f654e06296bf34c89",
+   "looks": 2,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "04dcea1c319d427bed9b1bf0330e7a561cead9d7a69dfb69fbdb67b2cf9fa7a8",
+   "looks": 2,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "d516b72dd33599535100139bce02dbc7c6d3e7765993ae2ab25aa52d7f0ab31f",
+   "looks": 2,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "2fe3e2b717591e01ecf8dd878136b1bb494f6bedf9c7e37322390a3f8224efa6",
+   "looks": 4,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "9265b32a8521891bee26caf232c12f8aff1a18eda9de78aaaf6dc4fab522f1ce",
+   "looks": 8,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "8d52fe0253d24789a6c77afded8cecdd09bb971b9dac0138e84bdee1f9af5a32",
+   "looks": 2,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "b7ca1eb7a1cbcbdd692897df21e4db632cc791861ed015d661f76e6d6aeaabc7",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "c2bc1d1ecafe0c4a6f1e7ab67f16df806fee69aeca547c52590604b4b9a1174f",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "61e98cf0373d538523a8af44381d398035997e5d41c8bb3621b616a2d28e848f",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "20723c08581e7c9997fdbfd2032006c9f0ecab19ffccc8c9fd1544a43ae7c9d0",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "16c0ca43addfed29acff3a2e0627a4fb46074204a277826a1ab5ffad903c9426",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "2af97c7e1e219c33d7b59ed0711d549c47d29eaa48c2841532e9e1a4c2a9dcc4",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "ef62bb4a7006cf28aad0dbd6a30f1a6ad086a4bf3e6c1efd9d08aa0e7bbc0c3f",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "496e270cf0d0c4ef7d86f215b6a2927b32bd0c993f1f2f7a757d2efbd1b85cc7",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "28630f92d12dd56d7e49cf6bd764bbc520da44a90db78f03adb302f36118b37b",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "78ad9751438947fe907a56bc30fc965dc263e1922d8e7c97d192a961bef56915",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "a74f36dbdd12036d4fb66cdf61f08e21ff446e5822503e56dfbf8f8f06931860",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "517749fac83b7c0e940441a06ef544e62b8d7266df6f75045df1e0f75364895c",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "c9a206504d1a948bedc12f07c7dba6283c38c9f816871fecc0889026b400b43e",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "ebaf5bb7ea72d789a5dceca1efb970eacb64b8e2057932ae1c72faffea068453",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "b03171171287d8f762f7eb5ffa6b53ed4391e3c9533e2bff49b0a721bc6bddde",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "41131975f58e1bdd889eb0148afc9057e0e2c934c07df783d930cdca7caeb680",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "bca5649ef3b32c6ad66a835544c0c485c759b78aa3e32c07eb7803a54adc9270",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "8da74b51244edcbb900772962785809a9caf09866150314efc280b7dda24240f",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "0e1c4293cd2bb38c71a2047a6313b8594c040726e49b3262c58a92d9f621d480",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "a6d7de205413011ac2ce9c2893f43abea241b1c4caea070e81af6d3e1da56ae6",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "c28bdbb96ac5a19bed80a7393b1799a2490c7f92fc45b3c9902c71646fc5aa2f",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "f9f4e3d5ea5a3d7e71fde42212f256b63db8cd2bc73e77deec28175fdad38567",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "8beb984aa6d382f0c5f3e9b65897cc42bcacee6f699a513d8bf4e20e1903188e",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "0f9aeb74101d30f128556ddbda5f7ec863b1bddf651f84e3307cc21a601c63a7",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "bf23d236dea34c3a27b44e997c68671df9814a30af03fb14fd928e6d1a0b6c48",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "6e6c542d905602d805f7e756cff513afdf0bb92cd6f6d9c0daa79801ad28aca3",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "55faf8290d436917f63d5e80fe0c987249bbe660ca3745e36397606c0c2e09de",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "78d27f1268e03c9cb047f2772917bdf8ecf522d0562d248218a34f8e1ebc764e",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "7fdcdd20b6d702ceb26d12d214c18d571cb379ef3f71bdafabf40703de0a4177",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "87c950bceb34ca5a6e95755724f45d729f6265c2b9b53f758ad2b70431ad398b",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "ccb84afc952db9e79d609338b2fe084e25edeffbde09c5a550d34d87e9ba1d0d",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "87fa8545505d762526cf3d730402caa3487778a225e2e6f2925e1f3fb21cf5f8",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "4763cb6522989397d1cdf8ea6c13c9bb6da3f20a9f232e4a83ca3a94918a8aa4",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "cc6d58f9e79ce510552e4f26a77001299c2e2086674f94a3c28812b3c60c8884",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "55c752d69cb2bca2d8327417c76204c56b521f8e2e5130b1278c2981eef209e5",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "676219186031a1c6d58d0b42745ee683020e913057e276109b066730da1c99dd",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "b28dd0c9a4e3146de3cd3652b4816a5eb9d547520cf59fd3a76cb2ef97522cf6",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "e967b25d028cb295873bbe0e885f90b6248ac4d4fccc91adcd4344a07672c764",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "a83499664dd9e1b746adf56333436918937d4e54727696487c574752820fd3e2",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "2990bf47306b07c6d3d57fbd677fca66a7dac2c8911f5299e2ef540868b6853e",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "2a082d8ff04e6d545e39d79e96baa1440c550dfbc8f7fe104106d0fdfabf2f52",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "4451ab38a0639ad3a18a4afe5c6e8ef3ce3f93e6cb91acd0ac95dd83944d98ef",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "9da4a95adc24f578fa46c2b382eac3d71b876270d9e6e8da4a0d1e16c8aa1649",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "254ca21b818b421b939635d2a2a05ee06b6379d8de6208a816203a1a333aab55",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "da961e6258b1421716b2c7c38be0348f737c063ba1951ae89598006aab672bae",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "4557c0d0e26f4b0fadbdb351c57e7415130777d4f705a53e3577a070d1b38b53",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "cd51e99a335c168819528924a38889032310979a4b6641a641c7878c494b1420",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "2bdf23c9b4bb2b99cb00d8550dc246c3a67a36a45d6d4e5e2604a2d5d38773f2",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "35ac2aff399c5223c3cefdf9997236d7aae61b9b662fc3cb5d8ce4fe667a7f4a",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "b20b00d67ddd8161c769339fb9dbe6a9660c643527637b062a58f1e95900b2c4",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "6003747b16f3f079886cf7f24b90192cbc728cc53bb3c46ec72e992af4c08b05",
+   "looks": 1,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "97a6a67fe0f3b95bfa422e104d89ed6db3fd0db0f7b98a31d5b8df10ca79022c",
+   "looks": 2,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "25c520c3832aa386d4bea6ec92bc6a1d8646fae6bde35bca8d6c39566ab76f66",
+   "looks": 2,
+   "on": "review page"
+  },
+  {
+   "date": "2026-11-09",
+   "sample": "998e3311a4aadc5d2b70ddabc1e6c58641164b4df44527142b4415805da232a4",
+   "looks": 4,
+   "on": "review page"
   }
  ],
- "seal": "5bbdfa841d6613e3d55444d45e8d8d2629a805fc4d91b1dc9bddd24b45a60279",
+ "seal": "ce55c11d563027c62ba4a651f658dc8d566d43535eb4034a193da2d96783440a",
  "files": {
   "plexcache/themes.py": "23e7da79144c1aabd17454d64279d2a5a7e17e7f",
-  "plexcache/web/app.css": "23cc4685184a7f758a9b1769a2b883290c109d00",
-  "plexcache/web/app.js": "9c751c1ab78f373ed334607764d18e9521fe231c",
+  "plexcache/web/app.css": "a5aa5da63bed94b2626562ab2b0113587421ea0a",
+  "plexcache/web/app.js": "6315a39f5287fde3b00e92cae5f98ae89cf93ed9",
   "plexcache/web/apple-touch-icon.png": "5c81853ad26b960043b08ce08002ba01fc43e8c1",
-  "plexcache/web/decor.js": "b24d92f5a481acccef85c3cc2e04245855d544d2",
+  "plexcache/web/decor.js": "dd046250a00a8c856ea98e92e9d26a90c441bbcf",
   "plexcache/web/favicon.ico": "e42931ec410a8ef8cc1a2499eae89962913f4b2c",
   "plexcache/web/fonts/cinzel-latin-ext.woff2": "3cfa50b430ef22ec529317ff0cfc63c633d45f44",
   "plexcache/web/fonts/cinzel-latin.woff2": "a54fd00bf0e964d4d13688d8e8907cf04350e214",
@@ -703,6 +1213,68 @@
   "css .rtile.r-warn": "border-top-color:var(--warn)",
   "css .rtile.r-warn .big": "color:var(--warn)",
   "css .rtiles": "grid-template-columns:repeat(auto-fit,minmax(170px,1fr))",
+  "css .s-aic_gap12_wrap": "align-items:center !important;gap:12px !important;flex-wrap:wrap !important",
+  "css .s-aic_gap12_wrap_mt10": "align-items:center !important;gap:12px !important;flex-wrap:wrap !important;margin-top:10px !important",
+  "css .s-bgc-audio": "background:var(--c-audio)!important",
+  "css .s-bgc-movie": "background:var(--c-movie)!important",
+  "css .s-bgc-res": "background:var(--c-res)!important",
+  "css .s-bgc-tv": "background:var(--c-tv)!important",
+  "css .s-bgguide-bg_bcguide-line_cink": "background:var(--guide-bg)!important;border-color:var(--guide-line)!important;color:var(--ink)!important",
+  "css .s-dflex_aic_gap8_m6-0-2": "display:flex !important;align-items:center !important;gap:8px !important;margin:6px 0 2px !important",
+  "css .s-dflex_gap10_aic_m4-0-8_wrap": "display:flex !important;gap:10px !important;align-items:center !important;margin:4px 0 8px !important;flex-wrap:wrap !important",
+  "css .s-dflex_jcsb_fs13": "display:flex !important;justify-content:space-between !important;font-size:13px !important",
+  "css .s-dflex_jcsb_gap10_wrap_aic": "display:flex !important;justify-content:space-between !important;gap:10px !important;flex-wrap:wrap !important;align-items:center !important",
+  "css .s-dflex_wrap_gap10_aic_jcsb": "display:flex !important;flex-wrap:wrap !important;gap:10px !important;align-items:center !important;justify-content:space-between !important",
+  "css .s-dflex_wrap_jcsb_gap10_aib": "display:flex !important;flex-wrap:wrap !important;justify-content:space-between !important;gap:10px !important;align-items:baseline !important",
+  "css .s-dflex_wrap_jcsb_gap8_aib": "display:flex !important;flex-wrap:wrap !important;justify-content:space-between !important;gap:8px !important;align-items:baseline !important",
+  "css .s-flex1": "flex:1 !important",
+  "css .s-flex1-1-0": "flex:1 1 0 !important",
+  "css .s-fs12": "font-size:12px !important",
+  "css .s-fs13": "font-size:13px !important",
+  "css .s-fs13_m10-0-0": "font-size:13px !important;margin:10px 0 0 !important",
+  "css .s-fs13_m8-0-0": "font-size:13px !important;margin:8px 0 0 !important",
+  "css .s-fs13_mt12": "font-size:13px !important;margin-top:12px !important",
+  "css .s-fs13_mt6": "font-size:13px !important;margin-top:6px !important",
+  "css .s-fs14": "font-size:14px !important",
+  "css .s-fs28": "font-size:28px !important",
+  "css .s-fw400_fs14": "font-weight:400 !important;font-size:14px !important",
+  "css .s-fw600": "font-weight:600 !important",
+  "css .s-fw600_m12-0-8": "font-weight:600 !important;margin:12px 0 8px !important",
+  "css .s-m0": "margin:0 !important",
+  "css .s-m0-0-10": "margin:0 0 10px !important",
+  "css .s-m0-0-12": "margin:0 0 12px !important",
+  "css .s-m14-0-0": "margin:14px 0 0 !important",
+  "css .s-m16-0-8": "margin:16px 0 8px !important",
+  "css .s-m18-0": "margin:18px 0 !important",
+  "css .s-m4-0-0": "margin:4px 0 0 !important",
+  "css .s-m4-0-0-18": "margin:4px 0 0 18px !important",
+  "css .s-m4-0-0-26": "margin:4px 0 0 26px !important",
+  "css .s-m6-0-0": "margin:6px 0 0 !important",
+  "css .s-m6-0-12": "margin:6px 0 12px !important",
+  "css .s-m8-0": "margin:8px 0 !important",
+  "css .s-m8-0-0": "margin:8px 0 0 !important",
+  "css .s-m8-0-0_fw600": "margin:8px 0 0 !important;font-weight:600 !important",
+  "css .s-m8-0-0_pl20": "margin:8px 0 0 !important;padding-left:20px !important",
+  "css .s-m8-0-12": "margin:8px 0 12px !important",
+  "css .s-maxw420": "max-width:420px !important",
+  "css .s-maxw520": "max-width:520px !important",
+  "css .s-maxw520_mt4": "max-width:520px !important;margin-top:4px !important",
+  "css .s-maxw980": "max-width:980px !important",
+  "css .s-mb14": "margin-bottom:14px !important",
+  "css .s-mb20": "margin-bottom:20px !important",
+  "css .s-mb6": "margin-bottom:6px !important",
+  "css .s-minw200": "min-width:200px !important",
+  "css .s-minw240": "min-width:240px !important",
+  "css .s-mt0": "margin-top:0 !important",
+  "css .s-mt10": "margin-top:10px !important",
+  "css .s-mt12": "margin-top:12px !important",
+  "css .s-mt14": "margin-top:14px !important",
+  "css .s-mt4": "margin-top:4px !important",
+  "css .s-mt6": "margin-top:6px !important",
+  "css .s-mt8": "margin-top:8px !important",
+  "css .s-mt8_maxw520": "margin-top:8px !important;max-width:520px !important",
+  "css .s-w60p": "width:60% !important",
+  "css .s-wspre": "white-space:pre-wrap !important",
   "css .sbar": "display:flex;height:22px;gap:2px",
   "css .sbar>.fempty": "border-radius:4px;background:var(--track);color:var(--muted);font-weight:400",
   "css .sbar>div": "display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;color:#fff;overflow:hidden;white-space:nowrap",
@@ -976,83 +1548,12 @@
   "file plexcache/web/theatre-playing.svg": "4b85ba976c570d2960780fd8d664ec69d568ea60866b559979b6552cc4808466",
   "file plexcache/web/theatre-tab.svg": "2bae01fbcba5d5fc60a168b6ddb9ebba846e7a70331c602fee51cbaefe9d8905",
   "file plexcache/web/theatre.svg": "b1f19018c55186358b1dc07ab2d851953182be9852ea855454113deecfc419d4",
-  "inline --P:…px;--period:…s": "",
-  "inline --cols:…": "",
-  "inline --front:…px;stroke-width:…;opacity:…;stroke-dasharray:… …": "",
-  "inline align-items:center;gap:12px;flex-wrap:wrap": "",
-  "inline align-items:center;gap:12px;flex-wrap:wrap;margin-top:10px": "",
-  "inline background:var(--c-audio)": "",
-  "inline background:var(--c-movie)": "",
-  "inline background:var(--c-res)": "",
-  "inline background:var(--c-tv)": "",
-  "inline background:var(--guide-bg);border-color:var(--guide-line);color:var(--ink)": "",
-  "inline color:…": "",
-  "inline display:flex;align-items:center;gap:8px;margin:6px 0 2px": "",
-  "inline display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between": "",
-  "inline display:flex;flex-wrap:wrap;justify-content:space-between;gap:10px;align-items:baseline": "",
-  "inline display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px;align-items:baseline": "",
-  "inline display:flex;gap:10px;align-items:center;margin:4px 0 8px;flex-wrap:wrap": "",
-  "inline display:flex;justify-content:space-between;font-size:13px": "",
-  "inline display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center": "",
-  "inline flex:1": "",
-  "inline flex:1 1 0": "",
-  "inline flex:… 0 0": "",
-  "inline flex:… 1 0": "",
-  "inline font-size:13px": "",
-  "inline font-size:13px;margin-top:12px": "",
-  "inline font-size:13px;margin-top:6px": "",
-  "inline font-size:13px;margin:8px 0 0": "",
-  "inline font-size:28px": "",
-  "inline font-weight:400;font-size:14px": "",
-  "inline font-weight:600": "",
-  "inline font-weight:600;margin:12px 0 8px": "",
-  "inline left:…%;top:…px": "",
-  "inline margin-bottom:14px": "",
-  "inline margin-bottom:20px": "",
-  "inline margin-bottom:6px": "",
-  "inline margin-top:0": "",
-  "inline margin-top:10px": "",
-  "inline margin-top:12px": "",
-  "inline margin-top:14px": "",
-  "inline margin-top:4px": "",
-  "inline margin-top:6px": "",
-  "inline margin-top:8px": "",
-  "inline margin-top:8px;max-width:520px": "",
-  "inline margin:0": "",
-  "inline margin:0 0 10px": "",
-  "inline margin:0 0 12px": "",
-  "inline margin:14px 0 0": "",
-  "inline margin:16px 0 8px": "",
-  "inline margin:4px 0 0": "",
-  "inline margin:4px 0 0 18px": "",
-  "inline margin:4px 0 0 26px": "",
-  "inline margin:6px 0 0": "",
-  "inline margin:6px 0 12px": "",
-  "inline margin:8px 0": "",
-  "inline margin:8px 0 0": "",
-  "inline margin:8px 0 0;font-weight:600": "",
-  "inline margin:8px 0 12px": "",
-  "inline max-width:420px": "",
-  "inline max-width:520px": "",
-  "inline max-width:980px": "",
-  "inline min-width:200px": "",
-  "inline min-width:240px": "",
-  "inline stroke:…": "",
-  "inline stroke:…;fill:…": "",
-  "inline white-space:pre-wrap": "",
-  "inline width:60%": "",
-  "inline width:…": "",
-  "inline width:…%": "",
-  "inline width:…%;background:var(--c-audio)": "",
-  "inline width:…%;background:var(--c-movie)": "",
-  "inline width:…%;background:var(--c-res)": "",
-  "inline width:…%;background:var(--c-tv)": "",
   "mark decor.js draws | computer, decorations on:  | style": "3b13cbaaeeaafc4b1a84243549bd444922819e1f276b8b685c562240e167b1fe",
   "mark decor.js draws | computer, decorations on: body > div.shell > div.main[1] > div.card[3] | vine at 0": "fe177ef5c425cbbde1f7cd7b669b37b742c4b8d86f604f60881ac45711548498",
-  "mark decor.js draws | computer, decorations on: body > div.shell > div.main[1] > div.card[4] > div.mgdrop[3] | edgevine at 0": "5ddd15dd62f809aa52d312a29e0c5fc318cac949ecdefea78c06e56843f6cdd9",
-  "mark decor.js draws | computer, decorations on: body > div.shell > div.main[1] > div.card[4] > div.mgkeep[1] | edgevine at 0": "5ddd15dd62f809aa52d312a29e0c5fc318cac949ecdefea78c06e56843f6cdd9",
+  "mark decor.js draws | computer, decorations on: body > div.shell > div.main[1] > div.card[4] > div.mgdrop[3] | edgevine at 0": "b87f7f2ab99d6b00ad754e3469e66be438919ab62ded6a2c3dbbdd72b3ffd5db",
+  "mark decor.js draws | computer, decorations on: body > div.shell > div.main[1] > div.card[4] > div.mgkeep[1] | edgevine at 0": "b87f7f2ab99d6b00ad754e3469e66be438919ab62ded6a2c3dbbdd72b3ffd5db",
   "mark decor.js draws | computer, decorations on: body > div.shell > div.main[1] > div.card[4] | vine at 4": "f5a87106ef98c667d1c3af10f697a593a172ff7db4772bb926ec247b6537a202",
-  "mark decor.js draws | computer, decorations on: body > div.shell > div.main[1] > div.card[5] > div.meter.busy[2] | mvine at 1": "4d2aaecca3ad1564e472917b50bb98dcbbba5fb202eee233a686bad459b8eedb",
+  "mark decor.js draws | computer, decorations on: body > div.shell > div.main[1] > div.card[5] > div.meter.busy[2] | mvine at 1": "a0348e6b5b0da2c90bb8ec8649a2d4817f185ef5b622528b144a1795d8dcf1e2",
   "mark decor.js draws | computer, decorations on: body > div.shell > div.main[1] > div.card[5] > div.meter.thin[1] | mvine at 1": "f268272e0688bbb3193ec2cb1e2b93bde0c8a5b63375f827609382d65faf48bb",
   "mark decor.js draws | computer, decorations on: body > div.shell > div.main[1] > div.card[5] > div.meter[0] | mvine at 1": "671a8b10b7569520f00bcdc3e52491dccc4c4313dbe768a19a455341d424d445",
   "mark decor.js draws | computer, decorations on: body > div.shell > div.main[1] > div.card[5] > div.meter[3] | mvine at 1": "a0c4ce22afd3c1aa6bf2df2791a7add229a995a9a3436d8b5530d8c594ff6529",
@@ -1060,14 +1561,14 @@
   "mark decor.js draws | computer, decorations on: body > div.shell > div.main[1] > div.tiles[2] > div.card.tile[0] | vine at 0": "1d222970d40b37ce611099df580e42740b9b5da2a0371b152165d4368af9b2ca",
   "mark decor.js draws | computer, decorations on: body > div.shell > div.main[1] > div.tiles[2] > div.card.tile[1] | vine at 0": "60a14a2eba8df4017ebb40f1ed7c350b0765d78eaac41ad68c9ed500d944a1bf",
   "mark decor.js draws | computer, decorations on: body > div.shell > div.main[1] > div.tiles[2] > div.card.tile[2] | vine at 0": "6b69b71dac71239695a4c029ff6a7772be5afa42fab0d10a3f0c5e328e3776c4",
-  "mark decor.js draws | computer, decorations on: body > div.shell > div.main[1] | filmline at 1": "120e2655f51187b10e9259160612d3ff4bda93dcf9005d5dbfb08ee4caeca014",
+  "mark decor.js draws | computer, decorations on: body > div.shell > div.main[1] | filmline at 1": "e3ee09e056430ef05aa67cdec86d628b2e21f9465d43fe5fc5adfd0ed706c333",
   "mark decor.js draws | computer, decorations on: body > div.shell | seamvine down at 1": "5c475b266eebc123d4d1e350c23e5533fd0d78e931ba3619757e6710c89e36dd",
   "mark decor.js draws | phone, decorations on:  | style": "3b13cbaaeeaafc4b1a84243549bd444922819e1f276b8b685c562240e167b1fe",
   "mark decor.js draws | phone, decorations on: body > div.shell > div.main[1] > div.card[3] | vine at 0": "47f46e1073744c495f9e02026ab541da7d18ed1553d990e916fe25bae958a4c9",
-  "mark decor.js draws | phone, decorations on: body > div.shell > div.main[1] > div.card[4] > div.mgdrop[3] | edgevine at 0": "de0dc787a20da2c9859dfbe628c8622cc3b272b00e260d6d19bd97a28a29b714",
-  "mark decor.js draws | phone, decorations on: body > div.shell > div.main[1] > div.card[4] > div.mgkeep[1] | edgevine at 0": "de0dc787a20da2c9859dfbe628c8622cc3b272b00e260d6d19bd97a28a29b714",
+  "mark decor.js draws | phone, decorations on: body > div.shell > div.main[1] > div.card[4] > div.mgdrop[3] | edgevine at 0": "390e324535d413936bb2eac11a8ef3e0273bc7ac8d4d9ba67c0899a9d3854e52",
+  "mark decor.js draws | phone, decorations on: body > div.shell > div.main[1] > div.card[4] > div.mgkeep[1] | edgevine at 0": "390e324535d413936bb2eac11a8ef3e0273bc7ac8d4d9ba67c0899a9d3854e52",
   "mark decor.js draws | phone, decorations on: body > div.shell > div.main[1] > div.card[4] | vine at 4": "2740bbe7cc5c42d40d5248ecdd4b3e86db8a43d36f850e5116cef18aeddae01f",
-  "mark decor.js draws | phone, decorations on: body > div.shell > div.main[1] > div.card[5] > div.meter.busy[2] | mvine at 1": "4d2aaecca3ad1564e472917b50bb98dcbbba5fb202eee233a686bad459b8eedb",
+  "mark decor.js draws | phone, decorations on: body > div.shell > div.main[1] > div.card[5] > div.meter.busy[2] | mvine at 1": "a0348e6b5b0da2c90bb8ec8649a2d4817f185ef5b622528b144a1795d8dcf1e2",
   "mark decor.js draws | phone, decorations on: body > div.shell > div.main[1] > div.card[5] > div.meter.thin[1] | mvine at 1": "f268272e0688bbb3193ec2cb1e2b93bde0c8a5b63375f827609382d65faf48bb",
   "mark decor.js draws | phone, decorations on: body > div.shell > div.main[1] > div.card[5] > div.meter[0] | mvine at 1": "671a8b10b7569520f00bcdc3e52491dccc4c4313dbe768a19a455341d424d445",
   "mark decor.js draws | phone, decorations on: body > div.shell > div.main[1] > div.card[5] > div.meter[3] | mvine at 1": "a0c4ce22afd3c1aa6bf2df2791a7add229a995a9a3436d8b5530d8c594ff6529",
@@ -1075,7 +1576,7 @@
   "mark decor.js draws | phone, decorations on: body > div.shell > div.main[1] > div.tiles[2] > div.card.tile[0] | vine at 0": "6ccc582a07823d031d3170ab194a955469f91820976020d262958d18b9dd759c",
   "mark decor.js draws | phone, decorations on: body > div.shell > div.main[1] > div.tiles[2] > div.card.tile[1] | vine at 0": "cf823eb8a455feb438936b6ba32725f74891835a8840523c1e6e9a0257c35a55",
   "mark decor.js draws | phone, decorations on: body > div.shell > div.main[1] > div.tiles[2] > div.card.tile[2] | vine at 0": "180e38bd460e924b4f3319b8174372776935205e35c6a552d7a0489d6e6e482d",
-  "mark decor.js draws | phone, decorations on: body > div.shell > div.main[1] | filmline at 1": "8896f2d53f5c7895bc852897ac6cc488f74522ec86526eb37de47a2b71ca1770",
+  "mark decor.js draws | phone, decorations on: body > div.shell > div.main[1] | filmline at 1": "70b52ed50faa6ae6483b6418beac9a0aee16644295ff95fbcd3cc00835287265",
   "mark decor.js draws | phone, decorations on: body > div.shell | seamvine across at 2": "33ac47dcae4c1baec130a90686b2b9e96da249555e7864e6f1118e506ba7ffb3",
   "mark themes.py css": "def css(themes_settings: dict | None) -> str: out = [\"/* Dionysus themes (plexcache/themes.py): the page shows the one named by <html data-theme data-mode> */\"] for t in everything((themes_settings or {}).get(\"custom\")): for mode in (\"light\", \"dark\"): props = [f\"--{k}:{v}\" for k, v in t[mode][\"colors\"].items()] props += [f\"--sans:{_FONT_STACK[t['fonts']['text']]}\", f\"--head:{_FONT_STACK[t['fonts']['headings']]}\", f\"--spots-a:{t['decor']['spots'] / 100:g}\", f\"color-scheme:{mode}\"] out.append(f':root[data-theme=\"{t[\"id\"]}\"][data-mode=\"{mode}\"]{{{\";\".join(props)}}}') return \"\\n\".join(out) + \"\\n\"",
   "mark themes.py script": "def script(themes_settings: dict | None) -> str: v = \"?v=__BUILD__\" info = {t[\"id\"]: t[\"decor\"] for t in everything((themes_settings or {}).get(\"custom\"))} return (\"(function(){let INFO=\" + json.dumps(info, separators=(\",\", \":\")) + \",SEL=\" + json.dumps(resolve(themes_settings), separators=(\",\", \":\")) + \";\\n\" \"const d=document.documentElement,mq=window.matchMedia?window.matchMedia(\\\"(prefers-color-scheme: dark)\\\"):null;\\n\" \"const ME=document.currentScript,NONCE=ME&&ME.nonce||\\\"\\\",ASSETS=\" + json.dumps(ASSETS, separators=(\",\", \":\")) + \",GOT={};\\n\" \"function need(x){Object.keys(ASSETS).forEach(function(f){if(GOT[f]||!ASSETS[f].some(function(k){return x[k];}))return;GOT[f]=true;\\n\" \"const s=document.createElement(\\\"script\\\");s.src=\\\"/static/\\\"+f+\" + json.dumps(v) + \";if(NONCE)s.nonce=NONCE;(document.head||d).appendChild(s);});}\\n\" \"function own(){try{const o=JSON.parse(localStorage.getItem(\\\"pc-theme\\\")||\\\"null\\\");return o&&typeof o===\\\"object\\\"?o:null;}catch{return null;}}\\n\" \"function apply(){const o=own()||{};let id=INFO[o.theme]?o.theme:SEL.theme,m=o.mode||SEL.mode;if(!INFO[id])id=\\\"\" + DEFAULT + \"\\\";\\n\" \"if(m===\\\"auto\\\")m=mq&&mq.matches?\\\"dark\\\":\\\"light\\\";if(m!==\\\"dark\\\")m=\\\"light\\\";const x=INFO[id];\\n\" \"d.setAttribute(\\\"data-theme\\\",id);d.setAttribute(\\\"data-mode\\\",m);d.setAttribute(\\\"data-vines\\\",x.vines?\\\"on\\\":\\\"off\\\");d.setAttribute(\\\"data-film\\\",x.film?\\\"on\\\":\\\"off\\\");d.setAttribute(\\\"data-spots\\\",x.spots?\\\"on\\\":\\\"off\\\");d.setAttribute(\\\"data-grapes\\\",x.grapes?\\\"on\\\":\\\"off\\\");\\n\" \"need(x);if(window.PCDECOR)window.PCDECOR.themed();}\\n\" \"apply();if(mq){if(mq.addEventListener)mq.addEventListener(\\\"change\\\",apply);else if(mq.addListener)mq.addListener(apply);}\\n\" \"window.PCTHEME={apply:apply,use:function(sel,info){if(info)INFO=info;SEL=sel;apply();},own:own,\\n\" \"setOwn:function(o){try{if(o)localStorage.setItem(\\\"pc-theme\\\",JSON.stringify(o));else localStorage.removeItem(\\\"pc-theme\\\");}catch{/* storage unavailable */}apply();}};})();\\n\")",
@@ -1091,7 +1592,7 @@
   "svg <button type=\"button\" class=\"signout\" title=\"…\" aria-label=\"…\"><svg viewBox=\"0 0 24 24\" width=\"20\" height=\"20\" aria-hidden=\"true\"><path fill=\"currentColor\" d=\"M17 7l-1.41 1.41L18.17 11H8v2h10.17l-2.58 2.58L17 17l5-5zM4 5h8V3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h8v-2H4V5z\"/></svg></button>": "",
   "svg <circle cx=\"18\" cy=\"18\" r=\"3\"/><circle cx=\"6\" cy=\"6\" r=\"3\"/><path d=\"M13 6h3a2 2 0 0 1 2 2v7M11 18H8a2 2 0 0 1-2-2V9\"/>": "",
   "svg <circle cx=\"18\" cy=\"18\" r=\"3\"/><circle cx=\"6\" cy=\"6\" r=\"3\"/><path d=\"M6 21V9a9 9 0 0 0 9 9\"/>": "",
-  "svg <circle cx=\"…\" cy=\"…\" r=\"…\" style=\"stroke:…;fill:…\" stroke-width=\"2\"><title>…</title></circle>": "",
+  "svg <circle cx=\"…\" cy=\"…\" r=\"…\" data-css=\"stroke:…;fill:…\" stroke-width=\"2\"><title>…</title></circle>": "",
   "svg <div class=\"lname…\">…<div class=\"lcool\">…</div></div><div class=\"lline\"><svg viewBox=\"0 0 … …\" preserveAspectRatio=\"none\" aria-hidden=\"true\"><line x1=\"0\" x2=\"…\" y1=\"…\" y2=\"…\"/><line x1=\"0\" x2=\"…\" y1=\"…\" y2=\"…\"/>…</svg>…</div><div class=\"lsub\"></div>…<div class=\"lsub lsamp\">…</div>…": "",
   "svg <div class=\"pick\" data-on=\"…\"><button type=\"button\" class=\"pick-btn\" id=\"…\" aria-haspopup=\"listbox\" aria-expanded=\"false\" aria-label=\"…: …\">…<svg class=\"pick-caret\" viewBox=\"0 0 24 24\" width=\"16\" height=\"16\" aria-hidden=\"true\"><path fill=\"currentColor\" d=\"M7 10l5 5 5-5z\"/></svg></button><ul class=\"pick-list\" role=\"listbox\" aria-label=\"…\" hidden>…</ul></div>": "",
   "svg <g><title>…</title><rect class=\"smissbar\" x=\"…\" y=\"…\" width=\"…\" height=\"…\" rx=\"2\"/><rect class=\"shitbar\" x=\"…\" y=\"…\" width=\"…\" height=\"…\" rx=\"2\"/></g>": "",
@@ -1126,7 +1627,7 @@
   "svg <path d=\"m16 3 4 4-4 4M20 7H4M8 21l-4-4 4-4M4 17h16\"/>": "",
   "svg <path d=\"m18.84 12.25 1.72-1.71a5 5 0 0 0-7.07-7.07l-1.72 1.71M5.17 11.75l-1.71 1.71a5 5 0 0 0 7.07 7.07l1.71-1.71M8 2v3M2 8h3M16 19v3M19 16h3\"/>": "",
   "svg <path d=\"m3 17 2 2 4-4M3 7l2 2 4-4M13 6h8M13 12h8M13 18h8\"/>": "",
-  "svg <path d=\"…\" fill=\"none\" style=\"stroke:…\" stroke-width=\"…\" stroke-linejoin=\"round\" stroke-linecap=\"round\"/>": "",
+  "svg <path d=\"…\" fill=\"none\" data-css=\"stroke:…\" stroke-width=\"…\" stroke-linejoin=\"round\" stroke-linecap=\"round\"/>": "",
   "svg <path fill=\"#0095D5\" d=\"M24 10.049v5.114l-10.949 6.324v-5.114L24 10.049zm-24 0v5.114l10.956 6.324v-5.114L0 10.049zm12.004-.605l-4.433 2.559 4.433 2.559 4.429-2.559-4.429-2.559zm10.952-1.207l-9.905-5.723v5.118l5.473 3.164 4.432-2.559zm-12-.605V2.513L1.044 8.236l4.432 2.555 5.48-3.159z\"/>": "",
   "svg <path fill=\"#0891D1\" d=\"M12 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0zm0 2.412c3.115 0 5.885 1.5 7.629 3.815a1.834 1.834 0 0 1 1.564 3.162c.23.818.354 1.68.354 2.57a9.504 9.504 0 0 1-2.166 6.05c.128.281.189.595.162.92a1.854 1.854 0 0 1-2.004 1.678 1.86 1.86 0 0 1-.877-.322A9.486 9.486 0 0 1 12 21.505c-3.84 0-7.154-2.277-8.668-5.552-.3-.01-.601-.092-.879-.254-.858-.51-1.144-1.634-.633-2.513.164-.276.39-.493.653-.643a9.62 9.62 0 0 1-.02-.584c0-5.265 4.282-9.547 9.547-9.547zm0 1.227a8.311 8.311 0 0 0-8.31 8.683c.22.036.439.111.644.23.323.2.564.484.713.805l6.984-.644a1.78 1.78 0 0 1 .787-1.08c.288-.19.612-.286.936-.295.34-.01.68.08.978.254l3.51-2.914a1.82 1.82 0 0 1 .317-1.84A8.3 8.3 0 0 0 12 3.638zm7.027 5.98-3.502 2.91a1.829 1.829 0 0 1-.23 1.719l1.904 2.744c.212-.06.436-.085.668-.066.238.024.46.092.66.193a8.285 8.285 0 0 0 1.793-5.16 8.38 8.38 0 0 0-.265-2.092 1.835 1.835 0 0 1-1.028-.248zm-6.886 4.315-6.975.644a1.8 1.8 0 0 1-.66 1.004A8.312 8.312 0 0 0 12 20.279a8.294 8.294 0 0 0 3.938-.986 1.845 1.845 0 0 1-.075-.69c.028-.341.148-.65.332-.908L14.29 14.95a1.839 1.839 0 0 1-2.148-1.015z\"/>": "",
   "svg <path fill=\"#18BCF2\" d=\"M22.939 10.627 13.061.749a1.505 1.505 0 0 0-2.121 0l-9.879 9.878C.478 11.21 0 12.363 0 13.187v9c0 .826.675 1.5 1.5 1.5h9.227l-4.063-4.062a2.034 2.034 0 0 1-.664.113c-1.13 0-2.05-.92-2.05-2.05s.92-2.05 2.05-2.05 2.05.92 2.05 2.05c0 .233-.041.456-.113.665l3.163 3.163V9.928a2.05 2.05 0 0 1-1.15-1.84c0-1.13.92-2.05 2.05-2.05s2.05.92 2.05 2.05a2.05 2.05 0 0 1-1.15 1.84v8.127l3.146-3.146A2.051 2.051 0 0 1 18 12.239c1.13 0 2.05.92 2.05 2.05s-.92 2.05-2.05 2.05c-.25 0-.488-.047-.709-.13L12.9 20.602v3.088h9.6c.825 0 1.5-.675 1.5-1.5v-9c0-.825-.477-1.977-1.061-2.561z\"/>": "",
@@ -1140,7 +1641,7 @@
   "svg <rect class=\"covhit\" x=\"…\" y=\"0\" width=\"…\" height=\"…\" data-cov-n=\"…\"/></svg>": "",
   "svg <rect class=\"hit\" x=\"…\" y=\"…\" width=\"…\" height=\"…\" data-tip=\"…\"/>": "",
   "svg <rect class=\"s…\" x=\"…\" y=\"…\" width=\"…\" height=\"…\"/>": "",
-  "svg <rect x=\"0\" y=\"0\" width=\"…\" height=\"…\" rx=\"…\" style=\"--front:…px;stroke-width:…;opacity:…;stroke-dasharray:… …\"/>": "",
+  "svg <rect x=\"0\" y=\"0\" width=\"…\" height=\"…\" rx=\"…\" data-css=\"--front:…px;stroke-width:…;opacity:…;stroke-dasharray:… …\"/>": "",
   "svg <rect x=\"3\" y=\"11\" width=\"18\" height=\"11\" rx=\"2\"/><path d=\"M7 11V7a5 5 0 0 1 10 0v4\"/>": "",
   "svg <rect x=\"3\" y=\"3\" width=\"18\" height=\"18\" rx=\"2\"/><path d=\"M7 3v18M17 3v18M3 8h4M3 16h4M17 8h4M17 16h4M7 12h10\"/>": "",
   "svg <rect x=\"8\" y=\"8\" width=\"14\" height=\"14\" rx=\"2\"/><path d=\"M4 16V4a2 2 0 0 1 2-2h12\"/>": "",
@@ -1148,7 +1649,7 @@
   "svg <span class=\"mode-ic mk-…\" role=\"img\" title=\"…\" aria-label=\"…\"><svg viewBox=\"0 0 24 24\" width=\"14\" height=\"14\" aria-hidden=\"true\" fill=\"currentColor\">…</svg></span>": "",
   "svg <svg class=\"brandmark\" viewBox=\"0 0 24 24\" aria-hidden=\"true\">…</svg>": "",
   "svg <svg class=\"chart\" viewBox=\"0 0 … …\" role=\"img\" aria-label=\"…\">": "",
-  "svg <svg class=\"comet\" aria-hidden=\"true\" width=\"…\" height=\"…\" style=\"--P:…px;--period:…s\">": "",
+  "svg <svg class=\"comet\" aria-hidden=\"true\" width=\"…\" height=\"…\" data-css=\"--P:…px;--period:…s\">": "",
   "svg <svg class=\"grapearrow\" viewBox=\"0 0 64 64\" aria-hidden=\"true\" focusable=\"false\"><g…><path d=\"M4 32H15\" fill=\"none\" stroke=\"var(--leaf)\" stroke-width=\"3\" stroke-linecap=\"round\"/><g transform=\"rotate(-90 32 32) translate(0 -1)\"><path d=\"M33 8c6-8 15-7 19-3-5 4-13 6-19 3z\" fill=\"var(--leaf)\"/>…</g></g></svg>": "",
   "svg <svg class=\"ico pic\" viewBox=\"0 0 24 24\" aria-hidden=\"true\">…</svg>": "",
   "svg <svg class=\"ico\" viewBox=\"0 0 24 24\" width=\"20\" height=\"20\" aria-hidden=\"true\"><path d=\"M12 2 2 7l10 5 10-5-10-5z\"/><path d=\"m2 17 10 5 10-5\"/><path d=\"m2 12 10 5 10-5\"/></svg>": "",

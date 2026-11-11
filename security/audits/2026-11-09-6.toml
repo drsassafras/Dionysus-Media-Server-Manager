@@ -1,0 +1,24 @@
+# Public security audits (dev/audit.py record).
+id = "2026-11-09-6"
+date = 2026-11-09
+commit = "99c6f5abd44b142c184c2e954d4c5d3a76f5379f"
+kind = "partial"
+scope = ["plexcache/optimize/mkv.py:read_layout"]
+uncommitted = true
+prints = [
+    "00a7cae5bafc", "037e1ec406fe", "053dfe537b6d", "05bac5fc1ca9", "0f6c87bfffc1", "0f9eec2c43e9",
+    "108fbeb38ad9", "113e0dcc01b4", "119cb4153406", "1228d2bfe1ec", "15e92c19f754", "1c951b8580f6",
+    "1d55d2e93581", "212fadf5672f", "246bf166b5c6", "2b1826f4aa2f", "2e3234f284f5", "2f313e84a90a",
+    "33f4f0088d08", "39c2b386fdd5", "490f52b5a567", "4d6a12351a3d", "56cc21b1b960", "5779997ab897",
+    "5c2e6671d84a", "5f9c6ba554a2", "60144359b8d0", "60b7375cc665", "62d1a52fcc89", "6892f4142e99",
+    "68e2b11b4cb5", "6aa13b526d9d", "6b7df58d7461", "6c1fde166ee1", "6c44e29564fd", "6c7ddb52bd07",
+    "6e5549a90da8", "748decc75cc1", "78584510e4b7", "798cca983022", "79c489098741", "7e0c880c87df",
+    "864c819fe074", "871119c2579f", "8b28b41fb4a8", "94b31820294e", "94cb7e000a19", "99f9aea29880",
+    "a0013538458d", "a335f3889c47", "a70bd255b813", "a76b8a6d8762", "a76c763ec12a", "abc15f633803",
+    "affe4b4768b1", "b511a50975ba", "bc3e0e0e6bcd", "bdd90b218830", "c353d40dc7d9", "c3c53c7f31cc",
+    "c5ea6620aea4", "c6b7fe808fef", "c7c26e6af0b6", "c9e4f54f0c01", "cd32accfa419", "cde90377be9d",
+    "ce3113ea1f1b", "d08032b9d6a7", "db6b9a2500ff", "dbae6e5870d1", "dcad4a22f680", "dce23e438d61",
+    "dd1ee4498647", "e2699e962a23", "e40de1d55071", "e4cc1d271355", "e52411cfe50b", "e7df2bf4fa79",
+    "ec7c3bc70d4c", "f2625ef5e14d", "f418cdd25f93", "fa3083b99d6e", "fbe73f0b2dad", "fd893b5abb2f",
+    "fec619c6342c", "ff2949f624e0", "ff89a5d4d949",
+]

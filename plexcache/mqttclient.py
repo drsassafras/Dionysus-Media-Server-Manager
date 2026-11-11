@@ -158,11 +158,8 @@ class MQTTClient:
     def start_tls(self) -> None:
         """Step 2 (only with TLS): the encrypted connection."""
         ctx = self.tls_context
-        if ctx is None:
-            ctx = ssl.create_default_context()
-            if not self.verify_tls:
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
+        if ctx is None:  # (no context given: fully verified, or a pinning one with no pin, which refuses before the password goes: F-2026-053)
+            ctx = tlspin.context(bool(self.verify_tls))
         sock = self.sock
         if sock is None:
             raise MQTTError(M("not connected"))

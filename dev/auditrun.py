@@ -37,7 +37,8 @@ from dataclasses import asdict, dataclass, field
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from dev import audit  # noqa: E402
-from dev.progress import counted  # noqa: E402
+
+from callboard.progress import counted  # noqa: E402
 
 # how closely a person read it: their thoroughness, 1 the most thorough
 PEOPLE = {1: "every line traced", 2: "line by line", 3: "read closely", 4: "read through", 5: "skimmed"}

@@ -153,7 +153,7 @@ function seg(choices, now, set) {
 const preferred = p => (p.default || {}).auditor || p.auditors[0];
 const effortOf = p => String((p.default || {}).thoroughness || Object.keys(p.efforts)[0] || "");
 function put(el, ...kids) { el.replaceChildren(...kids.flat(Infinity).filter(k => k != null && k !== false)); }
-const GONE_SAID = "Lost the page's server. Reconnecting… If it doesn't come back within a minute, start it again with python3 dev/audit.py gui (or a on devtools's board): this tab picks it up by itself.";
+const GONE_SAID = "Lost the page's server. Reconnecting… If it doesn't come back within a minute, start it again with python3 dev/audit.py gui (or a on callboard's board): this tab picks it up by itself.";
 let stale = null;   // (the server runs older code than is on disk: a banner says to start it again)
 function old() {
   if (stale) return;
@@ -789,12 +789,12 @@ async function rules(view) {
       try { const r = await api("/api/rules", {text: text.value}); tell(r.ok ? ["Saved. Commit rules.toml in the private repo."] : r.problems); }
       catch (e) { tell([e.message]); }
     }}, "Check and save")), said,
-    h("h2", {}, "The dev rule"), h("p", {class: "mute"}, got.dev.grace_days == null && got.dev.grace_share == null ? "From devtools.toml ([audit], the " + (got.dev.role || "feature") + " role): no grace window is set, so code no audit has seen is only listed." :
-      "From devtools.toml ([audit], the " + (got.dev.role || "feature") + " role): code no audit has seen may wait " + (got.dev.grace_days ?? "any number of") +
+    h("h2", {}, "The dev rule"), h("p", {class: "mute"}, got.dev.grace_days == null && got.dev.grace_share == null ? "From callboard.toml ([audit], the " + (got.dev.role || "feature") + " role): no grace window is set, so code no audit has seen is only listed." :
+      "From callboard.toml ([audit], the " + (got.dev.role || "feature") + " role): code no audit has seen may wait " + (got.dev.grace_days ?? "any number of") +
       " days" + (got.dev.grace_share != null ? ", or until it's " + got.dev.grace_share + "% of the app code" : "") + " (then held as " + (got.dev.level || "warn") + ")."));
 }
 
-// ---------------------------------------------------------------- open while the page is (dev/devpage.py's beat: "stale" says the server runs old code, no answer that it's gone)
+// ---------------------------------------------------------------- open while the page is (callboard/devpage.py's beat: "stale" says the server runs old code, no answer that it's gone)
 window.pageStale = old; window.pageLost = lost;
 /*BEAT*/
 show("overview").then(preload);
