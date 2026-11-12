@@ -5888,7 +5888,7 @@ class TestRunnerTests(unittest.TestCase):
         # a check: the NAS compared, how far out said, nothing copied
         rc, out = callboard()
         self.assertEqual(rc, 0, out)
-        self.assertIn("Sync to nas.example: OUT OF SYNC (1 file to push · 1 new · to push it: callboard push local)", out)
+        self.assertIn("Tour: nas.example: OUT OF SYNC (1 file to push · 1 new · to push it: callboard push local)", out)
         self.assertFalse(os.path.exists(os.path.join(nas, "app", "code.py")))
         self.assertFalse(os.path.exists(os.path.join(folder, "restarts")))
         rc, out = callboard("push")
@@ -5900,14 +5900,14 @@ class TestRunnerTests(unittest.TestCase):
         self.assertNotIn("\n  DEPENDENCIES  -  ALL UP TO DATE", out)   # (its box: none when all are current)
         for said in ("Unit Tests: PASSED (12 tests passed)", "DHTML: PASSED (checked)", "Python Validation: PASSED (0 errors)",
                      "Build Validation: PASSED (0 ShellCheck findings)", "Dependencies: UP TO DATE", "==> Dependencies: export CALLBOARD_UPKEEP=move",
-                     "Style Approval: LOOKS WAITING (2 looks need your approval: /the/page.html)",
+                     "Wardrobe: LOOKS WAITING (2 looks need your approval: /the/page.html)",
                      "Coverage: TESTS TO ADD (2 fresh functions no test reaches)",
                      "Security Audit: CODE TO AUDIT (3 lines no audit has seen)"):
             self.assertIn(said, out)
         self.assertNotIn("\n  new: css .a\n", out)   # (the looks waiting: its block says how many and where, the rest not printed; nor a failure: rc 0)
         rc, out = callboard()   # (a check, in sync: said, nothing restarted)
         self.assertEqual(rc, 0, out)
-        self.assertIn("Sync to nas.example: ALREADY IN SYNC (Nothing copied · nas.example already has these files", out)   # (in its block, as each check is)
+        self.assertIn("Tour: nas.example: ALREADY IN SYNC (Nothing copied · nas.example already has these files", out)   # (in its block, as each check is)
         self.assertRegex(out, r"Unit Tests: ALREADY PASSED \(Passed just now \(\d{4}-\d\d-\d\d \d\d:\d\d\) · 12 tests passed\)")   # (when, and its result from then)
         self.assertRegex(out, r"Python Validation: ALREADY PASSED \(Passed just now \(\d{4}-\d\d-\d\d \d\d:\d\d\) · 0 errors\)")
         self.assertIn("Security Audit: CODE TO AUDIT (3 lines no audit has seen)", out)   # (the audits, read again)
@@ -5926,7 +5926,7 @@ class TestRunnerTests(unittest.TestCase):
                 fh.write("one more\n")
             rc, out = callboard("push")
             self.assertEqual(rc, 0, out)
-            self.assertIn("Sync to nas.example: PASSED (The code has changed since the last test run (the tests or the dev tools, if not the app) · nothing copied · restarted myapp)", out)
+            self.assertIn("Tour: nas.example: PASSED (The code has changed since the last test run (the tests or the dev tools, if not the app) · nothing copied · restarted myapp)", out)
             self.assertIn("Unit Tests: PASSED (12 tests passed)", out)
             rc, out = callboard("push")
             self.assertRegex(out, r"Unit Tests: ALREADY PASSED")
@@ -5935,7 +5935,7 @@ class TestRunnerTests(unittest.TestCase):
         self.assertRegex(out, r"\nLocal Copy[^\n]* · No sample")
         rc, out = callboard("push", NAS_DOWN="1")
         self.assertEqual(rc, 1, out)
-        self.assertIn("Sync to nas.example: CAN'T CONNECT: NOTHING COPIED (ssh: connect to host nas.example: timed out)", out)
+        self.assertIn("Tour: nas.example: CAN'T CONNECT: NOTHING COPIED (ssh: connect to host nas.example: timed out)", out)
         self.assertIn("Unit Tests: PASSED", out)
         # a failing check with --tests-first: nothing copied (nor restarted)
         with open(os.path.join(project, "app", "code.py"), "w", encoding="utf-8") as fh:
@@ -5944,7 +5944,7 @@ class TestRunnerTests(unittest.TestCase):
         rc, out = callboard("push", "--tests-first")
         self.assertEqual(rc, 1, out)
         self.assertEqual(_read(os.path.join(nas, "app", "code.py"), encoding="utf-8"), "one\n")
-        self.assertIn("Sync to nas.example: NOT RUN: UNIT TESTS DIDN'T PASS", out)
+        self.assertIn("Tour: nas.example: NOT RUN: UNIT TESTS DIDN'T PASS", out)
         self.assertIn("\nthe failure\n", out)
         self.assertIn("\nLocal Copy", out)   # (the board's header)
         settings()
@@ -6073,7 +6073,7 @@ class DevToolsUITests(unittest.TestCase):
         rc, out = run("local", "--checks-only")
         self.assertEqual(rc, 1, out)   # (the build check fails: said, as on any run)
         self.assertIn("Local Copy · feature · Checks only", out)   # (the branch has no role set in callboard.toml: "*", feature)
-        self.assertNotIn("Sync to", out)
+        self.assertNotIn("Tour: ", out)
         self.assertFalse(os.path.exists(os.path.join(folder, "ssh-calls")))   # (the NAS wasn't asked)
         self.assertEqual([n for n in os.listdir(os.path.join(folder, "state", "callboard")) if n not in ("runs", "ssh")], [])   # (no result for the NAS)
         names = self.records(folder)
@@ -6118,7 +6118,7 @@ class DevToolsUITests(unittest.TestCase):
         rc, out = run("push", "local", "--sync-only")
         self.assertEqual(rc, 0, out)
         self.assertIn("Local Copy · feature · Push only", out)
-        self.assertIn("Sync to nas.example: PASSED", out)
+        self.assertIn("Tour: nas.example: PASSED", out)
         self.assertNotIn("Dependencies", out)
         self.assertNotIn("Tests and checks", out)
         self.assertEqual(_read(os.path.join(folder, "nas", "app", "code.py"), encoding="utf-8"), "one\n")
@@ -19334,7 +19334,7 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(ids, ["unit", "future", "types", "coverage", "i18n"])   # (the checks whose result the run's is: not the dependencies, nor the looks)
         self.assertEqual([s["id"] for s in got["sections"]], ["sync", "unit", "future", "types", "coverage", "i18n", "upkeep", "style"])
         self.assertEqual((got["header"], got["role"], got["kind"], got["hub_key"], got["letters"]), (["Local Copy · development"], "development", "run", "h",
-                         {"unit": "u", "future": "f", "types": "v", "coverage": "c", "i18n": "t", "upkeep": "d", "style": "w"}))
+                         {"unit": "u", "future": "e", "types": "v", "coverage": "c", "i18n": "t", "upkeep": "d", "style": "w"}))
         unit = got["sections"][1]
         self.assertEqual((unit["cmd"], unit["cwd"], unit["env"]["CALLBOARD_INTEGRATION"], unit["env"]["CALLBOARD_ROLE"], unit["warn"], unit["tell"], unit["not_run_rc"], unit["page"]),
                          ("echo 3 tests passed", folder, "unit", "development", {"rc": 4}, {"rc": 3}, 5, "u"))

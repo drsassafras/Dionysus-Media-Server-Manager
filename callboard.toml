@@ -116,7 +116,7 @@ kind = "tests"
 cmd = "python3 tests/run.py --coverage --exclude WebBuildTests --exclude StyleGuideTests"
 
 [integrations.future]
-title = "Future Tests"
+title = "Previews"
 kind = "tests"
 cmd = "python3 dev/future.py --exclude StyleGuideTests"
 stop_with = ["unit"]
@@ -179,7 +179,7 @@ skipped = "info"
 [unit.release]
 warnings = "fail"
 
-# Future Tests: the suite on the next Python — never a release's concern.
+# Previews (the future tests): the suite on the next Python — never a release's concern.
 [future]
 failures = "fail"
 warnings = "info"
