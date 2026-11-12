@@ -321,16 +321,17 @@ class Gatherer:
                 if idle:
                     self.working, self.current = False, None
                 else:
+                    # (taken off the queue and marked as being read in one step: between the two, busy() said nothing
+                    # was read for it, and a page waiting on it saw only its last read's error — before this read was done)
                     key, what = self.queue.pop(0)
+                    self.current, self._reading = key, what
+                    if self.urgent == key:
+                        self.urgent = None
             if idle:
                 ev = getattr(self.app, "evaluator", None)
                 if ev is not None:
                     ev.kick()  # (what waits for the data layer to be done — the optimizer's scan of every library — can go now)
                 return
-            with self.lock:
-                self.current, self._reading = key, what
-                if self.urgent == key:
-                    self.urgent = None
             left: tuple[str, ...] = ()
             try:
                 stale = tuple(w for w in what if not self.fresh(key, (w,)))

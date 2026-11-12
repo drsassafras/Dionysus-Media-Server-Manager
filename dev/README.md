@@ -16,7 +16,7 @@ This folder holds what you need to try changes on a real TrueNAS before pushing 
 | `style.py`, `style-guide.json`, `style-sample.js`, `decor-draws.js` | **The style guide**: every look the app may wear, each approved by the maintainer from a sample. `style.py check` lists what's new, changed or gone (the suite fails on it), `sample` photographs those in each theme and mode, `approve` (the maintainer only, at a terminal) adds them. See below. |
 | `make_fixtures.py` | Makes the optimizer's test files (`tests/fixtures/*.mkv`: many real-world features, a few hundred KB) and the snapshot of what optimizing them gives. Run it with `--snapshot` after checking a change the tests caught (needs ffmpeg and MKVToolNix). |
 
-**callboard itself is a project of its own** ([github.com/drsassafras/callboard](https://github.com/drsassafras/callboard), checked out beside this one: `~/Code/callboard`), installed once on a computer and used by every project. Its board, rules, check tools and UI used to be files of this folder; what's left here is what's Plex Cache's own, built on it (`dev/__init__.py` finds the install: `CALLBOARD_HOME`, else the `callboard` on your PATH, else `../callboard`). `callboard tool <name>` runs one of its tools in the project you're in (`callboard tool typecheck`, `buildcheck`, `coverage`). In that project:
+**callboard itself is a project of its own** ([github.com/drsassafras/Callboard](https://github.com/drsassafras/Callboard), checked out beside this one: `~/Code/Callboard`), installed once on a computer and used by every project. Its board, rules, check tools and UI used to be files of this folder; what's left here is what's Plex Cache's own, built on it (`dev/__init__.py` finds the install: `CALLBOARD_HOME`, else the `callboard` on your PATH, else `../callboard`). `callboard tool <name>` runs one of its tools in the project you're in (`callboard tool typecheck`, `buildcheck`, `coverage`). In that project:
 
 | File | What it is |
 |------|------------|
@@ -150,10 +150,10 @@ The page is served to this computer only, to the browser that opened the printed
 
 1. **Get callboard and put it on your PATH** (the tests and this folder's tools need it too: they're built on it):
    ```sh
-   git clone https://github.com/drsassafras/callboard ~/Code/callboard   # (beside this project; once for every project)
-   chmod +x ~/Code/callboard/bin/callboard
+   git clone https://github.com/drsassafras/Callboard ~/Code/Callboard   # (beside this project; once for every project)
+   chmod +x ~/Code/Callboard/bin/callboard
    mkdir -p ~/bin
-   ln -sf ~/Code/callboard/bin/callboard ~/bin/callboard   # ~/bin must be on your PATH
+   ln -sf ~/Code/Callboard/bin/callboard ~/bin/callboard   # ~/bin must be on your PATH
    ```
    (If `callboard` then says "permission denied", the `chmod +x` was missed.)
 2. **Your NAS's address**, shared by every project — `~/.config/callboard/config`:
@@ -245,7 +245,7 @@ Security audits are done by people, and `dev/audit.py` keeps track of what each 
 **Each audit has two halves** with the same id (`2026-11-10-1`: the day and a count, never who did it):
 
 - **public**, here in `security/audits/<id>.toml`: the day, the dev commit audited, `full` or `partial`, and a partial's scope (whole files, or whole functions as `path:function`);
-- **private**, in the private audits repo (checked out beside this one, `~/Code/TrueNAS-Plex-Caching-audits`; `private` in `dev/audit.toml`, or `PLEXCACHE_AUDITS`): the **auditor** (a person as `human:name`, or an AI auditor's id), its **thoroughness** (1 the most thorough … 5: for a person, how closely they read it, 1 every line traced, 2 line by line, 3 read closely, 4 read through, 5 skimmed; for an AI auditor, its effort), and its findings. Its `rules.toml` holds the release rules, since they name auditors; its `FORMAT.md` every field.
+- **private**, in the private audits repo (checked out beside this one, `~/Code/Dionysus-Media-Server-Manager-audits`; `private` in `dev/audit.toml`, or `PLEXCACHE_AUDITS`): the **auditor** (a person as `human:name`, or an AI auditor's id), its **thoroughness** (1 the most thorough … 5: for a person, how closely they read it, 1 every line traced, 2 line by line, 3 read closely, 4 read through, 5 skimmed; for an AI auditor, its effort), and its findings. Its `rules.toml` holds the release rules, since they name auditors; its `FORMAT.md` every field.
 
 **A line counts as seen** by an audit when it's in the audit's scope and hasn't changed since the audit's commit: `git blame` says which commit last changed it, and that commit is the audit's or one before it. So a line goes stale by itself when it changes; nobody marks anything. Each record also carries the **fingerprints** of the lines its audit read (`prints`, written by `record`): a short hash of the path, the line and its neighbours. A line whose fingerprint an audit has counts as seen by it too, so you can audit code before you commit it (`commit` is the one you're on, and the record says `uncommitted = true`): once committed, in one commit or several, squashed or rebased, it stays seen, until it or a line next to it changes. The block also says how many unaudited lines aren't pushed yet (uncommitted, or ahead of the branch's upstream), so you can audit them first. `dev/audit.toml` says what counts as app code (`plexcache/`, the web's scripts, pages and CSS, the `Dockerfile`, `compose.yaml`, the workflows, `callboard`, and the dev tools that serve a page on this computer or run commands on it: the audits page, its runner and AI auditor plugins, the style review, the board; not the tests, translations, docs or the other dev tools).
 

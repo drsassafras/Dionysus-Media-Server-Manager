@@ -21,7 +21,7 @@
   ];
   const CODES = LANGUAGES.map(function (l) { return l[0]; });
   const KEY = "pc-lang";
-  const REPO = "https://github.com/drsassafras/TrueNAS-Plex-Caching";
+  const REPO = "https://github.com/drsassafras/Dionysus-Media-Server-Manager";
 
   // English with UK spelling: the UK and the countries that follow it.
   const UK = ["GB", "UK", "IE", "AU", "NZ", "ZA", "IN", "SG", "HK", "MT"];

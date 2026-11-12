@@ -340,7 +340,7 @@ The optimizer does this for you: **Optimizer → TrueNAS compression & record si
 Without the optimizer, `plexcache/tools/rewrite_blocks.py` does the same from the TrueNAS shell: it copies files that were written with smaller blocks, one at a time, and swaps each one in place. It runs as root, so fetch it over HTTPS from the release you have installed (replace the version):
 
 ```sh
-curl -fsSLO https://raw.githubusercontent.com/drsassafras/TrueNAS-Plex-Caching/v0.16.0/plexcache/tools/rewrite_blocks.py
+curl -fsSLO https://raw.githubusercontent.com/drsassafras/Dionysus-Media-Server-Manager/v0.16.0/plexcache/tools/rewrite_blocks.py
 sudo python3 rewrite_blocks.py tank/plexfiles            # look only
 sudo python3 rewrite_blocks.py tank/plexfiles --apply    # rewrite
 ```

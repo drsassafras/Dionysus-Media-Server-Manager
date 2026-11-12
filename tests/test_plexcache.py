@@ -11,7 +11,6 @@ import json
 import logging
 import os
 import re
-import shlex
 import shutil
 import socket
 import struct
@@ -44,6 +43,11 @@ os.symlink(os.path.join(_TMP_BASE, "real"), os.path.join(_TMP_BASE, "link"))
 TMP = os.path.join(_TMP_BASE, "link")
 tempfile.tempdir = TMP
 os.environ["TMPDIR"] = TMP
+# The tests run as they would by hand, wherever they're run from: the board's way of talking to a block (its records,
+# where a block's page detail goes) taken out, so a tool a test runs prints as it would with no board, and nothing a test
+# does reaches the board's Issues or a block's line. (tests/run.py takes these and its context first, for its own.)
+for _k in ("CALLBOARD_PROGRESS", "PLEXCACHE_PROGRESS", "CALLBOARD_DETAIL"):
+    os.environ.pop(_k, None)
 
 
 def some[T](x: T | None) -> T:
@@ -3298,14 +3302,14 @@ class ServerTests(unittest.TestCase):
                 return set()
             cmp = test.comparators[0]
             if isinstance(ops[0], ast.Eq) and isinstance(cmp, ast.Constant):
-                return {cmp.value}
+                return {str(cmp.value)}
             if isinstance(ops[0], ast.In) and isinstance(cmp, (ast.Tuple, ast.Set, ast.List)):
-                return {e.value for e in cmp.elts if isinstance(e, ast.Constant)}
+                return {str(e.value) for e in cmp.elts if isinstance(e, ast.Constant)}
             return set()
 
         found = []
         for mod in (srv,):
-            with open(mod.__file__, encoding="utf-8") as fh:
+            with open(some(mod.__file__), encoding="utf-8") as fh:
                 tree = ast.parse(fh.read())
 
             def walk(node, under: set[str]):
@@ -3709,8 +3713,11 @@ class ThemeTests(unittest.TestCase):
         self.assertIn("if(NONCE)s.nonce=NONCE", body)
         self.assertEqual(self.req("GET", "/static/decor.js")[0], 200)
         page = devui.page()
-        self.assertIn(themes.script(None), page)
-        self.assertNotIn("decor.js\"", page.replace(themes.script(None), ""))
+        # (callboard's copy of the script, which it wears as its own project: Classic its default — callboard/ui/refresh.py —
+        # where the app's is Dionysus; nothing else of it different)
+        own = re.sub(r'SEL=\{"theme":"[^"]*"', 'SEL={"theme":"classic"', themes.script(None), count=1)
+        self.assertIn(own, page)
+        self.assertNotIn("decor.js\"", page.replace(own, ""))
         served = devui.files()
         for name in themes.files(self._root("plexcache", "web")):   # (callboard is its own project: its copy of them, ui/)
             self.assertTrue(served[name].startswith(os.path.join(DEVLIB, "ui") + os.sep), served[name])
@@ -4765,77 +4772,6 @@ class TestRunnerTests(unittest.TestCase):
         self.assertIn("2 passed · 0 failed · 0 warnings · 2 total", got.stdout, got.stdout + got.stderr)
         self.assertNotIn("workers", got.stdout)
 
-    def test_callboard_stays_executable(self):
-        """The installed callboard (bin/callboard in its own project) is run as `callboard`, so it must be executable, and
-        where that install is a git checkout that tracks it, git must record it executable (100755). An editor or tool
-        that rewrites the file can drop the bit, and a commit then makes every checkout say 'permission denied'."""
-        import subprocess
-        self.assertTrue(os.access(os.path.join(CALLBOARD, "bin", "callboard"), os.X_OK),
-                        "bin/callboard lost its executable bit: run `chmod +x bin/callboard` in the callboard project")
-        if not (os.path.isdir(os.path.join(CALLBOARD, ".git")) and shutil.which("git")):
-            self.skipTest("the callboard install is a copy, not a checkout, or no git here: no git record to read")
-        listed = subprocess.run(["git", "-C", CALLBOARD, "ls-files", "-s", "--", "bin/callboard"],
-                                capture_output=True, text=True, check=True).stdout.split()
-        if not listed:
-            self.skipTest("bin/callboard isn't committed in the callboard project yet: no git record to read")
-        self.assertEqual(listed[0], "100755", "git records bin/callboard as not executable: run `chmod +x bin/callboard` and commit")
-
-    def test_a_bar_goes_to_the_board_and_is_drawn_there_with_the_same_code(self):
-        """PLEXCACHE_PROGRESS=feed: dev/progress.py's bar sends each change as a line the board reads (FEED, then JSON)
-        instead of drawing it; the board puts that into a bar of its own and draws it with the same code — the line a
-        terminal would have had, the seconds of a step under way counted there."""
-        import io
-
-        from callboard.progress import FEED, Progress, feeding, record
-        out = io.StringIO()
-        bar = Progress(3, stream=out, feed=True, bar="tests")
-        self.assertFalse(bar.tty)
-        bar.draw("A.test_1")
-        bar.draw("A.test_2", bad=1)
-        bar.show("looking up ffmpeg", ticking=True)
-        bar.at(5, 9, "step 5 of 9")
-        recs = [some(record(line)) for line in out.getvalue().split("\n")[:-1]]   # (not splitlines: it splits at FEED too)
-        self.assertNotIn(None, recs)
-        self.assertEqual([(r["bar"], r["done"], r["total"], r["bad"]) for r in recs], [("tests", 1, 3, 0), ("tests", 2, 3, 1), ("tests", 2, 3, 1), ("tests", 5, 9, 1)])
-        assert recs is not None
-        self.assertEqual((some(recs[2])["label"], some(recs[2])["ticking"], some(recs[3])["ticking"]), ("looking up ffmpeg", True, False))
-        self.assertIsNone(record("    2 tests passed"))
-        self.assertIsNone(record(FEED + "not a record"))
-        with mock.patch.dict(os.environ, {"PLEXCACHE_PROGRESS": "feed"}):
-            self.assertTrue(feeding())
-            self.assertTrue(Progress(1, stream=io.StringIO()).feed)
-        # the board's side: the same line a terminal would have drawn
-        board = Progress(0, tty=True, feed=False)
-        board.apply(some(recs[1]))
-        term = io.StringIO()
-        drawn = Progress(3, tty=True, stream=term)
-        drawn.draw("A.test_1")
-        drawn.draw("A.test_2", bad=1)
-        with mock.patch.dict(os.environ, {"COLUMNS": "80"}):
-            self.assertEqual(term.getvalue().split("\r\033[K")[-1], board.render(80))
-        board.apply(some(recs[2]))
-        self.assertIsNotNone(board.since)
-        self.assertIn("looking up ffmpeg  (0 s)", re.sub(r"\033\[[0-9;]*m", "", board.render(100)))
-        self.assertLess(len(re.sub(r"\033\[[0-9;]*m", "", Progress(3, tty=True).render(40))), 40)
-
-    def test_the_bar_names_the_test_under_way(self):
-        """The bar's label: the test running now, its seconds counting from when it started — on the board too (the
-        record says how long it's been going), whichever of the workers' tests it is."""
-        import io
-
-        from callboard.progress import Progress, record
-        out = io.StringIO()
-        bar = Progress(4, stream=out, feed=True)
-        bar.show("A.test_slow", ticking=True, since=time.time() - 30)
-        rec = record(out.getvalue().split("\n")[-2])
-        assert rec is not None
-        self.assertEqual((rec["label"], rec["ticking"]), ("A.test_slow", True))
-        assert rec is not None
-        self.assertGreaterEqual(rec["age"], 30)
-        board = Progress(0, tty=True, feed=False)
-        board.apply(rec)
-        self.assertIn("A.test_slow  (30 s)", re.sub(r"\033\[[0-9;]*m", "", board.render(80)))
-
     def test_the_dependencies_block_says_what_moved_from_and_to(self):
         """dev/upkeep.py on the board: the box in a line under its bar (dev/progress.said) — what moved and what's new
         upstream, each from → to; all current; or upstream not reached."""
@@ -4897,66 +4833,6 @@ class TestRunnerTests(unittest.TestCase):
             written = json.load(fh)
         self.assertEqual((written["step"], written["deps"]), ("look", r.deps))
 
-    def test_the_board_lists_every_issue_under_it(self):
-        """Under the board, at the end: its Issues — each section's errors, warnings and notices, as it sent them
-        (dev/progress.issue), a fix on a line of its own; a section that failed or warned and sent none, its result as
-        one; nothing at all when there are none."""
-        import subprocess
-        folder = tempfile.mkdtemp(dir=TMP)
-        issue = lambda level, text, fix="": "printf '%s\\n' " + shlex.quote("\x1e" + json.dumps({"issue": {"level": level, "text": text, "fix": fix}}))
-        plan = [{"id": "deps", "title": "Dependencies", "cmd": f"echo current; {issue('warning', 'stylelint 17.16.0 → 18.0.0 (major)', 'npm i x@18')}; {issue('notice', 'moved Node')}", "upkeep": True},
-                {"id": "bad", "title": "Current Tests", "cmd": "echo 3/550 tests failed; exit 1"},
-                {"id": "fine", "title": "Python Validation", "cmd": "echo 0 errors"}]
-        with open(os.path.join(folder, "plan.json"), "w", encoding="utf-8") as fh:
-            json.dump(plan, fh)
-        got = subprocess.run([sys.executable, os.path.join(DEVLIB, "board.py"), os.path.join(folder, "plan.json"), os.path.join(folder, "res")],
-                             capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
-        issues = got.stdout[got.stdout.index("  Issues: "):]
-        self.assertEqual(issues, "  Issues: 1 error · 1 warning · 1 notice\n"
-                                 "    Dependencies\n      warning  stylelint 17.16.0 → 18.0.0 (major)\n               npm i x@18\n      notice   moved Node\n"
-                                 "    Current Tests\n      error    3/550 tests failed\n")
-        with open(os.path.join(folder, "plan.json"), "w", encoding="utf-8") as fh:
-            json.dump([plan[2]], fh)
-        got = subprocess.run([sys.executable, os.path.join(DEVLIB, "board.py"), os.path.join(folder, "plan.json"), os.path.join(folder, "res")],
-                             capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
-        self.assertNotIn("Issues", got.stdout)   # (none: nothing said)
-
-    def test_nothing_is_written_under_the_board_on_a_terminal(self):
-        """On a terminal, everything the board says (what a section printed, its Issues) goes above it, through Board.above:
-        the board is the last thing on the screen, nothing printed under it."""
-        import pty
-        import re
-        import subprocess
-
-        from callboard import board
-        folder = tempfile.mkdtemp(dir=TMP)
-        plan = [{"id": "bad", "title": "Current Tests", "cmd": "echo boom; echo 3/550 tests failed; exit 1"},
-                {"id": "fine", "title": "Python Validation", "cmd": "echo 0 errors"}]
-        with open(os.path.join(folder, "plan.json"), "w", encoding="utf-8") as fh:
-            json.dump(plan, fh)
-        main, sub = pty.openpty()
-        proc = subprocess.Popen([sys.executable, os.path.join(DEVLIB, "board.py"), os.path.join(folder, "plan.json"), os.path.join(folder, "res")],
-                                stdout=sub, stderr=sub, stdin=subprocess.DEVNULL, env={**os.environ, "COLUMNS": "100", "LINES": "40"})
-        os.close(sub)
-        got = b""
-        while True:
-            try:
-                chunk = os.read(main, 65536)
-            except OSError:   # (the board done: the terminal closed)
-                break
-            if not chunk:
-                break
-            got += chunk
-        os.close(main)
-        self.assertEqual(proc.wait(timeout=60), 0)
-        text = got.decode("utf-8", "replace")
-        last = text.rindex("Python Validation")                             # (the last frame's last block)
-        self.assertLess(text.rindex("Issues: "), last)                     # (the Issues above it)
-        self.assertLess(text.rindex("boom"), last)                          # (what the failed section printed too)
-        tail = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text[last:])        # (after it: its own lines, then only the cursor)
-        self.assertNotIn("Issues", tail)
-        self.assertLessEqual(len([line for line in tail.split("\n") if line.strip()]), board.ROWS, tail)
-
     def test_run_py_sends_its_bar_to_the_board_and_can_leave_a_class_out(self):
         """tests/run.py on the board (PLEXCACHE_PROGRESS=feed): its bar as records (bar "tests"), its summary as text;
         --exclude <Class> leaves that class out (callboard runs WebBuildTests in a section of its own), in this process or
@@ -4991,92 +4867,6 @@ class TestRunnerTests(unittest.TestCase):
             self.assertTrue(all(r.get("workers") in (1, 2) for r in recs), jobs)   # (its workers, beside the bar: never none)
             self.assertNotIn("\r", got.stdout)  # (nothing drawn: the board draws it)
 
-    def test_the_board_runs_its_sections_at_once(self):
-        """dev/board.py starts every section at once (two that each take a second take a second together); one that waits
-        on another ("after") starts when that has passed, and isn't run when it didn't; one stopped with another
-        ("stop_with": the future tests with the current ones) is stopped when that fails; an exit code that means "couldn't
-        be set up" is not run, not failed; the dependencies' section ("upkeep") looks, then runs again once the checks are
-        done ("then"), its colour from that run's first line. What a failed section printed comes after the board; the
-        results say how each went, for callboard."""
-        import subprocess
-        folder = tempfile.mkdtemp(dir=TMP)
-        plan = [{"id": "slow1", "title": "One", "cmd": "sleep 1; echo one done"},
-                {"id": "slow2", "title": "Two", "cmd": "sleep 1; echo two done"},
-                {"id": "bad", "title": "Bad", "cmd": "echo the reason it failed; echo 1 thing failed; exit 1"},
-                {"id": "gone", "title": "Gone", "cmd": "sleep 30", "stop_with": ["bad"]},
-                {"id": "next", "title": "Next", "cmd": "echo after one", "after": ["slow1"]},
-                {"id": "never", "title": "Never", "cmd": "echo ran", "after": ["bad"]},
-                {"id": "unset", "title": "Unset", "cmd": "echo download failed; exit 3", "not_run_rc": 3},
-                {"id": "deps", "title": "Dependencies", "cmd": "echo current; echo looked: $CALLBOARD_PHASE", "env": {"CALLBOARD_PHASE": "look"}, "upkeep": True,
-                 "then": {"cmd": "echo behind; echo moved", "after": ["slow1", "slow2", "bad", "gone"]}}]
-        with open(os.path.join(folder, "plan.json"), "w", encoding="utf-8") as fh:
-            json.dump(plan, fh)
-        results = os.path.join(folder, "results")
-        started = time.time()
-        got = subprocess.run([sys.executable, os.path.join(DEVLIB, "board.py"), os.path.join(folder, "plan.json"), results],
-                             capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
-        took = time.time() - started
-        self.assertEqual(got.returncode, 0, got.stdout + got.stderr)
-        self.assertLess(took, 8)   # (not the 2 s of the two one after the other plus the 30 s of the one stopped)
-        res = dict(line.split("=", 1) for line in _read(results, encoding="utf-8").splitlines())
-        self.assertEqual({k: res[k] for k in ("slow1", "slow2", "bad", "gone", "next", "never", "unset", "deps", "aborted")},
-                         {"slow1": "pass", "slow2": "pass", "bad": "fail", "gone": "skipped", "next": "pass", "never": "skipped",
-                          "unset": "notrun", "deps": "warn", "aborted": "0"})
-        self.assertEqual((res["bad_rc"], res["deps_first"], res["slow1_last"], res["bad_last"]), ("1", "behind", "one done", "1 thing failed"))
-        self.assertEqual(_read(res["deps_log"], encoding="utf-8"), "behind\nmoved\n")   # (the box: the second run's)
-        self.assertIn("looked: look", _read(os.path.join(folder, "logs", "deps.log"), encoding="utf-8"))
-        self.assertIn("\nthe reason it failed\n", got.stdout)   # (what it printed, just that: whose it is, its block says)
-        self.assertNotIn("\n1 thing failed\n", got.stdout)   # (its last line: in its block, not said again)
-        self.assertIn("Never: NOT RUN: BAD DIDN'T PASS", got.stdout)
-        self.assertIn("Gone: STOPPED: BAD FAILED", got.stdout)
-        self.assertNotIn("\none done\n", got.stdout)   # (only a failed section's output is printed)
-
-    def test_the_board_stops_what_waits_on_a_suite_at_its_first_failing_test(self):
-        """A suite's first failing test (its bar's failure count above 0) is enough: what stops with it ("stop_with": the
-        future tests) is stopped and what waits on it ("after": the copy with --tests-first) isn't run, there and then,
-        each saying why; the suite itself runs to its end, so all its failures are still said."""
-        import subprocess
-        folder = tempfile.mkdtemp(dir=TMP)
-        feed = r"""printf '\036{"bar": "tests", "done": 1, "total": 3, "bad": 1}\n'"""   # (its bar: 1 of 3 done, 1 failed)
-        plan = [{"id": "current", "title": "Current Tests", "cmd": f"{feed}; sleep 2; echo the last failure; echo 1/3 tests failed; exit 1"},
-                {"id": "future", "title": "Future Tests", "cmd": "sleep 30", "stop_with": ["current"]},
-                {"id": "sync", "title": "Sync", "cmd": "echo copied", "after": ["current"]}]
-        with open(os.path.join(folder, "plan.json"), "w", encoding="utf-8") as fh:
-            json.dump(plan, fh)
-        results = os.path.join(folder, "results")
-        got = subprocess.run([sys.executable, os.path.join(DEVLIB, "board.py"), os.path.join(folder, "plan.json"), results],
-                             capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
-        self.assertEqual(got.returncode, 0, got.stdout + got.stderr)
-        res = dict(line.split("=", 1) for line in _read(results, encoding="utf-8").splitlines())
-        self.assertEqual({k: res[k] for k in ("current", "future", "sync")}, {"current": "fail", "future": "skipped", "sync": "skipped"})
-        self.assertIn("Future Tests: STOPPED: CURRENT TESTS FAILING", got.stdout)   # (while it ran: not once it had ended)
-        self.assertIn("Sync: NOT RUN: CURRENT TESTS FAILING", got.stdout)
-        self.assertLess(got.stdout.index("Future Tests: STOPPED"), got.stdout.index("Current Tests: FAILED"))
-        self.assertIn("\nthe last failure\n", got.stdout)   # (the suite ran on to its end: everything it said is there)
-
-    def test_a_result_line_is_said_one_way_by_every_dev_tool(self):
-        """dev/progress.py's result line, which every dev tool's last line on the board is made with: facts joined with
-        " · ", sentence case, no full stop; counts n/total; the count the bar shows left out on the board (part of it
-        said without the total); versions short (a nightly's build stamp off, a git snapshot "snapshot")."""
-        from callboard.progress import counted, counts, result, short_version, tally, tested
-        self.assertEqual((counted(1, "test"), counted(550, "test"), counted(3, "test", of=550), counted(2, "dependency", "dependencies")),
-                         ("1 test", "550 tests", "3/550 tests", "2 dependencies"))
-        self.assertEqual(result("copied 2 files.", "", "restarted myapp"), "Copied 2 files · restarted myapp")
-        self.assertEqual(result(tally(550, "test", "passed", feed=False), "Python 3.15.2"), "550 tests passed · Python 3.15.2")   # (off the board)
-        self.assertEqual(result(tally(550, "test", "passed", feed=True), "Python 3.15.2"), "Python 3.15.2")                    # (the bar says 550/550)
-        self.assertEqual(result(tally(3, "test", "failed", of=550, feed=True), "Python 3.15.2"), "3 failed · Python 3.15.2")
-        self.assertEqual(result(tally(26, "dependency", "up to date", "dependencies", feed=True)), "")                           # (its header says it)
-        # a run of tests: passed, failed, warnings and the total, always all four; on the board its bar says them, so
-        # its result line doesn't (only passed or failed, with nothing else to say)
-        self.assertEqual(counts(571, 571, 3, 2), "568 passed · 3 failed · 2 warnings · 571 total")
-        self.assertEqual(counts(1, 3, 0, 1), "1 passed · 0 failed · 1 warning · 3 total")
-        self.assertEqual(result(tested(571, 3, 2, feed=False), "Python 3.16.0a1"), "568 passed · 3 failed · 2 warnings · 571 total · Python 3.16.0a1")
-        self.assertEqual(result(tested(571, 3, 2, feed=True), "Python 3.16.0a1"), "Python 3.16.0a1")
-        self.assertEqual((result(tested(571, 3, 0, feed=True)), result(tested(571, 0, 0, feed=True))), ("", ""))   # (FAILED, PASSED: its header)
-        self.assertEqual([short_version(v) for v in ("28.0.0-nightly202611022758c59105", "3.16.0a1", "24.0.0-rc.1", "1.2-dev-20261102-abc123",
-                                                     "1.0+git.abc", "N-121234-g1a2b3c4d", "103.0")],
-                         ["28.0.0-nightly", "3.16.0a1", "24.0.0-rc.1", "1.2-dev", "1.0", "snapshot", "103.0"])
-
     def test_the_future_run_names_only_what_is_ahead_of_the_apps_pins(self):
         """tests/run.py's line on the board, in dev/future.py's image (PLEXCACHE_PINS: the app image's pins): only what's
         ahead of them — the next Python, a Node nightly, an ffmpeg snapshot — not one the app ships too (MKVToolNix at its
@@ -5094,40 +4884,6 @@ class TestRunnerTests(unittest.TestCase):
         self.assertTrue(run.ahead("104.0", "103.0", True))        # (a newer release than the pin)
         self.assertTrue(run.ahead("4.2.0-beta1", None, True))     # (no pin: a pre-release only)
         self.assertTrue(run.ahead("103.0", "103.0", False))       # (no pins at all, Current Tests: everything)
-
-    def test_a_two_step_section_waits_between_its_steps_and_ends_when_the_second_has_nothing_to_do(self):
-        """A section of two steps ("then": the dependencies' look, then their pins moved once the checks pass): between
-        them, WAITING: CHECKS (blue), no bar (none at work) and what its first step said; when the first says its second
-        has nothing to do (dev/progress.then(0)), it ends there, green, its second step never run."""
-        from callboard import board
-        from callboard.progress import FEED
-        folder = tempfile.mkdtemp(dir=TMP)
-        bar = FEED + json.dumps({"bar": "upkeep", "done": 26, "total": 26, "label": "looked up"})
-        s = board.Section({"id": "upkeep", "title": "Dependencies", "cmd": "true", "upkeep": True,
-                           "then": {"cmd": "echo moved", "after": ["current"]}}, folder)
-        self.addCleanup(lambda s=s: s.out.close())
-        s.state = "running"
-        for line in ("behind", bar, FEED + json.dumps({"then": 2}), FEED + json.dumps({"said": "26/26 looked up · 2 to move once the checks pass"})):
-            s.line(line)
-        s.finished(0)
-        drawn = [re.sub(r"\033\[[0-9;]*m", "", x) for x in s.lines(100)]
-        self.assertEqual((s.state, s.phase), ("waiting", 1))
-        self.assertIn("WAITING: CHECKS", drawn[0])
-        self.assertEqual(drawn[1].strip(), "")   # (no full bar while it isn't working)
-        self.assertIn("26/26 looked up · 2 to move once the checks pass", drawn[2])
-        s = board.Section({"id": "upkeep", "title": "Dependencies", "cmd": "true", "upkeep": True,
-                           "then": {"cmd": "echo moved", "after": ["current"]}}, folder)
-        self.addCleanup(lambda s=s: s.out.close())
-        s.state = "running"
-        for line in ("current", bar, FEED + json.dumps({"then": 0}), FEED + json.dumps({"said": "26 dependencies up to date"})):
-            s.line(line)
-        s.finished(0)
-        drawn = [re.sub(r"\033\[[0-9;]*m", "", x) for x in s.lines(100)]
-        self.assertEqual((s.state, s.phase, s.first), ("pass", 0, "current"))
-        self.assertIn("UP TO DATE", drawn[0])
-        self.assertNotIn("ALL UP TO DATE", drawn[0])
-        self.assertIn(" 26 / 26 ", drawn[1])
-        self.assertIn("26 dependencies up to date", drawn[2])
 
     def test_a_failure_is_told_as_it_comes_and_named_in_the_issues(self):
         """On callboard's board tests/run.py says each failure as it comes (a "tell" record, put above the board) and names
@@ -5181,77 +4937,6 @@ class TestRunnerTests(unittest.TestCase):
         s.finished(1)
         self.assertEqual(b.telling(s), "")
         self.assertIn("AssertionError: 1 != 2", b.told(s))                     # (no terminal: at its end)
-
-    def test_a_section_is_blue_while_it_runs_then_green_orange_red_or_grey(self):
-        """Each of the board's sections: a block of three lines from the start, so nothing moves as it fills in, all of it
-        blue while it runs (or waits), then green (passed), orange (stopped with Enter, the dependencies behind), red
-        (failed) or grey (for the record: not run, skipped, already in sync): a header, the bar its command moved last (dev/progress.py's) and the last line it printed; no line wider
-        than the board."""
-        from callboard import board
-        from callboard.progress import FEED
-        folder = tempfile.mkdtemp(dir=TMP)
-
-        def section(**spec):
-            s = board.Section({"id": "x", "title": "Current Tests", "cmd": "true", **spec}, folder)
-            self.addCleanup(lambda: s.out.close())   # (its log, open while it runs)
-            return s
-        s = section()
-        self.assertEqual(len(s.lines(60)), board.ROWS)
-        self.assertTrue(all(line.startswith((board.WAIT, board.BODY["waiting"])) for line in s.lines(60)))   # (blue: under way)
-        s.state = "running"
-        s.line(FEED + json.dumps({"bar": "tests", "done": 3, "total": 10, "bad": 0, "label": "A.test_" + "x" * 200, "ticking": False}))
-        s.line("\033[32mlast line\033[0m " + "y" * 200)
-        s.line(FEED + json.dumps({"bar": "build", "done": 2, "total": 7, "bad": 0, "label": "step 2", "ticking": False}))
-        drawn = s.lines(80)
-        self.assertEqual(len(drawn), board.ROWS)
-        self.assertTrue(drawn[0].startswith(board.BLUE))
-        plain = lambda line: re.sub(r"\033\[[0-9;]*m", "", line)
-        self.assertIn(" 0 │ 0 │ 2 / 7 ", plain(drawn[1]))   # (the bar moved last; every bar's counts in one capsule, no space kept)
-        s.line(FEED + json.dumps({"bar": "tests", "done": 3, "total": 10, "bad": 0, "label": "A.test_1", "ticking": False}))
-        drawn = s.lines(80)
-        self.assertIn(" 0 │ 0 │  3 / 10 ", plain(drawn[1]))   # (its fields as wide as the widest it's had: the total's)
-        self.assertIn("    0 │    0 │    3 / 10   ", plain(s.lines(100, (4, 4))[1]))   # (on the board: the widest of every bar's)
-        self.assertNotIn("last line", drawn[2])   # (while its bar runs, no stray line: the bar says how it goes)
-        for line in drawn:
-            self.assertLessEqual(len(re.sub(r"\033\[[0-9;]*m", "", line)), 80)
-            self.assertTrue(line.startswith((board.BLUE, board.BODY["running"])))
-        s.line(FEED + json.dumps({"said": "3 tests passed"}))
-        self.assertIn("3 tests passed", s.lines(60)[2])   # (what the tool says of it: shown, running or not)
-        for rc, spec, colour in ((0, {}, board.GOOD), (1, {}, board.BAD), (3, {"not_run_rc": 3}, board.GREY), (0, {"info": "in sync"}, board.GREY),
-                                 (1, {"info": "can't connect"}, board.BAD)):
-            s = section(**spec)
-            s.state = "running"
-            s.finished(rc)
-            got = s.lines(60)
-            self.assertTrue(got[0].startswith(colour) and all(line.startswith(colour.replace("[1;", "[")) for line in got[1:]), (rc, spec))
-        s = section(warn={"rc": 1, "note": "looks waiting for your approval"})   # (a warning of its own: orange, its note)
-        s.state = "running"
-        s.finished(1)
-        self.assertEqual((s.state, s.lines(60)[0].startswith(board.MEH)), ("warn", True))
-        self.assertIn("LOOKS WAITING FOR YOUR APPROVAL", s.lines(60)[0])
-        for first, colour, note in (("current", board.GOOD, "UP TO DATE"), ("behind", board.MEH, "NEW VERSIONS UPSTREAM"),
-                                    ("cves", board.MEH, "UP TO DATE · CVES TO ACT ON"), ("unknown", board.GREY, "NOT CHECKED")):
-            s = section(upkeep=True)
-            s.state = "running"
-            s.line(first)
-            s.finished(0)
-            self.assertTrue(s.lines(60)[0].startswith(colour), first)
-            self.assertIn(note, s.lines(60)[0])   # (every one current but CVEs to act on: never "new versions upstream")
-        # a run of tests: red from its first failure and orange from its first warning, while it runs; passed with
-        # warnings, orange, its result a pass; the counts in their capsule (failed │ warnings │ passed / total)
-        for bad, warned, colour in ((0, 0, board.BLUE), (1, 0, board.BAD), (0, 2, board.MEH), (1, 2, board.BAD)):
-            s = section()
-            s.state = "running"
-            s.line(FEED + json.dumps({"bar": "tests", "done": 30, "total": 571, "bad": bad, "warned": warned, "tests": True, "label": "A.test_1"}))
-            drawn = s.lines(100)
-            self.assertTrue(drawn[0].startswith(colour), (bad, warned))
-            self.assertIn(f" {bad} │ {warned} │ {30 - bad:>3} / 571 ", re.sub(r"\033\[[0-9;]*m", "", drawn[1]))
-        s = section()
-        s.state = "running"
-        s.line(FEED + json.dumps({"bar": "tests", "done": 571, "total": 571, "bad": 0, "warned": 2, "tests": True, "label": "A.test_1"}))
-        s.finished(0)
-        self.assertEqual((s.state, s.lines(60)[0].startswith(board.MEH)), ("pass", True))   # (a pass, in orange)
-        self.assertIn("PASSED · 2 WARNINGS", s.lines(60)[0])
 
     def test_style_approval_makes_the_sample_while_the_board_runs(self):
         """callboard's Style Approval: once its check says looks wait, the block's second step ("then", after nothing) makes
@@ -5484,25 +5169,6 @@ class TestRunnerTests(unittest.TestCase):
                 self.assertNotEqual(s.made_from(root=tree), was, rel)
                 shutil.rmtree(tree)
 
-    def test_a_section_that_only_tells(self):
-        """A section with "tell" (the Translations and Release checks blocks between releases): its exit code means
-        nothing is wrong, only how things stand — grey, its note in the header, its last line the detail. Exit 0 is
-        still a pass, and any other code still a failure: the tool decides which, not the board."""
-        from callboard import board
-        folder = tempfile.mkdtemp(dir=TMP)
-        for rc, state, header in ((3, "info", "IN PROGRESS"), (0, "pass", "PASSED"), (1, "fail", "FAILED")):
-            with self.subTest(rc):
-                s = board.Section({"id": "release", "title": "Release checks", "cmd": "true",
-                                   "tell": {"rc": 3, "note": "in progress"}}, folder)
-                self.addCleanup(s.out.close)
-                s.line("4 of 7 ready · to go: version, translations, coverage")
-                s.finished(rc)
-                self.assertEqual(s.state, state)
-                self.assertIn(header, s.lines(80)[0])
-                if rc == 3:
-                    self.assertTrue(s.lines(80)[0].startswith(board.COLOUR["info"]))   # (grey)
-                    self.assertIn("4 of 7 ready", s.lines(80)[2])
-
     def test_a_key_on_the_board_opens_the_review(self):
         """The style guide's block, at any time while the board runs (still running, the board loading, as well as once
         it says looks wait): r starts its review page (on the terminal, in a session of its own, so it outlives the
@@ -5693,330 +5359,6 @@ class TestRunnerTests(unittest.TestCase):
         self.assertIn("6 looks need your approval", drawn[2])
         self.assertFalse(b.finale_due(s))   # (skipped: not again)
 
-    @unittest.skipUnless(shutil.which("rsync") and shutil.which("bash"), "no rsync here (callboard copies with it)")
-    def test_callboard_copies_no_link_out_and_keeps_its_socket_private(self):
-        """callboard's copy never puts a link that leads out of the copy on the NAS (one committed to /mnt/..., say, would
-        be the running app's), and its SSH connection's socket is in a folder only you can open, not a name anyone could
-        take first in the shared /tmp."""
-        import stat
-        import subprocess
-        folder = tempfile.mkdtemp(dir=TMP)
-        project, nas, fake = (os.path.join(folder, d) for d in ("project", "nas", "bin"))
-        for d in (os.path.join(project, "app"), nas, fake):
-            os.makedirs(d)
-        with open(os.path.join(fake, "ssh"), "w", encoding="utf-8") as fh:   # (the NAS: this machine, a folder of it)
-            fh.write(f'#!/bin/bash\nprintf "%s\\n" "$*" >> {folder}/ssh-args\n'
-                     'while [ $# -gt 0 ]; do case "$1" in -o|-p|-l) shift 2 ;; -O) exit 0 ;; -*) shift ;; *) break ;; esac; done\n'
-                     'shift; [ $# -eq 0 ] && exit 0; exec bash -c "$*"\n')
-        with open(os.path.join(fake, "midclt"), "w", encoding="utf-8") as fh:
-            fh.write("#!/bin/bash\n")
-        for name in ("ssh", "midclt"):
-            os.chmod(os.path.join(fake, name), 0o755)
-        with open(os.path.join(project, "app", "code.py"), "w", encoding="utf-8") as fh:
-            fh.write("one\n")
-        with open(os.path.join(folder, "secret"), "w", encoding="utf-8") as fh:
-            fh.write("not the app's\n")
-        os.symlink(os.path.join(folder, "secret"), os.path.join(project, "app", "out"))   # (out of the copy)
-        os.symlink("/etc", os.path.join(project, "app", "etc"))
-        with open(os.path.join(folder, "config"), "w", encoding="utf-8") as fh:
-            fh.write("TN_HOST=nas.example\nTN_USER=me\n")
-        with open(os.path.join(project, ".callboard"), "w", encoding="utf-8") as fh:
-            fh.write(f"TN_APP=myapp\nTN_DEST={nas}\nTN_PATHS=app\n")
-        _toml(project, unit="echo 1 test passed")
-        state = os.path.join(folder, "state")
-        env = dict(os.environ, PATH=fake + os.pathsep + os.environ.get("PATH", ""), CALLBOARD_CONFIG=os.path.join(folder, "config"),
-                   XDG_STATE_HOME=state, TMPDIR=folder)
-        env.pop("PLEXCACHE_PROGRESS", None)
-        got = subprocess.run([os.path.join(CALLBOARD, "bin", "callboard"), "push", "local"], cwd=project, env=env, capture_output=True,
-                             text=True, timeout=120, stdin=subprocess.DEVNULL)
-        out = got.stdout + got.stderr
-        self.assertEqual(_read(os.path.join(nas, "app", "code.py"), encoding="utf-8"), "one\n", out)
-        self.assertFalse(os.path.lexists(os.path.join(nas, "app", "out")), out)
-        self.assertFalse(os.path.lexists(os.path.join(nas, "app", "etc")), out)
-        args = _read(os.path.join(folder, "ssh-args"), encoding="utf-8")
-        sock = os.path.dirname(some(re.search(r"ControlPath=(\S+)", args)).group(1))
-        # (the state folder's; one of your own in /tmp only when that path is too long for a socket's name, as here maybe)
-        self.assertIn(sock, (os.path.join(state, "callboard", "ssh"), f"/tmp/callboard-ssh-{os.getuid()}"))
-        self.assertEqual((stat.S_IMODE(os.lstat(sock).st_mode), os.lstat(sock).st_uid), (0o700, os.getuid()))
-
-    @unittest.skipUnless(shutil.which("rsync") and shutil.which("bash") and shutil.which("git"), "no rsync here (callboard copies with it)")
-    def test_callboard_holds_its_settings_to_what_they_say(self):
-        """callboard's settings can't be walked round: TN_DEST is never the NAS's root however it's written (rsync --delete
-        works on it), a TN_PATHS entry stays in the project and TN_DEST and carries no quote into the NAS's shell, TN_HOST
-        and TN_USER are plain names (one starting with - would be an option to ssh), and ssh has -- before the NAS. The
-        .callboard is the project's own: never one in a folder above the repository, nor one others may change. The dev
-        tools' packages (dev/ only) are installed with no install scripts run, and not at all with --skip-tests
-        (F-2026-017 to 020)."""
-        import subprocess
-        folder = tempfile.mkdtemp(dir=TMP)
-        project, nas, fake = (os.path.join(folder, d) for d in ("project", "nas", "bin"))
-        for d in (os.path.join(project, "app"), os.path.join(project, "dev"), os.path.join(project, "sub"), nas, fake):
-            os.makedirs(d)
-        subprocess.run(["git", "init", "-q", project], check=True)
-        with open(os.path.join(fake, "ssh"), "w", encoding="utf-8") as fh:   # (the NAS: this machine, a folder of it)
-            fh.write(f'#!/bin/bash\nprintf "%s\\n" "$*" >> {folder}/ssh-args\n'
-                     'while [ $# -gt 0 ]; do case "$1" in -o|-p|-l) shift 2 ;; -O) exit 0 ;; -*) shift ;; *) break ;; esac; done\n'
-                     'shift; [ $# -eq 0 ] && exit 0; exec bash -c "$*"\n')
-        with open(os.path.join(fake, "npm"), "w", encoding="utf-8") as fh:
-            fh.write(f'#!/bin/bash\nprintf "%s\\n" "$*" >> {folder}/npm-args\n')
-        for name in ("ssh", "npm"):
-            os.chmod(os.path.join(fake, name), 0o755)
-        for rel, text in (("app/code.py", "one\n"), ("dev/package-lock.json", "{}\n"), ("sub/package-lock.json", "{}\n")):
-            with open(os.path.join(project, rel), "w", encoding="utf-8") as fh:
-                fh.write(text)
-        config = os.path.join(folder, "config")
-        env = dict(os.environ, PATH=fake + os.pathsep + os.environ.get("PATH", ""), CALLBOARD_CONFIG=config,
-                   XDG_STATE_HOME=os.path.join(folder, "state"), TMPDIR=folder)
-        env.pop("PLEXCACHE_PROGRESS", None)
-        good = f"TN_APP=myapp\nTN_DEST={nas}\nTN_PATHS=app\n"
-        _toml(project, unit="echo 1 test passed")
-
-        def run(settings, *args, cwd=project, shared="TN_HOST=nas.example\nTN_USER=me\n"):
-            with open(config, "w", encoding="utf-8") as fh:
-                fh.write(shared)
-            if settings is not None:
-                with open(os.path.join(project, ".callboard"), "w", encoding="utf-8") as fh:
-                    fh.write(settings)
-                os.chmod(os.path.join(project, ".callboard"), 0o644)
-            got = subprocess.run([os.path.join(CALLBOARD, "bin", "callboard"), "local", *args], cwd=cwd, env=env, capture_output=True,
-                                 text=True, timeout=120, stdin=subprocess.DEVNULL)
-            return got.returncode, got.stdout + got.stderr
-        for dest in ("//", "/.", "/mnt/..", f"{nas}/../..", "/./"):
-            rc, out = run(f"TN_APP=myapp\nTN_DEST={dest}\nTN_PATHS=app\n", "-n", "--skip-tests")
-            self.assertEqual(rc, 1, out)
-            self.assertRegex(out, r"TN_DEST can't (be /|have \. or \.\. in it)")
-        os.makedirs(os.path.join(project, "x';touch pwned;'"))
-        for paths in ("app/../../x", "x';touch pwned;'", "/etc", "../x"):
-            rc, out = run(f"TN_APP=myapp\nTN_DEST={nas}\nTN_PATHS={paths}\n", "-n", "--skip-tests")
-            self.assertEqual(rc, 1, out)
-            self.assertIn("TN_PATHS entries must be", out)
-        self.assertFalse(os.path.exists(os.path.join(project, "pwned")))
-        for shared, what in (("TN_HOST=nas.example\nTN_USER=-oProxyCommand=touch pwned\n", "TN_USER"),
-                             ("TN_HOST=-oProxyCommand=touch pwned\nTN_USER=me\n", "TN_HOST"),
-                             ("TN_HOST=nas.example\nTN_USER=me@x\n", "TN_USER")):
-            rc, out = run(good, "-n", "--skip-tests", shared=shared)
-            self.assertEqual(rc, 1, out)
-            self.assertIn(f"{what} '", out)
-        self.assertFalse(os.path.exists(os.path.join(folder, "ssh-args")))   # (none of those got as far as ssh)
-        # a good run: ssh with -- before the NAS; no packages with --skip-tests, and dev's alone, scripts off, without it
-        rc, out = run(good, "-n", "--skip-tests")
-        self.assertEqual(rc, 0, out)
-        self.assertFalse(os.path.exists(os.path.join(folder, "npm-args")), out)
-        args = _read(os.path.join(folder, "ssh-args"), encoding="utf-8")
-        self.assertIn("-- me@nas.example", args)
-        self.assertTrue(all("-- me@nas.example" in line for line in args.splitlines() if "-O exit" in line or line.endswith("me@nas.example true")), args)
-        rc, out = run(good, "-n")
-        self.assertEqual(rc, 0, out)
-        # (the folder as it really is: on a Mac, /var is /private/var)
-        self.assertEqual(_read(os.path.join(folder, "npm-args"), encoding="utf-8"),
-                         f"ci --prefix {os.path.realpath(project)}/dev --ignore-scripts --no-audit --no-fund\n")
-        # the .callboard: the project's own, from a folder of the project below it (and said which), never one others may change
-        rc, out = run(None, "-n", "--skip-tests", cwd=os.path.join(project, "app"))
-        self.assertEqual(rc, 0, out)
-        self.assertRegex(out, r"Settings from \S*/project/\.callboard")
-        os.chmod(os.path.join(project, ".callboard"), 0o664)
-        rc, out = run(None, "-n", "--skip-tests")
-        self.assertEqual(rc, 1, out)
-        self.assertIn(".callboard isn't used", out)
-        # and never one in a folder above the repository (/tmp, say)
-        with open(os.path.join(folder, ".callboard"), "w", encoding="utf-8") as fh:
-            fh.write(good + "TN_TEST=touch pwned\n")
-        other = os.path.join(folder, "other")
-        os.makedirs(other)
-        subprocess.run(["git", "init", "-q", other], check=True)
-        rc, out = run(None, "-n", cwd=other)
-        self.assertEqual(rc, 1, out)
-        self.assertIn("no .callboard file here", out)
-        self.assertFalse(os.path.exists(os.path.join(other, "pwned")))
-
-    def test_callboard_runs_its_steps_at_once(self):
-        """callboard push local: the copy and restart and every check .callboard sets run at the same time, each a section of
-        the board (each passing only while the other two run); nothing is said again after it, the result kept, so
-        the next run with nothing changed says the tests already passed. With --tests-first, a check that fails means
-        nothing is copied. callboard local only checks: the NAS is compared, never changed, and how far out it is said.
-        A push always restarts, files to copy or not; callboard restart restarts alone; -y is gone."""
-        import subprocess
-        folder = tempfile.mkdtemp(dir=TMP)
-        project, nas, fake = (os.path.join(folder, d) for d in ("project", "nas", "bin"))
-        for d in (os.path.join(project, "app"), nas, fake):
-            os.makedirs(d)
-        with open(os.path.join(fake, "ssh"), "w", encoding="utf-8") as fh:   # (the NAS: this machine, a folder of it)
-            fh.write('#!/bin/bash\n[ -z "$SSH_LOG" ] || echo "$*" >> "$SSH_LOG"\n[ -z "$NAS_DOWN" ] || { echo "ssh: connect to host nas.example: timed out" >&2; exit 255; }\nwhile [ $# -gt 0 ]; do case "$1" in -o|-p|-l) shift 2 ;; -O) exit 0 ;; -*) shift ;; *) break ;; esac; done\n'
-                     'shift; [ $# -eq 0 ] && exit 0; exec bash -c "$*"\n')
-        with open(os.path.join(fake, "midclt"), "w", encoding="utf-8") as fh:   # (MIDCLT_FAIL: the restart refused)
-            fh.write(f'#!/bin/bash\n[ -z "$MIDCLT_FAIL" ] || exit 1\necho "$*" >> {folder}/restarts\n')
-        with open(os.path.join(fake, "sudo"), "w", encoding="utf-8") as fh:   # (no sudo on the NAS: what the first try said stands)
-            fh.write("#!/bin/bash\nexit 1\n")
-        for name in ("ssh", "midclt", "sudo"):
-            os.chmod(os.path.join(fake, name), 0o755)
-        with open(os.path.join(project, "app", "code.py"), "w", encoding="utf-8") as fh:
-            fh.write("one\n")
-        with open(os.path.join(folder, "config"), "w", encoding="utf-8") as fh:
-            fh.write("TN_HOST=nas.example\nTN_USER=me\n")
-
-        def together(me: str, said: str) -> str:   # a check that passes only while the others run too
-            others = " && ".join(f"[ -f {folder}/{o} ]" for o in ("test", "validate", "types", "build") if o != me)
-            return (f"touch {folder}/{me}; for i in $(seq 200); do {others} && break; sleep 0.05; done; "
-                    f"{others} && echo {said}; s=$?; sleep 0.3; rm -f {folder}/{me}; exit $s")
-
-        def settings(failing: bool = False):
-            checks = ("echo the failure; echo 1/1 test failed; exit 1", "echo checked", "echo 0 errors", "echo 0 findings") if failing else \
-                (together("test", "12 tests passed"), together("validate", "checked"), together("types", "0 errors"),
-                 together("build", "0 ShellCheck findings"))
-            with open(os.path.join(project, ".callboard"), "w", encoding="utf-8") as fh:
-                fh.write(f"TN_APP=myapp\nTN_DEST={nas}\nTN_PATHS=app\n")
-            status = lambda note: f"printf '\\036{{\"status\": \"{note}\"}}\\n'"   # (the note beside the block's title, as a tool sends it)
-            _toml(project, unit=checks[0], dhtml=checks[1], types=checks[2], build=checks[3],
-                  # (once the tests are done: their marker gone; a test to add is a warning (exit 4), not a failure)
-                  coverage=f"[ ! -f {folder}/test ] && echo 2 fresh functions no test reaches; {status('tests to add')}; exit 4",
-                  upkeep="echo current; echo DEPENDENCIES  -  ALL UP TO DATE; echo; echo upkeep: $CALLBOARD_UPKEEP",
-                  audit=f"echo 3 lines no audit has seen; {status('code to audit')}; exit 4",   # (code to audit: a warning, straight away)
-                  style=f"echo '  new: css .a'; echo 2 looks need your approval: /the/page.html; {status('looks waiting')}; exit 4")
-        env = dict(os.environ, PATH=fake + os.pathsep + os.environ.get("PATH", ""), CALLBOARD_CONFIG=os.path.join(folder, "config"),
-                   XDG_STATE_HOME=os.path.join(folder, "state"), TMPDIR=folder)
-        env.pop("PLEXCACHE_PROGRESS", None)
-
-        def callboard(*args, **more):   # callboard local …, or callboard push local … ("push" first), or callboard restart
-            words = list(args) if args[:1] == ("restart",) else ["push", "local", *args[1:]] if args[:1] == ("push",) else ["local", *args]
-            got = subprocess.run([os.path.join(CALLBOARD, "bin", "callboard"), *words], cwd=project, env=dict(env, **more), capture_output=True,
-                                 text=True, timeout=120, stdin=subprocess.DEVNULL)
-            return got.returncode, got.stdout + got.stderr
-        settings()
-        rc, out = callboard("-y")   # (gone: a push restarts, a check never copies)
-        self.assertEqual(rc, 1, out)
-        self.assertIn("-y is gone: a push always restarts the app (callboard push <code>)", out)
-        # a check: the NAS compared, how far out said, nothing copied
-        rc, out = callboard()
-        self.assertEqual(rc, 0, out)
-        self.assertIn("Tour: nas.example: OUT OF SYNC (1 file to push · 1 new · to push it: callboard push local)", out)
-        self.assertFalse(os.path.exists(os.path.join(nas, "app", "code.py")))
-        self.assertFalse(os.path.exists(os.path.join(folder, "restarts")))
-        rc, out = callboard("push")
-        self.assertEqual(rc, 0, out)   # (the four checks at once, each passing only while the others run: not one after the other)
-        self.assertEqual(_read(os.path.join(nas, "app", "code.py"), encoding="utf-8"), "one\n")
-        self.assertIn("Copied 1 file · restarted myapp", out)   # (the files alone: not a folder, nor openrsync's "Transfer starting" note)
-        self.assertEqual(_read(os.path.join(folder, "restarts"), encoding="utf-8"), "call -j app.redeploy myapp\n")
-        self.assertNotIn("ALL CHECKS PASSED", out)   # (each section said its own: nothing said again)
-        self.assertNotIn("\n  DEPENDENCIES  -  ALL UP TO DATE", out)   # (its box: none when all are current)
-        for said in ("Unit Tests: PASSED (12 tests passed)", "DHTML: PASSED (checked)", "Python Validation: PASSED (0 errors)",
-                     "Build Validation: PASSED (0 ShellCheck findings)", "Dependencies: UP TO DATE", "==> Dependencies: export CALLBOARD_UPKEEP=move",
-                     "Wardrobe: LOOKS WAITING (2 looks need your approval: /the/page.html)",
-                     "Coverage: TESTS TO ADD (2 fresh functions no test reaches)",
-                     "Security Audit: CODE TO AUDIT (3 lines no audit has seen)"):
-            self.assertIn(said, out)
-        self.assertNotIn("\n  new: css .a\n", out)   # (the looks waiting: its block says how many and where, the rest not printed; nor a failure: rc 0)
-        rc, out = callboard()   # (a check, in sync: said, nothing restarted)
-        self.assertEqual(rc, 0, out)
-        self.assertIn("Tour: nas.example: ALREADY IN SYNC (Nothing copied · nas.example already has these files", out)   # (in its block, as each check is)
-        self.assertRegex(out, r"Unit Tests: ALREADY PASSED \(Passed just now \(\d{4}-\d\d-\d\d \d\d:\d\d\) · 12 tests passed\)")   # (when, and its result from then)
-        self.assertRegex(out, r"Python Validation: ALREADY PASSED \(Passed just now \(\d{4}-\d\d-\d\d \d\d:\d\d\) · 0 errors\)")
-        self.assertIn("Security Audit: CODE TO AUDIT (3 lines no audit has seen)", out)   # (the audits, read again)
-        self.assertNotIn("passed on this code", out)
-        self.assertIn("Build Validation: ALREADY PASSED", out)
-        self.assertIn("Coverage: TESTS TO ADD (2 fresh functions no test reaches)", out)   # (said again: from what the tests saved)
-        self.assertNotIn("ALREADY IN SYNC  -", out)   # (no box of its own: its block says it)
-        if shutil.which("git"):   # a change outside what's copied (the tests, the dev tools) is a change to the code too: tested again
-            subprocess.run(["git", "init", "-q", "-b", "topic", project], check=True)   # (a feature branch: the role as it was)
-            rc, out = callboard("push")   # (now a checkout: what the tests ran on is known, and this is the first time it is)
-            self.assertIn("The code has changed since the last test run", out)
-            rc, out = callboard("push")
-            self.assertRegex(out, r"Unit Tests: ALREADY PASSED")
-            os.makedirs(os.path.join(project, "tests"))
-            with open(os.path.join(project, "tests", "test_it.py"), "w", encoding="utf-8") as fh:
-                fh.write("one more\n")
-            rc, out = callboard("push")
-            self.assertEqual(rc, 0, out)
-            self.assertIn("Tour: nas.example: PASSED (The code has changed since the last test run (the tests or the dev tools, if not the app) · nothing copied · restarted myapp)", out)
-            self.assertIn("Unit Tests: PASSED (12 tests passed)", out)
-            rc, out = callboard("push")
-            self.assertRegex(out, r"Unit Tests: ALREADY PASSED")
-        # the NAS out of reach: the Sync block says so, red, with what ssh said; the checks run all the same
-        rc, out = callboard("push", "--no-sample")   # (Style Approval only checks: said in the header's modes)
-        self.assertRegex(out, r"\nLocal Copy[^\n]* · No sample")
-        rc, out = callboard("push", NAS_DOWN="1")
-        self.assertEqual(rc, 1, out)
-        self.assertIn("Tour: nas.example: CAN'T CONNECT: NOTHING COPIED (ssh: connect to host nas.example: timed out)", out)
-        self.assertIn("Unit Tests: PASSED", out)
-        # a failing check with --tests-first: nothing copied (nor restarted)
-        with open(os.path.join(project, "app", "code.py"), "w", encoding="utf-8") as fh:
-            fh.write("two\n")
-        settings(failing=True)
-        rc, out = callboard("push", "--tests-first")
-        self.assertEqual(rc, 1, out)
-        self.assertEqual(_read(os.path.join(nas, "app", "code.py"), encoding="utf-8"), "one\n")
-        self.assertIn("Tour: nas.example: NOT RUN: UNIT TESTS DIDN'T PASS", out)
-        self.assertIn("\nthe failure\n", out)
-        self.assertIn("\nLocal Copy", out)   # (the board's header)
-        settings()
-        restarts = _read(os.path.join(folder, "restarts"), encoding="utf-8").count("\n")
-        rc, out = callboard()   # (a check: one file changed)
-        self.assertIn("OUT OF SYNC (1 file to push · 1 changed · to push it: callboard push local)", out)
-        self.assertEqual(_read(os.path.join(nas, "app", "code.py"), encoding="utf-8"), "one\n")
-        rc, out = callboard("push")
-        self.assertEqual(rc, 0, out)
-        self.assertEqual(_read(os.path.join(nas, "app", "code.py"), encoding="utf-8"), "two\n")
-        self.assertRegex(out, r"Copied \d+ files? · restarted myapp")
-        self.assertEqual(_read(os.path.join(folder, "restarts"), encoding="utf-8").count("\n"), restarts + 1)
-        # a push with nothing to copy restarts all the same: the app runs the code the NAS has
-        rc, out = callboard("push")
-        self.assertEqual(rc, 0, out)
-        self.assertIn("Nothing copied · nas.example already has these files · restarted myapp", out)
-        self.assertEqual(_read(os.path.join(folder, "restarts"), encoding="utf-8").count("\n"), restarts + 2)
-        # a copy whose restart failed: the app still runs the code from before (its Python), so a check says so, and the
-        # next push restarts it
-        with open(os.path.join(project, "app", "code.py"), "w", encoding="utf-8") as fh:
-            fh.write("three\n")
-        rc, out = callboard("push", MIDCLT_FAIL="1")
-        self.assertEqual(rc, 1, out)   # (the Sync block failed: the run did)
-        self.assertIn("myapp couldn't be restarted", out)
-        rc, out = callboard()
-        self.assertEqual(rc, 0, out)
-        self.assertIn("ALREADY IN SYNC · NOT RESTARTED", out)
-        self.assertIn("myapp not restarted since the copy (", out)
-        rc, out = callboard("push")
-        self.assertEqual(rc, 0, out)
-        self.assertIn("restarted myapp", out)
-        self.assertEqual(_read(os.path.join(folder, "restarts"), encoding="utf-8").count("\n"), restarts + 3)
-        rc, out = callboard()
-        self.assertNotIn("NOT RESTARTED", out)
-        # callboard restart: the restart alone, nothing compared or checked
-        rc, out = callboard("restart")
-        self.assertEqual(rc, 0, out)
-        self.assertIn("Nothing copied · restarted myapp", out)
-        self.assertNotIn("Unit Tests", out)
-        self.assertEqual(_read(os.path.join(folder, "restarts"), encoding="utf-8").count("\n"), restarts + 4)
-        rc, out = callboard("restart", MIDCLT_FAIL="1")
-        self.assertEqual(rc, 4, out)
-        # callboard status: how the NAS stands, as JSON alone on stdout. Quick, while a run's under way too: not the
-        # dependencies' check a run ends with, and the run's SSH connection kept to (never one of its own left open, which
-        # would hold the JSON's pipe, nor the shared one closed under the run); a NAS that doesn't answer said in seconds
-        log = os.path.join(folder, "ssh.log")
-        got = subprocess.run([os.path.join(CALLBOARD, "bin", "callboard"), "status", "local"], cwd=project, env=dict(env, SSH_LOG=log), capture_output=True,
-                             text=True, timeout=120, stdin=subprocess.DEVNULL)
-        st = json.loads(got.stdout)
-        self.assertNotIn("Checking the dependencies", got.stderr)
-        self.assertNotIn("upkeep:", got.stdout + got.stderr)
-        calls = _read(log, encoding="utf-8").splitlines()
-        self.assertTrue(calls)
-        for call in calls:
-            self.assertIn("ControlMaster=no", call)
-            self.assertIn("ConnectTimeout=10", call)
-            self.assertNotIn("-O exit", call)
-        self.assertEqual((st["host"], st["app"], st["web_port"], st["reachable"], st["changes"]["known"], st["changes"]["total"], st["owed"]),
-                         ("nas.example", "myapp", 8642, True, True, 0, ""))
-        self.assertEqual(st["pushed"]["mode"], "local")
-        self.assertIsInstance(st["pushed"]["at"], int)
-        with open(os.path.join(project, "app", "new.py"), "w", encoding="utf-8") as fh:
-            fh.write("new\n")
-        st = json.loads(subprocess.run([os.path.join(CALLBOARD, "bin", "callboard"), "status"], cwd=project, env=env, capture_output=True,
-                                       text=True, timeout=120, stdin=subprocess.DEVNULL).stdout)
-        self.assertEqual((st["mode"], st["changes"]["total"], st["changes"]["new"], st["changes"]["changed"]), ("local", 1, 1, 0))
-        st = json.loads(subprocess.run([os.path.join(CALLBOARD, "bin", "callboard"), "status"], cwd=project, env=dict(env, NAS_DOWN="1"),
-                                       capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL).stdout)
-        self.assertEqual((st["reachable"], st["changes"]["known"]), (False, False))
-        self.assertIn("timed out", st["error"])
-
-
 class DevToolsUITests(unittest.TestCase):
     """callboard' records, the board's letters and state, and the callboard UI (dev/devui.py) that shows them."""
 
@@ -6058,105 +5400,6 @@ class DevToolsUITests(unittest.TestCase):
             return got.returncode, got.stdout + got.stderr
         return folder, run
 
-    @staticmethod
-    def records(folder: str) -> list[str]:
-        runs = os.path.join(folder, "state", "callboard", "runs")
-        return sorted(n for n in os.listdir(runs) if n[:1].isdigit()) if os.path.isdir(runs) else []
-
-    def test_each_run_is_kept_as_a_record(self):
-        """Every run of callboard leaves a record (its STATE_DIR's runs/<when>-<n>/, in the order started): the plan it wrote — what the run
-        is (mode, kind), the UI the board's keys open, each block's letter — the board's state as it ended (state.json),
-        each block's output. --checks-only runs the checks alone (nothing copied, the NAS not asked, no result recorded
-        for it), --only one block alone, push --sync-only the push alone (no dependencies); the oldest records beyond
-        CALLBOARD_KEEP_RUNS go. A project's .tnsync, and tnsync's state folder, are read where it still has them."""
-        folder, run = self.toy()
-        rc, out = run("local", "--checks-only")
-        self.assertEqual(rc, 1, out)   # (the build check fails: said, as on any run)
-        self.assertIn("Local Copy · feature · Checks only", out)   # (the branch has no role set in callboard.toml: "*", feature)
-        self.assertNotIn("Tour: ", out)
-        self.assertFalse(os.path.exists(os.path.join(folder, "ssh-calls")))   # (the NAS wasn't asked)
-        self.assertEqual([n for n in os.listdir(os.path.join(folder, "state", "callboard")) if n not in ("runs", "ssh")], [])   # (no result for the NAS)
-        names = self.records(folder)
-        self.assertEqual(len(names), 1)
-        self.assertRegex(names[0], r"^\d{8}-\d{6}-\d+$")
-        record = os.path.join(folder, "state", "callboard", "runs", names[0])
-        self.assertEqual(sorted(os.listdir(record)), ["logs", "plan.json", "request.json", "results", "state.json"])   # (the request: what callboard asked dev/plan.py for)
-        with open(os.path.join(record, "plan.json"), encoding="utf-8") as fh:
-            plan = json.load(fh)
-        self.assertEqual((plan["mode"], plan["kind"], plan["only"], plan["role"], plan["phase"], plan["gate"], plan["diff"]),
-                         ("local", "checks", "", "feature", "", "", False))
-        self.assertEqual(plan["config"], os.path.realpath(os.path.join(folder, "project", "callboard.toml")))
-        self.assertEqual(plan["project"], os.path.realpath(os.path.join(folder, "project")))   # (the folder as it really is: on a Mac, /var is /private/var)
-        self.assertEqual(plan["ui"]["cmd"], f"python3 {shlex.quote(os.path.join(DEVLIB, 'devui.py'))}")   # (the install's UI, not a file of the project's)
-        pages = {s["id"]: s.get("page") for s in plan["sections"]}
-        self.assertEqual(pages, {"unit": "u", "types": "v", "build": "b", "audit": None, "coverage": "c", "i18n": "t",
-                                 "release": "l", "upkeep": "d"})   # (the letters follow the menu, Hub and Sync first; the audit's key is a: the audits page)
-        self.assertEqual((plan["hub_key"], plan["letters"]["audit"]), ("h", "e"))
-        self.assertEqual(next(s for s in plan["sections"] if s["id"] == "audit")["key"]["key"], "a")
-        with open(os.path.join(record, "state.json"), encoding="utf-8") as fh:
-            state = json.load(fh)
-        self.assertTrue(state["done"])
-        self.assertEqual({s["id"]: s["state"] for s in state["sections"]},
-                         {"unit": "pass", "types": "pass", "build": "fail", "audit": "warn", "coverage": "warn", "i18n": "info",
-                          "release": "info", "upkeep": "pass"})
-        build = next(s for s in state["sections"] if s["id"] == "build")
-        self.assertEqual((build["status"], build["last"], build["page"], build["rc"]), ("FAILED", "2 ShellCheck findings", "b", 1))
-        self.assertEqual(build["issues"], [{"level": "error", "text": "2 ShellCheck findings", "fix": ""}])   # (the board's Issues)
-        self.assertEqual(_read(build["log"], encoding="utf-8"), "2 ShellCheck findings\n")
-        self.assertTrue(build["log"].startswith(record))
-        # one block alone, and the copy alone
-        rc, out = run("local", "--only", "build")
-        self.assertEqual(rc, 1, out)
-        self.assertIn("Local Copy · feature · One block again", out)
-        self.assertNotIn("Unit Tests", out)
-        with open(os.path.join(folder, "state", "callboard", "runs", self.records(folder)[-1], "plan.json"), encoding="utf-8") as fh:
-            plan = json.load(fh)
-        self.assertEqual(([s["id"] for s in plan["sections"]], plan["kind"], plan["only"]), (["build"], "only", "build"))
-        rc, out = run("local", "--sync-only")   # (a push's: callboard local only checks)
-        self.assertEqual(rc, 1, out)
-        self.assertIn("--sync-only goes with push", out)
-        rc, out = run("push", "local", "--sync-only")
-        self.assertEqual(rc, 0, out)
-        self.assertIn("Local Copy · feature · Push only", out)
-        self.assertIn("Tour: nas.example: PASSED", out)
-        self.assertNotIn("Dependencies", out)
-        self.assertNotIn("Tests and checks", out)
-        self.assertEqual(_read(os.path.join(folder, "nas", "app", "code.py"), encoding="utf-8"), "one\n")
-        with open(os.path.join(folder, "state", "callboard", "runs", self.records(folder)[-1], "plan.json"), encoding="utf-8") as fh:
-            plan = json.load(fh)
-        self.assertEqual(([s["id"] for s in plan["sections"]], plan["kind"]), (["sync"], "sync"))
-        self.assertEqual(plan["sections"][0]["page"], "s")
-        with open(os.path.join(folder, "state", "callboard", "runs", self.records(folder)[-1], "detail", "sync.json"), encoding="utf-8") as fh:
-            sync = json.load(fh)   # (the copy's page: what went where, each file as rsync listed it)
-        self.assertEqual((sync["kind"], sync["result"], sync["host"], sync["user"], sync["app"], sync["mode"], sync["dry_run"], sync["restart"], sync["restarted"]),
-                         ("sync", "copied and restarted", "nas.example", "me", "myapp", "local", False, True, True))
-        self.assertEqual((sync["source"], sync["dest"], sync["paths"], sync["changed"]), (os.path.realpath(os.path.join(folder, "project")), os.path.join(folder, "nas"), ["app"], 1))
-        self.assertEqual(sync["files"], ["code.py"])   # (as rsync lists them: within the path)
-        rc, out = run("local", "--only", "nope")
-        self.assertEqual(rc, 1)
-        self.assertIn("--only nope: not an integration", out)
-        rc, out = run("push", "local", "--sync-only", "--checks-only")
-        self.assertEqual(rc, 1)
-        # the oldest records go
-        self.assertEqual(len(self.records(folder)), 3)
-        rc, out = run("local", "--only", "types", CALLBOARD_KEEP_RUNS="2")
-        self.assertEqual(rc, 0, out)
-        self.assertEqual(len(self.records(folder)), 2)
-        # tnsync's names, still read: a project's .tnsync, and the state folder it kept
-        os.rename(os.path.join(folder, "project", ".callboard"), os.path.join(folder, "project", ".tnsync"))
-        os.rename(os.path.join(folder, "state", "callboard"), os.path.join(folder, "state", "tnsync"))
-        rc, out = run("local", "--only", "types")
-        self.assertEqual(rc, 0, out)
-        self.assertFalse(os.path.exists(os.path.join(folder, "state", "tnsync")))
-        self.assertEqual(len(self.records(folder)), 3)
-        rc, out = run("local", "--only", "types", CALLBOARD_CONFIG=os.path.join(folder, "none"))   # (no config at all: as before)
-        self.assertEqual(rc, 1)
-        self.assertIn("TN_HOST isn't set", out)
-        self.assertIn("callboard ui", _read(os.path.join(CALLBOARD, "bin", "callboard"), encoding="utf-8").split("\n\n")[0] or "x")
-        rc, out = run("--help")
-        self.assertIn("callboard ui", out)
-        self.assertIn("--only <id>", out)
-
     def test_an_old_callboard_files_checks_are_moved_out(self):
         """A .callboard from before callboard.toml (TN_TEST, TN_VALIDATE… lines, the checks' commands then): the first run that
         meets them takes them out — the file kept aside as .callboard.before-toml, the lines said — and runs on; the next
@@ -6178,118 +5421,6 @@ class DevToolsUITests(unittest.TestCase):
         self.assertNotIn("moved the checks' settings", out)
         ignored = _read(os.path.join(ROOT, ".gitignore"), encoding="utf-8").splitlines()
         self.assertTrue({".callboard", ".callboard.before-toml"} <= set(ignored), ignored)
-
-    def test_the_board_writes_its_state_and_underlines_the_letters(self):
-        """dev/board.py: each section's letter (page) is underlined in its title while the board runs, pressed it opens
-        the UI (the plan's ui) at its page, u at the hub — told to the UI already open by "wanted"; and how the board
-        stands is written beside the results as it goes (state.json), the record the UI reads."""
-        from callboard import board
-        self.assertEqual(board.underlined("Current Tests", "c"), 0)
-        self.assertEqual(board.underlined("Coverage", "o"), 1)        # (not at a word's start: its first)
-        self.assertEqual(board.underlined("Security Audit", "a"), 9)   # (a word's start first)
-        self.assertEqual(board.underlined("Style Approval", "r"), 9)
-        self.assertEqual(board.underlined("Release checks", "e"), 1)
-        self.assertEqual(board.underlined("Sync", "z"), -1)
-        folder = tempfile.mkdtemp(dir=TMP)
-        logs = os.path.join(folder, "logs")
-        os.makedirs(logs)
-        plan = {"header": ["Local Copy · Checks only"], "commit": "a1b2c3d", "ui": {"cmd": "echo ui", "cwd": folder},
-                "sections": [{"id": "current", "title": "Current Tests", "cmd": "echo 3 tests passed; echo $CALLBOARD_DETAIL > $(dirname $(dirname $CALLBOARD_DETAIL))/logs/where", "page": "c"},
-                             {"id": "build", "title": "Build Validation", "cmd": "echo 2 findings; exit 1", "page": "b"},
-                             {"id": "style", "title": "Style Approval", "cmd": "echo waiting; exit 1", "warn": {"rc": 1, "note": "looks waiting"},
-                              "key": {"key": "r", "cmd": "true", "does": "Review"}}]}
-        s = board.Section(plan["sections"][0], logs)
-        self.addCleanup(s.out.close)
-        self.assertNotIn("\033[4m", s.lines(80)[0])   # (the board not reading keys: nothing underlined)
-        s.live = True
-        head = s.lines(80)[0]
-        self.assertIn("\033[4mC\033[24murrent Tests", head)
-        self.assertEqual(len(board.ANSI.sub("", head)), 80)   # (the padding counts the letters, not the codes)
-        st = board.Section(plan["sections"][2], logs)
-        self.addCleanup(st.out.close)
-        st.live = True
-        self.assertIn("Style App\033[4mr\033[24moval", st.lines(80)[0])   # (its key's letter)
-        b = board.Board(plan, logs, tty=False)
-        with contextlib.redirect_stdout(io.StringIO()):   # (its report too: the suite's output is the tests', not a board's)
-            b.run()
-            b.report()
-        for sec in b.sections:
-            sec.out.close()
-        with open(os.path.join(folder, "state.json"), encoding="utf-8") as fh:
-            state = json.load(fh)
-        self.assertEqual((state["header"], state["commit"], state["done"], state["aborted"]), (["Local Copy · Checks only"], "a1b2c3d", True, False))
-        self.assertEqual([(x["id"], x["state"], x["page"], x["key"], x["status"], x["last"]) for x in state["sections"]],
-                         [("current", "pass", "c", "", "PASSED", "3 tests passed"), ("build", "fail", "b", "", "FAILED", "2 findings"),
-                          ("style", "warn", "", "r", "LOOKS WAITING", "waiting")])
-        self.assertEqual(state["sections"][2]["issues"], [{"level": "warning", "text": "waiting", "fix": ""}])
-        self.assertEqual(_read(os.path.join(logs, "where"), encoding="utf-8").strip(), os.path.join(folder, "detail", "current.json"))   # (where its tool's detail goes)
-        self.assertIsNotNone(state["started"])
-        self.assertGreaterEqual(state["ended"], state["started"])
-        # the keys: u the hub, a section's letter its page; the UI open already is told which
-        b.ui_proc = cast(Any, types.SimpleNamespace(poll=lambda: None))
-        b.keys("u")
-        self.assertEqual(_read(os.path.join(folder, "wanted"), encoding="utf-8"), "")
-        b.sections[1].live = True
-        b.keys("b")
-        self.assertEqual(_read(os.path.join(folder, "wanted"), encoding="utf-8"), "build")
-        b.keys("c")   # (not live: nothing)
-        self.assertEqual(_read(os.path.join(folder, "wanted"), encoding="utf-8"), "build")
-        b.ui_proc = None
-        with mock.patch.object(board.subprocess, "Popen") as popen, mock.patch.object(board.sys, "stdin", io.StringIO()):
-            popen.return_value.poll.return_value = None
-            with mock.patch.object(board.sys.stdin, "fileno", lambda: 0), mock.patch.object(board.sys.stdout, "fileno", lambda: 1):
-                b.keys("b")
-        cmd = popen.call_args[0][0][2]
-        self.assertEqual(cmd, f"echo ui --record {shlex.quote(folder)} --from-board --open build")
-        self.assertTrue(popen.call_args[1]["start_new_session"])
-        self.assertNotIn("PLEXCACHE_PROGRESS", popen.call_args[1]["env"])
-
-    def test_the_board_pushes_on_p_while_the_checks_run(self):
-        """A section that only told, with a "go" (a check's Sync block: how the NAS stands): once it has told, its key runs
-        it again as the go command (callboard push), a section like any other from then on — once, and only while the board
-        reads keys. The board then waits for it to end."""
-        from callboard import board
-        folder = tempfile.mkdtemp(dir=TMP)
-        logs = os.path.join(folder, "logs")
-        os.makedirs(logs)
-        pushed = os.path.join(folder, "pushed")
-        plan = {"sections": [
-            {"id": "current", "title": "Current Tests", "cmd": "echo test_one ok; sleep 0.5; echo 3 tests passed"},
-            {"id": "sync", "title": "Sync to nas", "cmd": "echo 1 file to push", "info": "out of sync",
-             "go": {"key": "p", "does": "Push and restart", "doing": "pushing", "cmd": f"echo $WHAT >> {pushed}; echo Copied 1 file · restarted myapp",
-                    "env": {"WHAT": "local"}, "after": []}}]}
-        b = board.Board(plan, logs, tty=False)
-        sync = b.by_id["sync"]
-        with contextlib.redirect_stdout(io.StringIO()):
-            b.keys("p")   # (not reading keys: nothing)
-            for x in b.sections:
-                x.live = True
-            b.keys("p")   # (still telling: nothing yet)
-            self.assertFalse(sync.gone)
-            end = time.time() + 10
-            while not sync.done and time.time() < end:
-                b.step()
-                b.read(0.05)
-            self.assertEqual((sync.state, sync.note, sync.last), ("info", "out of sync", "1 file to push"))
-            self.assertTrue(sync.goes)
-            # a section's output is in its log as it comes (the callboard UI reads it while the block runs; a run stopped
-            # short keeps what was printed), not once it ends
-            current = b.by_id["current"]
-            self.assertFalse(current.done)
-            self.assertEqual(_read(current.log, encoding="utf-8"), "test_one ok\n")
-            b.keys("p")
-            self.assertEqual((sync.state, sync.goes), ("waiting", False))
-            b.keys("p")   # (once)
-            while not all(x.done for x in b.sections) and time.time() < end:
-                b.step()
-                b.read(0.05)
-        for x in b.sections:
-            x.out.close()
-        self.assertEqual((sync.state, sync.last), ("pass", "Copied 1 file · restarted myapp"))
-        self.assertEqual(_read(pushed, encoding="utf-8"), "local\n")
-        self.assertEqual(b.by_id["current"].state, "pass")
-        self.assertIn("pushing", board.status(sync.go["doing"]).lower())
-        self.assertIn("==> Push and restart:", _read(sync.log, encoding="utf-8"))
 
     def test_the_tools_write_their_detail_for_their_pages(self):
         """dev/progress.py's detail: a tool's own account of what it found, as JSON in the file the board names
@@ -6432,60 +5563,6 @@ class DevToolsUITests(unittest.TestCase):
         return {"id": sid, "title": title, "page": page, "key": "", "state": state, "shown": state, "status": state.upper(), "note": "",
                 "last": last, "rc": 0, "log": "", "started": 1.0, "ended": 2.0, "bar": None, "issues": [], "warned": 0}
 
-    def test_the_hub_shows_the_newest_word_on_each_block(self):
-        """dev/devui.py's view: the last full run's blocks (a run, or the checks alone), each from the newest record that has
-        it — a block run again on its own, the copy alone, over it — with what it said the time before; the run under way
-        (its state written just now, not done); the history."""
-        from callboard import devui
-        runs = tempfile.mkdtemp(dir=TMP)
-        data = devui.Data(runs=runs)
-        self.assertEqual(data.view()["blocks"], [])
-        self.assertEqual(data.view()["mode"], "local")
-        done = {"header": ["Local Copy"], "commit": "aaa", "started": 1.0, "ended": 9.0, "done": True, "aborted": False}
-        self.record(runs, "20260101-100000-1", {"kind": "run", "mode": "dev", "header": ["Committed Copy on Dev"], "sections": []},
-                    dict(done, sections=[self.section("sync", "Sync to nas", "pass", "Copied 1 file", "s"), self.section("current", "Current Tests", "fail", "1 failed", "c"),
-                                         self.section("build", "Build Validation", "pass", "0 findings", "b")]))
-        self.record(runs, "20260101-110000-1", {"kind": "run", "mode": "local", "release": 1, "header": ["Local Copy"], "sections": []},
-                    dict(done, sections=[self.section("sync", "Sync to nas", "pass", "Copied 2 files", "s"), self.section("current", "Current Tests", "pass", "3 tests passed", "c"),
-                                         self.section("build", "Build Validation", "fail", "2 findings", "b")]), detail={"build": {"findings": 2}})
-        self.record(runs, "20260101-120000-1", {"kind": "only", "only": "build", "mode": "local", "header": ["Local Copy · One block again"], "sections": []},
-                    dict(done, sections=[self.section("build", "Build Validation", "pass", "0 findings", "b")]))
-        self.record(runs, "20260101-130000-1", {"kind": "sync", "mode": "local", "header": ["Local Copy · Sync only"], "sections": []},
-                    dict(done, sections=[self.section("sync", "Sync to nas", "fail", "rsync stopped partway", "s")]))
-        view = data.view()
-        self.assertEqual((view["header"], view["commit"], view["mode"], view["run"]), (["Local Copy"], "aaa", "local", "20260101-110000-1"))
-        self.assertEqual([(b["id"], b["state"], b["last"], b["run"]) for b in view["blocks"]],
-                         [("sync", "fail", "rsync stopped partway", "20260101-130000-1"), ("current", "pass", "3 tests passed", "20260101-110000-1"),
-                          ("build", "pass", "0 findings", "20260101-120000-1")])
-        self.assertEqual([(b["before"] or {}).get("last") for b in view["blocks"]], ["Copied 2 files", "1 failed", "2 findings"])
-        self.assertEqual([b["detail"] for b in view["blocks"]], [False, False, False])   # (the detail is the 11:00 run's; the block the 12:00's)
-        self.assertIsNone(view["live"])
-        self.assertEqual([(r["run"], r["kind"], r["blocks"].get("build")) for r in view["history"]],
-                         [("20260101-130000-1", "sync", None), ("20260101-120000-1", "only", "pass"), ("20260101-110000-1", "run", "fail"), ("20260101-100000-1", "run", "pass")])
-        # a run under way: its blocks as the board has them now, and the plan's for the ones not written yet
-        self.record(runs, "20260101-140000-1", {"kind": "checks", "mode": "local", "header": ["Local Copy · Checks only"],
-                                                "sections": [{"id": "current", "title": "Current Tests", "page": "c"}, {"id": "build", "title": "Build Validation", "page": "b"}]},
-                    {"header": ["Local Copy · Checks only"], "commit": "", "started": 5.0, "ended": None, "done": False, "aborted": False,
-                     "sections": [dict(self.section("current", "Current Tests", "running", "", "c"), bar={"name": "tests", "done": 4, "total": 9, "bad": 0, "warned": 0, "label": "test_x", "unit": "", "workers": 2, "tests": True, "ticking": False}),
-                                  self.section("build", "Build Validation", "waiting", "", "b")]})
-        view = data.view()
-        self.assertEqual(view["live"]["run"], "20260101-140000-1")
-        self.assertEqual([(b["id"], b["state"], b["live"]) for b in view["blocks"]], [("current", "running", True), ("build", "waiting", True)])
-        self.assertEqual(view["blocks"][0]["bar"]["done"], 4)
-        self.assertEqual(view["blocks"][0]["before"]["last"], "3 tests passed")
-        self.assertEqual(data.log({"id": "current"})["text"], "\n")
-        self.assertEqual(data.detail({"id": "build"})["detail"], None)
-        old = time.time() - 60   # (left, not under way: the board hasn't written for a while)
-        os.utime(os.path.join(runs, "20260101-140000-1", "state.json"), (old, old))
-        self.assertIsNone(data.view()["live"])
-        with self.assertRaises(ValueError):
-            data.log({"id": "nope"})
-        # a record with a plan alone (the board not started yet): its blocks waiting
-        self.record(runs, "20260101-150000-1", {"kind": "only", "only": "build", "mode": "local", "sections": [{"id": "build", "title": "Build Validation", "page": "b"}]}, None)
-        view = data.view()
-        self.assertEqual([(b["id"], b["state"]) for b in view["blocks"]], [("current", "running"), ("build", "waiting")])
-        self.assertEqual(view["blocks"][1]["run"], "20260101-150000-1")
-
     def test_connected_to_asks_the_dionysus_there_who_it_is(self):
         """The callboard UI's Connected to: the Dionysus at the NAS's web port, by its open hello — its fingerprint (of its
         key, as its own pages show it) and identity; anything else there, or nothing, said as such. The identicon is
@@ -6544,12 +5621,12 @@ class DevToolsUITests(unittest.TestCase):
                      f'until d="{runs}/$s-$(printf %02d $n)" && mkdir "$d" 2>/dev/null; do n=$((n + 1)); done; mkdir -p "$d/logs"\n'
                      'k=checks; case "$*" in *--only*) k=only ;; *--sync-only*) k=sync ;; restart*) k=restart ;; esac\n'
                      'm="$1"; [ "$1" != push ] || m="$2"\n'
-                     'printf \'{"kind": "%s", "mode": "%s", "args": "%s", "sections": [{"id": "current", "title": "Current Tests", "page": "c"}]}\' "$k" "$m" "$*" > "$d/plan.json"\n'
-                     'sleep 0.5\nprintf \'{"done": true, "started": 1, "ended": 2, "header": ["Local Copy"], "sections": [{"id": "current", "title": "Current Tests", "page": "c", "state": "pass", "status": "PASSED", "last": "ran: %s", "log": "", "issues": []}]}\' "$*" > "$d/state.json"\n')
+                     'printf \'{"kind": "%s", "mode": "%s", "args": "%s", "sections": [{"id": "unit", "title": "Unit Tests", "page": "c"}]}\' "$k" "$m" "$*" > "$d/plan.json"\n'
+                     'sleep 0.5\nprintf \'{"done": true, "started": 1, "ended": 2, "header": ["Local Copy"], "sections": [{"id": "unit", "title": "Unit Tests", "page": "c", "state": "pass", "status": "PASSED", "last": "ran: %s", "log": "", "issues": []}]}\' "$*" > "$d/state.json"\n')
         os.chmod(script, 0o755)
         record = self.record(runs, "20260101-100000-1", {"kind": "run", "mode": "dev", "header": ["Committed Copy on Dev"], "sections": []},
                              {"header": ["Committed Copy on Dev"], "commit": "abc", "started": 1.0, "ended": 9.0, "done": True, "aborted": False,
-                              "sections": [self.section("current", "Current Tests", "pass", "3 tests passed", "c"), self.section("build", "Build Validation", "fail", "2 findings", "b")]},
+                              "sections": [self.section("unit", "Unit Tests", "pass", "3 tests passed", "c"), self.section("build", "Build Validation", "fail", "2 findings", "b")]},
                              detail={"build": {"findings": [{"file": "dev/callboard", "line": 3, "text": "SC2086"}]}})
         data = devui.Data(runs=runs, record=record, script=script)
         up = threading.Event()
@@ -6608,7 +5685,7 @@ class DevToolsUITests(unittest.TestCase):
                 self.assertEqual(ask("GET", "/api/run", token="wrong")[0], 403)
                 status, body = ask("GET", "/api/run")
                 view = json.loads(body)
-                self.assertEqual((status, view["wanted"], view["mode"], [b["id"] for b in view["blocks"]]), (200, "build", "dev", ["current", "build"]))
+                self.assertEqual((status, view["wanted"], view["mode"], [b["id"] for b in view["blocks"]]), (200, "build", "dev", ["unit", "build"]))
                 self.assertEqual(json.loads(ask("GET", "/api/run")[1])["wanted"], "")   # (taken once)
                 with open(os.path.join(record, "wanted"), "w", encoding="utf-8") as fh:   # (the board's: u pressed)
                     fh.write("")
@@ -10189,7 +9266,7 @@ class OptimizerTests(unittest.TestCase):
             with open(os.path.join(sdir, f"bad-{what}-{i}.json"), "wb") as fh:
                 fh.write(raw)
             self.assertIsNone(claims.read_synced(os.path.join(sdir, f"bad-{what}-{i}.json")) if what != "at" else None)
-        self.assertEqual(claims.read_synced(os.path.join(sdir, "bad-at-3.json"))["at"], 0)
+        self.assertEqual(some(claims.read_synced(os.path.join(sdir, "bad-at-3.json")))["at"], 0)
         got = claims.claim(d, "abcdefgh", "system-a")
         self.assertEqual([c["instance"] for c in got["claims"]], ["system-a"])                      # (the bad ones skipped; "at": "soon" is stale)
         found = peers.read(app)
@@ -10198,7 +9275,7 @@ class OptimizerTests(unittest.TestCase):
         with open(os.path.join(sdir, "system-b.json"), "wb") as fh:
             fh.write(b"[]")
         self.assertEqual(claims.mark(d, "system-b", {"name": "Again"}), os.path.join(sdir, "system-b.json"))  # (our own marker, broken by a sync: written anew)
-        self.assertEqual(claims.read_synced(os.path.join(sdir, "system-b.json"))["name"], "Again")
+        self.assertEqual(some(claims.read_synced(os.path.join(sdir, "system-b.json")))["name"], "Again")
 
     def test_two_plex_caches_sharing_folders(self):
         """Two Dionysus instances on servers sharing library folders (peers.py): each publishes its settings in
@@ -10289,7 +9366,7 @@ class OptimizerTests(unittest.TestCase):
             self.assertFalse(app.updates.pulled_check())                                          # the tag moved: warned
             self.assertTrue(any("isn’t the one checked" in en(e["message"]) and e.get("level") == "warn" for e in app.activity.snapshot()["events"]))
             app.updates.pulled("sha256:" + "cd" * 32)
-            app._save_json(updates.PULLED, dict(app._load_json(updates.PULLED), at=time.time() - updates.PULLED_FOR - 1))
+            app._save_json(updates.PULLED, dict(some(app._load_json(updates.PULLED)), at=time.time() - updates.PULLED_FOR - 1))
             self.assertIsNone(app.updates.pulled_check())                                         # (a day on: dropped)
             self.assertIsNone(app._load_json(updates.PULLED))
 
@@ -14724,7 +13801,7 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertFalse(newer("0.12.9", "0.13.0"))
         self.assertEqual(parse_version("__version__ = '1.2.3'\n"), "1.2.3")
         self.assertIsNone(parse_version("nothing here"))
-        self.assertIn("raw.githubusercontent.com/drsassafras/TrueNAS-Plex-Caching/main/plexcache/__init__.py",
+        self.assertIn("raw.githubusercontent.com/drsassafras/Dionysus-Media-Server-Manager/main/plexcache/__init__.py",
                       __import__("plexcache.updates").updates.SOURCE)
         # the channel: a dev build reads the dev branch's version and its newest commit; the label says -dev
         from plexcache import updates, version_label
@@ -15044,7 +14121,7 @@ class MQTTTests(unittest.TestCase):
         assert st is not None
         self.assertEqual(st["update"]["installed_version"], self.app.version)
         upd = next(v for t, v in disc.items() if t.startswith("homeassistant/update/"))
-        self.assertEqual(upd["release_url"], "https://github.com/drsassafras/TrueNAS-Plex-Caching")
+        self.assertEqual(upd["release_url"], "https://github.com/drsassafras/Dionysus-Media-Server-Manager")
         # ...installable from Home Assistant when Dionysus can do the update (here: TrueNAS, its key accepted, control allowed)
         assert st is not None
         self.assertTrue(st["update_installable"])
@@ -17339,6 +16416,99 @@ class FutureTests(unittest.TestCase):
         self.assertIn("passes, with notes", future.verdict_line("3.16", policy.INFO))
         self.assertIn("the suite fails", future.verdict_line("3.16", policy.FAIL))
 
+    def test_docker_failing_itself_is_not_a_build_that_fails(self):
+        """Docker's own storage failing (its database not written: input/output error, its disk full) or its engine gone
+        mid-run is not the next Python's build failing nor a tag not published: the block is yellow (WARN, "Docker
+        failing" beside its title), a short line under its bar, and what to do in full above the board, as a failure is
+        (restart Docker; Clean / Purge data) — printed off the board — in both routes; the CVE look's build of the copy
+        shares the words (docker_broken)."""
+        from dev import cves, future
+
+        from callboard import policy
+        io_error = "write /var/lib/containerd/io.containerd.metadata.v1.bolt/meta.db: input/output error"
+        for said in (f"docker: Error response from daemon: {io_error}", f"ERROR: failed to build: failed to solve: {io_error}",
+                     "exec /bin/sh: input/output error", "write /var/lib/docker/tmp/x: no space left on device",
+                     "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?"):
+            self.assertTrue(future.docker_broken(["#5 [base 1/9] FROM python", said]), said)
+        for said in ("ERROR: python:3.16.0a9-slim-trixie: not found: manifest unknown", "gcc: error: x.c: No such file or directory",
+                     "curl: (6) Could not resolve host: ffmpeg.org", "make: *** [all] Error 2"):
+            self.assertEqual(future.docker_broken([said]), "", said)
+        self.assertEqual(future.docker_broken(["x" * 300 + io_error]), io_error.removeprefix("write "))   # (a long line: the words that matter)
+        why = future.docker_broken_why(io_error)
+        self.assertIn(io_error, why)
+        self.assertIn("restart Docker (in Docker Desktop, Quit, then open it again)", why)
+        self.assertIn("Clean / Purge data", why)
+        # the build: Docker's failure raised (not a failed build, not a failed download), the log's tail shown all the same
+        out = ["Unable to find image 'python:3.16.0a2-slim-trixie' locally", f"ERROR: failed to build: failed to solve: {io_error}"]
+
+        class Build:
+            def __init__(self, cmd, **kw):
+                self.stdout = iter(x + "\n" for x in out)
+
+            def wait(self, timeout=None):
+                return 1
+        with mock.patch.object(future, "has_buildkit", return_value=True), mock.patch.object(future, "docker_cpus", return_value=0), \
+                mock.patch.object(future, "LOG", os.path.join(TMP, "future-broken.log")), mock.patch.object(future.subprocess, "Popen", Build), \
+                mock.patch.dict(os.environ, {"PLEXCACHE_PROGRESS": ""}), contextlib.redirect_stdout(io.StringIO()) as shown, \
+                self.assertRaises(future.DockerBroken) as raised:
+            future.build_image("3.16.0a2-slim-trixie", [], False)
+        self.assertEqual(str(raised.exception), f"ERROR: failed to build: failed to solve: {io_error}")
+        self.assertIn("Docker failed while building on python:3.16.0a2-slim-trixie", shown.getvalue())
+        self.assertNotIn("the image didn't build", shown.getvalue())
+        self.assertIn(io_error, shown.getvalue())
+        # the route by hand: not run, Docker's failure and its fix said, never "no such tag yet, or the build fails there"
+        with mock.patch.object(future.shutil, "which", return_value="/usr/bin/docker"), mock.patch.object(future, "docker_up", return_value=""), \
+                mock.patch.object(future, "has_buildkit", return_value=True), mock.patch.object(future, "TESTS", [6]), \
+                mock.patch.object(future, "build_image", side_effect=future.DockerBroken(io_error)), \
+                contextlib.redirect_stdout(io.StringIO()) as shown:
+            self.assertEqual(future.image_route("3.16", "3.16.0a2-slim-trixie", ["tests.test_plexcache"], False, True, False), policy.WARN)
+        self.assertIn("Docker itself is failing, so the future tests didn't run on python:3.16.0a2-slim-trixie", shown.getvalue())
+        self.assertIn(f"  Docker said: {io_error}\n", shown.getvalue())
+        self.assertIn("1. Restart Docker (in Docker Desktop, Quit, then open it again).", shown.getvalue())
+        self.assertIn("Clean / Purge data", shown.getvalue())
+        self.assertNotIn("no such tag yet", shown.getvalue())
+        # on the board (the parts at once): not run, the plain part's container killed, its result not the run's
+        ran: list[list[str]] = []
+
+        class Plain:
+            def __init__(self, cmd, **kw):
+                self.returncode, self.stdout = 125, iter([f"docker: Error response from daemon: {io_error}\n"])
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+        with mock.patch.dict(os.environ, {"PLEXCACHE_PROGRESS": "feed"}), contextlib.redirect_stdout(io.StringIO()) as shown, \
+                mock.patch.object(future, "TESTS", [520]), mock.patch.object(future, "build_image", side_effect=future.DockerBroken(io_error)), \
+                mock.patch.object(future, "docker_cpus", return_value=1), mock.patch.object(future, "fetch_node", return_value=None), \
+                mock.patch.object(future, "install_web", return_value=[]), mock.patch.object(future, "test_classes", return_value=["AppTests", "OptimizerTests"]), \
+                mock.patch.object(future.subprocess, "Popen", Plain), mock.patch.object(future.subprocess, "run", side_effect=lambda cmd, **kw: ran.append(cmd) or mock.Mock(returncode=0)):
+            self.assertEqual(future.parallel_route("3.16.0a2-slim-trixie", [], [], None, []), policy.WARN)
+        self.assertIn(["docker", "kill", f"plex-cache-future-{os.getpid()}-plain"], ran)
+        recs = [r for r in map(future.record, shown.getvalue().split("\n")) if r]   # (not splitlines: the records' mark ends a line there)
+        self.assertIn({"status": "Docker failing"}, recs)   # (yellow, with its word beside the title)
+        self.assertIn({"said": "Docker is failing (input/output error) · restart Docker Desktop: see above"}, recs)
+        (told,) = [r["tell"] for r in recs if "tell" in r]   # (what to do in full: above the board, as a failure is — not printed again)
+        self.assertNotIn("\nDocker itself is failing", shown.getvalue())
+        self.assertIn(f"  Docker said: {io_error}\n", told)
+        self.assertIn("1. Restart Docker (in Docker Desktop, Quit, then open it again).", told)
+        self.assertIn("Clean / Purge data", told)
+        self.assertNotIn("no such tag yet", shown.getvalue())
+        self.assertIsNone(future.ONE[0])
+        # the CVE look's build of the copy: the same words, the same fix
+        lines = ["#1 [internal] load build definition", f"ERROR: failed to build: failed to solve: {io_error}"]
+
+        class Copy:
+            stdout = iter(x + "\n" for x in lines)
+
+            def wait(self, timeout=None):
+                return 1
+        d = tempfile.mkdtemp(dir=TMP)
+        with mock.patch.object(cves, "BUILD_LOG", os.path.join(d, "build.log")), mock.patch.object(future, "docker_up", return_value=""), \
+                mock.patch.object(future, "has_buildkit", return_value=True), mock.patch("subprocess.Popen", return_value=Copy()):
+            self.assertEqual(cves.build_local(d), ("", future.docker_broken_why(f"ERROR: failed to build: failed to solve: {io_error}")))
+
     def test_an_image_that_doesnt_build_ends_the_run_at_once(self):
         """The image not built: the run fails then, said with the build's log above it — the plain part's container (the
         tests that need no tools, which can take an hour on a small VM) killed by its name, never waited for to the end,
@@ -18910,17 +18080,6 @@ class TypeCheckTests(unittest.TestCase):
     """Python Validation (dev/typecheck.py): pyright and Ruff at their versions in dev/tools.toml, through the check tools'
     shared code (dev/checks.py), as callboard's block and GitHub run them."""
 
-    def test_ruffs_findings_as_every_check_says_them(self):
-        from callboard import checks, typecheck
-        def f(code, safe=False):
-            return {"code": code, "message": "m", "filename": os.path.join(ROOT, "a.py"), "location": {"row": 3, "column": 1},
-                    "fix": {"applicability": "safe"} if safe else None}
-        self.assertEqual([checks.say(x) for x in typecheck.ruff_findings([f("F401", True), f("B023")])],
-                         ["  a.py:3:1 - error: m (Ruff F401) [*]", "  a.py:3:1 - error: m (Ruff B023)"])
-        got = {"generalDiagnostics": [{"file": os.path.join(ROOT, "b.py"), "severity": "warning", "message": "w", "rule": "reportX",
-                                       "range": {"start": {"line": 4, "character": 2}}}]}
-        self.assertEqual([checks.say(x) for x in typecheck.pyright_findings(got)], ["  b.py:5:3 - warning: w (pyright reportX)"])
-
     def test_pins_are_tools_tomls_and_upkeeps(self):
         from dev import upkeep
 
@@ -18952,132 +18111,6 @@ class CoverageTests(unittest.TestCase):
     """dev/coverage.py, callboard's Coverage block: what counts as code, what's fresh (git blame) and settled, the rules for
     each, and the release bar; tests/run.py --coverage gathering it from every worker."""
 
-    SOURCE = ('"""A module."""\n'                       # 1 docstring: not code
-              "import os\n"                             # 2
-              "\n"
-              "@staticmethod\n"                         # 4 decorator: not code
-              "def one(a,\n"                            # 5 def: not code
-              "        b):\n"                           # 6
-              '    """Its docstring."""\n'              # 7
-              "    return a + b\n"                      # 8
-              "\n"
-              "class Thing:\n"                          # 10 class: not code
-              "    def go(self, path):\n"               # 11
-              '        if path == "/api/x":\n'          # 12
-              "            return 1\n"                  # 13
-              '        if path.startswith("/static/"):\n'   # 14
-              "            return 2\n"                  # 15
-              "        return 3\n"                      # 16
-              "\n"
-              'if __name__ == "__main__":\n'            # 18 the script's tail: not code
-              "    one(1, 2)\n")
-
-    def write(self):
-        folder = tempfile.mkdtemp(dir=TMP)
-        path = os.path.join(folder, "m.py")
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write(self.SOURCE)
-        return path
-
-    def test_what_counts_as_code(self):
-        from callboard import coverage
-        path = self.write()
-        self.assertEqual(coverage.code_lines(path), {2, 8, 12, 13, 14, 15, 16})
-        got = [(u.kind, u.name, u.line, sorted(u.lines)) for u in coverage.units(path, coverage.code_lines(path))]
-        self.assertEqual(got, [("function", "one", 5, [8]), ("function", "Thing.go", 11, [12, 13, 14, 15, 16]),
-                               ("route", "/api/x", 12, [13]), ("route", "/static/…", 14, [15])])
-
-    def file(self, code, ran, fresh=(), units=()):
-        from callboard import coverage
-        return coverage.File("plexcache/m.py", set(code), set(ran), set(fresh), list(units))
-
-    def test_fresh_code_needs_a_test_to_reach_each_function_and_route(self):
-        from callboard import coverage
-        units = [coverage.Unit("function", "one", 5, {8}), coverage.Unit("function", "two", 10, {11, 12}),
-                 coverage.Unit("route", "/api/x", 12, {13})]
-        got = coverage.fresh_check([self.file({8, 11, 12, 13}, {11}, fresh={8, 12, 13}, units=units)])
-        self.assertEqual([(f.line, f.message) for f in some(got.findings)], [(5, "no test reaches the fresh function one"),
-                                                                       (12, "no test reaches the fresh route /api/x")])
-        self.assertEqual(got.said(), ["2 fresh functions no test reaches"])   # (two: reached by one line of its, no line target)
-        self.assertEqual(coverage.fresh_check([self.file({8}, {8}, fresh={8}, units=units[:1])]).said(), ["1 fresh function reached"])
-
-    def test_settled_code_is_held_at_98_percent(self):
-        from callboard import coverage
-        code = set(range(1, 101))
-        ok = coverage.settled_check([self.file(code, code - {5, 6})], 98)   # (the bar: callboard.toml's [coverage] settled)
-        self.assertEqual((ok.findings, ok.said()), ([], ["settled 98.0% (of 98%)"]))
-        fresh_gaps = coverage.settled_check([self.file(code, code - set(range(1, 30)), fresh=set(range(1, 30)))], 98)
-        self.assertEqual(fresh_gaps.findings, [])   # (what fresh code lacks isn't settled code's)
-        short = coverage.settled_check([self.file(code, code - {5, 6, 7})], 98, "fail")
-        self.assertEqual([(f.message, f.level) for f in some(short.findings)], [("3 settled lines no test runs: 5-7", "fail")])
-        self.assertTrue(short.bad())
-        self.assertFalse(coverage.settled_check([self.file(code, code - {5, 6, 7})], 98, "warn").bad())   # (held as a warning: not failed)
-        self.assertEqual(coverage.settled_check([self.file(code, code - {5, 6, 7})], 90).findings, [])      # (a lower bar)
-
-    def test_the_release_bar(self):
-        from callboard import coverage
-        code = set(range(1, 101))
-        self.assertEqual(coverage.release_check([self.file(code, code - {1, 2})], 98, 90).findings, [])   # (the bars: [coverage.release] every_line, each_file)
-        got = coverage.release_check([self.file(code, set(range(1, 90)))], 98, 90)
-        self.assertEqual([f.message for f in some(got.findings)], ["89.0% of every line run, under the bar's 98%",
-                                                             "89.0% of its lines run, under the bar's 90% for each file"])
-        self.assertEqual((some(got.findings)[0].severity, some(got.findings)[0].level), ("error", "fail"))
-        self.assertEqual(coverage.release_check([self.file(code, set(range(1, 90)))], None, None).findings, [])   # (no bar set: nothing asked)
-        self.assertEqual([f.code for f in some(coverage.release_check([self.file(code, set(range(1, 90)))], 98, None).findings)], ["every_line"])
-
-    @unittest.skipUnless(shutil.which("git"), "no git here")
-    def test_fresh_and_settled_from_git(self):
-        import subprocess
-
-        from callboard import coverage
-        repo = tempfile.mkdtemp(dir=TMP)
-        run = lambda *a, **env: subprocess.run(["git", "-C", repo, *a], check=True, capture_output=True,
-                                               env=dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t",
-                                                        GIT_COMMITTER_EMAIL="t@t", **env))
-        run("init", "-q")
-        with open(os.path.join(repo, "f.py"), "w") as fh:
-            fh.write("a = 1\nb = 2\nc = 3\n")
-        run("add", "f.py")
-        run("commit", "-qm", "old", GIT_COMMITTER_DATE="2001-01-01T00:00:00Z", GIT_AUTHOR_DATE="2001-01-01T00:00:00Z")
-        with open(os.path.join(repo, "f.py"), "w") as fh:
-            fh.write("a = 1\nb = 22\nc = 3\nd = 4\n")
-        run("commit", "-qam", "new")
-        with open(os.path.join(repo, "f.py"), "a") as fh:
-            fh.write("e = 5\n")
-        got = coverage.blame("f.py", (repo, ""))
-        self.assertEqual(got[1], 978307200.0)   # (settled: 2001)
-        self.assertGreater(some(got[2]), time.time() - 3600)   # (committed just now: fresh)
-        self.assertIsNone(got[5])   # (not committed: fresh)
-        head = run("rev-parse", "HEAD").stdout.decode().strip()
-        self.assertEqual(set(coverage.blame("f.py", (repo, head))), {1, 2, 3, 4})   # (a copy callboard made: the commit it is)
-
-    def test_what_the_tests_ran_is_saved_for_this_code_only(self):
-        from callboard import coverage
-        folder = tempfile.mkdtemp(dir=TMP)
-        with mock.patch.object(coverage, "SAVED", os.path.join(folder, "coverage.json")):
-            self.assertIn("no coverage saved yet", coverage.load()[1])
-            coverage.save(coverage.merge([{"plexcache/a.py": [1, 2]}, {"plexcache/a.py": [2, 3], "plexcache/b.py": [1]}]), "passed")
-            got, why = coverage.load()
-            assert got is not None
-            self.assertEqual((got["hit"], why), ({"plexcache/a.py": [1, 2, 3], "plexcache/b.py": [1]}, ""))
-            with mock.patch.object(coverage, "code_signature", return_value="other code"):
-                self.assertIn("has changed since", coverage.load()[1])
-
-    def test_a_tracer_sees_every_thread(self):
-        import importlib
-
-        from plexcache import paging
-
-        from callboard import coverage
-        t = coverage.Tracer(tool=3).start()   # (not the run's own: --coverage may be watching this run)
-        try:
-            th = threading.Thread(target=importlib.reload, args=(paging,))   # (the module's lines run in a thread of its own)
-            th.start()
-            th.join()
-        finally:
-            got = t.stop()
-        self.assertIn(os.path.join("plexcache", "paging.py"), got)
-
     def test_the_suite_saves_what_every_worker_ran(self):
         import subprocess
         import textwrap
@@ -19103,68 +18136,18 @@ class CoverageTests(unittest.TestCase):
         self.assertLessEqual({os.path.join("plexcache", "paging.py"), os.path.join("plexcache", "pauses.py")}, set(saved["hit"]))
         self.assertEqual(saved["tests"], "passed")
 
-    def test_the_board_block(self):
-        from callboard import board, coverage
-        folder = tempfile.mkdtemp(dir=TMP)
-        out = io.StringIO()
-        from callboard.progress import record
-        with mock.patch.object(coverage, "SAVED", os.path.join(folder, "none.json")), contextlib.redirect_stdout(out), \
-                mock.patch.dict(os.environ, _policy_env(PLEXCACHE_PROGRESS="feed")):
-            self.assertEqual(coverage.main(["--callboard"]), 4)   # (nothing saved: "not measured", a warning ([coverage] not_measured), not a test to add)
-        self.assertIn("Coverage not measured · no coverage saved yet: the tests save it with --coverage (", out.getvalue())
-        self.assertIn({"status": "not measured"}, [r for r in map(record, out.getvalue().split("\n")) if r])   # (the note beside its title)
-        # (on the board: exit 4 a warning with the tool's own note, 3 a note, 5 not run; anything else red)
-        for rc, state, header in ((4, "warn", "TESTS TO ADD"), (3, "info", "NOT MEASURED"), (5, "notrun", "NOT RUN"), (1, "fail", "FAILED"), (2, "fail", "")):
-            s = board.Section({"id": "coverage", "title": "Coverage", "cmd": "true", "warn": {"rc": 4}, "tell": {"rc": 3}, "not_run_rc": 5}, folder)
-            self.addCleanup(s.out.close)
-            s.status_note = {4: "tests to add", 3: "not measured"}.get(rc, "")
-            s.finished(rc)
-            self.assertEqual(s.state, state, rc)
-            self.assertIn(header, s.lines(80)[0])
-        with mock.patch.object(coverage, "SAVED", os.path.join(folder, "none.json")), contextlib.redirect_stdout(io.StringIO()), \
-                mock.patch.dict(os.environ, _policy_env("release")):
-            self.assertEqual(coverage.main(["--callboard"]), 4)   # (a release's code: the same rule, until the toml says otherwise)
-        with mock.patch.object(coverage, "SAVED", os.path.join(folder, "none.json")), contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(coverage.main(["--saved"]), 2)   # (by hand: an error, as before)
-
-
 class PolicyTests(unittest.TestCase):
     """callboard.toml, read through dev/policy.py: the one place every rule lives — each kind of integration's schema, the
     branches' roles and the tags' phases, what a role inherits and its cap, full and diff mode, the gates, the exit codes
     every check shares, the menu letters, and dev/plan.py's board from it. No tool decides a level or a threshold itself."""
 
-    def starter(self, **data):
-        """dev/starter.toml as a Config, with ``data`` laid over its top-level tables."""
-        import tomllib
-
-        from callboard import policy
-        with open(os.path.join(DEVLIB, "starter.toml"), "rb") as fh:
-            got = tomllib.load(fh)
-        for k, v in data.items():
-            got[k] = v
-        return policy.Config(os.path.join(ROOT, "callboard.toml"), got)
-
-    def test_every_kind_of_integration_has_a_schema_and_the_files_check_clean(self):
-        from callboard import policy
-        for kind in policy.KIND_FILES:
-            sch = policy.schema(kind)
-            self.assertEqual(sch.kind, kind)
-            self.assertTrue(sch.settings, kind)
-            for name, s in sch.settings.items():
-                self.assertIn(s.kind, policy.KINDS, (kind, name))
-                self.assertTrue(s.doc, (kind, name))
-                self.assertNotIn(name, (*policy.BUILTIN_ROLES, "diff", "level"), (kind, name))   # (a setting can't be named like a role's table)
-        for path in (os.path.join(ROOT, "callboard.toml"), os.path.join(DEVLIB, "starter.toml")):
-            self.assertEqual(policy.Config(path).check(), [], path)
-        with self.assertRaises(policy.ConfigError):
-            self.starter(unit={"failures": "loud"}).check()
-        with self.assertRaises(policy.ConfigError):
-            self.starter(unit={"nothing": "fail"}).check()
-        with self.assertRaises(policy.ConfigError):
-            self.starter(coverage={"settled": "high"}).check()
-        with self.assertRaises(policy.ConfigError):
-            self.starter(branches={"main": {"role": "boss"}}).check()
+    def test_the_projects_callboard_toml_checks_clean(self):
+        """Plex Cache's callboard.toml is one callboard reads without a word against it (callboard's own tests hold the
+        schemas and the starter file to the same)."""
         import subprocess
+
+        from callboard import policy
+        self.assertEqual(policy.Config(os.path.join(ROOT, "callboard.toml")).check(), [])
         got = subprocess.run([sys.executable, os.path.join(DEVLIB, "policy.py"), "check", "--repo", ROOT], capture_output=True, text=True, timeout=60)
         self.assertEqual((got.returncode, got.stdout.strip()), (0, f"{os.path.join(ROOT, 'callboard.toml')}: ok"), got.stderr)
 
@@ -19181,70 +18164,6 @@ class PolicyTests(unittest.TestCase):
                 text = "\n".join(ln for ln in text.splitlines() if "MOVED_KEYS" not in ln)   # (the one mention: the warning that they moved)
             for word in gone + tuple(f"TN_{k}" for k in ("TEST", "VALIDATE", "TYPES", "BUILD", "COVERAGE", "I18N", "AUDIT", "FUTURE", "STYLE", "RELEASE", "UPKEEP")):
                 self.assertNotIn(word, text, (os.path.relpath(path, ROOT), word))
-
-    def test_branches_have_roles_and_tags_have_phases(self):
-        from callboard import policy
-        cfg = self.starter()
-        self.assertEqual([cfg.branch_role(b) for b in ("main", "master", "dev", "hotfix/x", "feature/x", "topic")],
-                         ["release", "release", "development", "hotfix", "feature", "feature"])
-        self.assertEqual(cfg.branch_role(""), "feature")   # (not a checkout, no branch: "*")
-        cfg = self.starter(branches={"preset": "dev-main", "main": {"role": "release"}, "release/*": {"role": "release-line"},
-                                     "release/2.*": {"role": "freeze"}, "*": {"role": "development"}})
-        self.assertEqual([cfg.branch_role(b) for b in ("release/1.0", "release/2.1", "anything")], ["release-line", "freeze", "development"])   # (the most specific wins)
-        cfg = self.starter()
-        self.assertEqual([cfg.tag_phase(t) for t in ("v1.2.0", "v1.2.0-rc.3", "v1.2.0-beta.1", "v1.2.0-alpha.2", "nightly")],
-                         [("release", "1.2.0"), ("freeze", "1.2.0"), ("preview", "1.2.0"), ("alpha", "1.2.0"), ("", "")])
-        self.assertEqual([cfg.phase_role(p) for p in ("preview", "freeze", "alpha")], ["preview", "freeze", ""])   # (an alpha changes nothing)
-        self.assertEqual(cfg.branches_of("development"), ["dev"])
-        self.assertEqual(cfg.role_chain("preview"), ["release", "preview"])
-        self.assertEqual(cfg.role_chain("feature"), ["development", "feature"])
-        self.assertEqual((cfg.role_cap("preview"), cfg.role_cap("release")), ("warn", ""))
-        self.assertEqual((cfg.gate("push")["diff"], cfg.gate("release")["diff"], cfg.gate("merge")["github"]), (True, False, True))
-        with self.assertRaises(policy.ConfigError):
-            cfg.gate("deploy")
-        # a pre-release tag holds its phase only while it's the code's version ([config] version_file): a beta of 0.16.0
-        # says nothing about 0.16.22, however new it is among the tags
-        import subprocess
-        repo = os.path.realpath(tempfile.mkdtemp(dir=TMP))
-        os.makedirs(os.path.join(repo, "plexcache"))
-        with open(os.path.join(repo, "plexcache", "__init__.py"), "w", encoding="utf-8") as fh:
-            fh.write('__version__ = "0.16.0"\n')
-        g = lambda *a: subprocess.run(["git", "-C", repo, *a], check=True, capture_output=True, text=True)
-        g("init", "-q", "-b", "dev")
-        g("-c", "user.name=t", "-c", "user.email=t@x", "commit", "-q", "--allow-empty", "-m", "one")
-        g("tag", "v0.16.0-beta.2")
-        cfg = policy.Config(os.path.join(repo, "callboard.toml"), {**self.starter().data, "config": {"version": 1, "version_file": "plexcache/__init__.py"}})
-        self.assertEqual(cfg.version(), "0.16.0")
-        self.assertEqual(policy.phase_tag(repo, cfg, "HEAD"), "v0.16.0-beta.2")   # (the beta of this very version: its preview)
-        with open(os.path.join(repo, "plexcache", "__init__.py"), "w", encoding="utf-8") as fh:
-            fh.write('__version__ = "0.16.22"\n')
-        self.assertEqual(policy.phase_tag(repo, cfg, "HEAD"), "")   # (dev has moved on: no phase)
-        self.assertEqual(policy.context(cfg=cfg, repo=repo).phase, "")
-        no_file = policy.Config(os.path.join(repo, "callboard.toml"), {**self.starter().data, "config": {"version": 1}})
-        self.assertEqual((no_file.version(), policy.phase_tag(repo, no_file, "HEAD")), ("", "v0.16.0-beta.2"))   # (no version named: the tag as it stands)
-
-    def test_a_roles_rules_are_laid_over_the_ones_it_inherits(self):
-        from callboard import policy
-        cfg = self.starter()
-        ctx = lambda role, diff=False: policy.Context(role=role, diff=diff, base="HEAD~1" if diff else "")
-        self.assertEqual([cfg.rules("unit", ctx(r)).level("warnings") for r in ("development", "feature", "release", "hotfix", "preview")],
-                         ["info", "info", "fail", "fail", "warn"])   # (hotfix inherits release's; a preview is capped at a warning)
-        self.assertEqual([cfg.rules("future", ctx(r)).level("failures") for r in ("development", "release")], ["fail", "off"])
-        r = cfg.rules("coverage", ctx("release"))
-        self.assertEqual((r.value("settled"), r.value_level("settled"), r.value("every_line"), r.value_level("every_line"), r.value("each_file")),
-                         (98, "warn", 98, "fail", 90))   # (a number's level: the integration's, or its own {value, level})
-        self.assertEqual((r.value("changed"), r.skipped("every_line")), (None, False))
-        d = cfg.rules("coverage", ctx("release", diff=True))
-        self.assertEqual((d.value("changed"), d.skipped("every_line"), d.skipped("each_file"), d.value("settled")), (90, True, True, 98))   # (full-only rules are skipped in diff mode, and said so)
-        self.assertIn("every_line: skipped in diff mode", d.said())
-        i = cfg.rules("i18n", ctx("release"))
-        self.assertEqual((i.target_for("targets", "fr"), i.targets_level("targets"), i.level("unused")), (100, "fail", "fail"))
-        self.assertEqual((cfg.rules("i18n", ctx("development")).target_for("targets", "fr"), cfg.rules("i18n", ctx("preview")).targets_level("targets")), (0, "warn"))
-        self.assertEqual([cfg.rules("upkeep", ctx(r)).text("move") for r in ("development", "release", "feature", "hotfix")], ["all", "minor", "none", "minor"])
-        self.assertEqual(cfg.rules("release", ctx("development")).items("manual_items"), ["Read the release notes through", "Check the README's screenshots still match"])
-        self.assertEqual((cfg.rules("audit", ctx("release", diff=True)).level("changed"), cfg.rules("audit", ctx("development", diff=True)).level("changed")), ("fail", "warn"))
-        with self.assertRaises(KeyError):   # (a tool asking for a setting its schema hasn't got: the tool's mistake, not the file's)
-            cfg.rules("unit", ctx("development")).level("nothing")
 
     def test_a_tool_run_inside_another_block_reads_its_own_rules(self):
         """dev/checks.py's levels: CALLBOARD_INTEGRATION names the block a command runs as (unit, say), but a tool a test
@@ -19273,115 +18192,6 @@ class PolicyTests(unittest.TestCase):
         self.assertTrue(set(run.CONTEXT_KEYS) >= {"CALLBOARD_INTEGRATION", "CALLBOARD_CONFIG", "CALLBOARD_ROLE", "CALLBOARD_PHASE", "CALLBOARD_DIFF", "CALLBOARD_GATE"})
         self.assertFalse(set(run.CONTEXT_KEYS) & set(os.environ), "callboard's context reached the tests")   # (this very run: taken out)
 
-    def test_the_context_is_what_every_check_is_told(self):
-        from callboard import policy
-        cfg = self.starter()
-        ctx = policy.context(cfg=cfg, env={"CALLBOARD_ROLE": "release", "CALLBOARD_BRANCH": "main", "CALLBOARD_PHASE": "freeze", "CALLBOARD_TAG": "v1.0.0-rc.1",
-                                           "CALLBOARD_DIFF": "1", "CALLBOARD_GATE": "push", "CALLBOARD_BASE": "origin/main", "CALLBOARD_CODE": "local"})
-        self.assertEqual((ctx.role, ctx.branch, ctx.phase, ctx.tag, ctx.diff, ctx.gate, ctx.base, ctx.mode), ("release", "main", "freeze", "v1.0.0-rc.1", True, "push", "origin/main", "diff"))
-        env = ctx.env()
-        self.assertEqual(sorted(env), ["CALLBOARD_BASE", "CALLBOARD_BRANCH", "CALLBOARD_CODE", "CALLBOARD_CONFIG", "CALLBOARD_DIFF", "CALLBOARD_GATE", "CALLBOARD_PHASE", "CALLBOARD_ROLE", "CALLBOARD_TAG"])
-        self.assertEqual(policy.context(cfg=cfg, env=env).__dict__ | {"root": "", "config": ""}, ctx.__dict__ | {"root": "", "config": ""})   # (round trip: nothing asked of git)
-        with self.assertRaises(policy.ConfigError):
-            policy.context(cfg=cfg, env={"CALLBOARD_ROLE": "boss"})
-
-    def test_exit_codes_and_the_worst_level(self):
-        from callboard import policy
-        self.assertEqual((policy.PASS, policy.FAIL, policy.BROKEN, policy.INFO, policy.WARN, policy.NOTRUN), (0, 1, 2, 3, 4, 5))
-        self.assertEqual([policy.exit_code(lv) for lv in ([], ["info"], ["info", "warn"], ["warn", "fail", "info"], ["off"])], [0, 3, 4, 1, 0])
-        self.assertEqual(policy.exit_code(["fail"], broken=True), 2)
-        self.assertEqual([policy.worst(lv) for lv in ([], ["info", "warn"], ["fail", "info"])], ["off", "warn", "fail"])
-        self.assertEqual([policy.state_of(rc) for rc in range(7)], ["pass", "fail", "fail", "info", "warn", "notrun", "fail"])
-
-    def test_the_letters_follow_the_menu(self):
-        from callboard import policy
-        self.assertEqual(policy.letters(["Hub", "Sync", "Python Validation", "Security Audit", "Style Approval", "Translations", "Tests"]),
-                         ["h", "s", "v", "e", "t", "n", ""])   # (p, a and r are the board's, never a page's; a title whose letters are all taken: no key)
-        self.assertEqual(policy.letters(["Hub", "Sync", "Translations", "Style Approval"]), ["h", "s", "t", "y"])   # (menu order: the first takes the letter)
-        self.assertEqual(policy.letters(["Hub", "Sync", "Unit Tests"], ["", "", "x"]), ["h", "s", "x"])   # (a letter asked for, when free)
-        self.assertEqual(policy.letters(["Hub", "Sync", "Unit Tests"], ["", "", "p"]), ["h", "s", "u"])
-        self.assertEqual(policy.letters(["Hi", "Hi", "Hi"]), ["h", "i", ""])   # (none left: no key)
-
-    def test_the_integrations_on_the_board_are_the_ones_set_up(self):
-        from callboard import policy
-        folder = tempfile.mkdtemp(dir=TMP)
-        path = _toml(folder, unit="echo 1 test passed", types="echo 0 errors", audit="echo 0 findings", style="echo looks approved")
-        cfg = policy.Config(path)
-        self.assertEqual([i["id"] for i in cfg.integrations()], ["unit", "types", "audit", "style"])
-        cfg.data["integrations"]["audit"]["needs"] = ["dev/audit.toml"]   # (a file it needs that isn't here: not set up, hidden)
-        self.assertEqual([i["id"] for i in cfg.integrations()], ["unit", "types", "style"])
-        self.assertEqual([(i["id"], i["enabled"], i["ready"]) for i in cfg.integrations(all_=True) if i["id"] == "audit"], [("audit", True, False)])
-        cfg.data["integrations"]["types"]["enabled"] = False
-        cfg.data["integrations"]["more"] = {"title": "More Checks", "kind": "checks", "cmd": "echo more", "after": ["unit"], "letter": "m"}
-        self.assertEqual([(i["id"], i["letter"]) for i in cfg.integrations()], [("unit", "u"), ("style", "w"), ("more", "m")])   # (letters follow the menu; ``letter`` asks for one)
-        self.assertEqual((cfg.integration("types")["enabled"], cfg.integration("types")["letter"]), (False, ""))   # (hidden: no key; the Integrations page still lists it)
-        with self.assertRaises(policy.ConfigError):
-            cfg.integration("nothing")
-        cfg.data["integrations"]["more"]["kind"] = "magic"
-        with self.assertRaises(policy.ConfigError):
-            cfg.integrations()
-
-    def test_the_plan_is_the_board(self):
-        from callboard import plan, policy
-        folder = tempfile.mkdtemp(dir=TMP)
-        path = _toml(folder, unit="echo 3 tests passed", future="echo future", types="echo 0 errors", coverage="echo covered",
-                     i18n="echo translated", upkeep="echo current", style="python3 dev/style.py check")
-        cfg = policy.Config(path)
-        req = {"want": "check", "code": "local", "src": folder, "root": folder, "config": path, "self": "/x/callboard", "orig_args": ["local"],
-               "env": _policy_env("development", CALLBOARD_CONFIG=path), "tty": True, "label": "Local Copy", "commit": "abc", "action": "check",
-               "sync": {"id": "sync", "title": "Sync to nas", "cmd": "echo synced", "after": "__AFTER__", "page": "s"}}
-        got, ids = plan.build(req, cfg)
-        self.assertEqual(ids, ["unit", "future", "types", "coverage", "i18n"])   # (the checks whose result the run's is: not the dependencies, nor the looks)
-        self.assertEqual([s["id"] for s in got["sections"]], ["sync", "unit", "future", "types", "coverage", "i18n", "upkeep", "style"])
-        self.assertEqual((got["header"], got["role"], got["kind"], got["hub_key"], got["letters"]), (["Local Copy · development"], "development", "run", "h",
-                         {"unit": "u", "future": "e", "types": "v", "coverage": "c", "i18n": "t", "upkeep": "d", "style": "w"}))
-        unit = got["sections"][1]
-        self.assertEqual((unit["cmd"], unit["cwd"], unit["env"]["CALLBOARD_INTEGRATION"], unit["env"]["CALLBOARD_ROLE"], unit["warn"], unit["tell"], unit["not_run_rc"], unit["page"]),
-                         ("echo 3 tests passed", folder, "unit", "development", {"rc": 4}, {"rc": 3}, 5, "u"))
-        self.assertEqual((got["sections"][2]["stop_with"], got["sections"][4]["after"], got["sections"][0]["after"]), (["unit"], ["unit"], []))
-        upkeep = got["sections"][6]
-        self.assertEqual((upkeep["cmd"], upkeep["then"]["after"], upkeep["env"]["CALLBOARD_COPY"]), ("export CALLBOARD_UPKEEP=look; echo current", ids, folder))
-        self.assertEqual((got["sections"][7]["key"]["key"], got["sections"][7]["then"]["cmd"], got["sections"][7]["finale"]["cmd"]),
-                         ("r", "python3 dev/style.py sample", "python3 dev/style.py review --step"))
-        # --tests-first: the copy waits for the checks; a passed run: the tests' and checks' blocks only tell, the rest run again
-        got, _ = plan.build(req | {"tests_first": True}, cfg)
-        self.assertEqual((got["sections"][0]["after"], got["header"]), (ids, ["Local Copy · development · Tests first"]))
-        got, ids = plan.build(req | {"want": "passed", "passed": {"when": "just now", "last": {"unit": "3 tests passed"}}, "future_passed": True}, cfg)
-        self.assertEqual(ids, ["coverage", "i18n"])
-        self.assertEqual([(s["id"], s.get("info", "")) for s in got["sections"]],
-                         [("sync", ""), ("unit", "already passed"), ("future", "already passed"), ("types", "already passed"), ("coverage", ""), ("i18n", ""), ("upkeep", ""), ("style", "")])
-        self.assertEqual(got["sections"][1]["cmd"], "printf '%s\\n' 'Passed just now · 3 tests passed'")
-        self.assertEqual(got["sections"][4]["after"], [])   # (coverage: from what the tests saved, quick)
-        got, ids = plan.build(req | {"want": "passed", "passed": {"when": "just now", "last": {}}, "future_passed": False}, cfg)
-        self.assertNotIn("future", [s["id"] for s in got["sections"]])   # (the future tests didn't pass: run again)
-        # --only one block, --skip-tests, --skip-future, --no-sample, a release's code, a gate in diff mode
-        got, ids = plan.build(req | {"only": "types", "sync": None}, cfg)
-        self.assertEqual(([s["id"] for s in got["sections"]], ids, got["kind"], got["header"]), (["types"], ["types"], "only", ["Local Copy · development · One block again"]))
-        got, ids = plan.build(req | {"skip_tests": True, "sync": None}, cfg)
-        self.assertEqual(([s["id"] for s in got["sections"]], ids), (["checks", "upkeep"], []))
-        got, ids = plan.build(req | {"skip_future": True, "no_sample": True, "sync": None}, cfg)
-        self.assertEqual((got["sections"][1]["info"], ids, got["sections"][-1]["env"]["CALLBOARD_SAMPLE"], "then" in got["sections"][-1]), ("skipped", ["unit", "types", "coverage", "i18n"], "0", False))
-        got, _ = plan.build(req | {"env": _policy_env("release", CALLBOARD_CONFIG=path, CALLBOARD_PHASE="freeze", CALLBOARD_TAG="v1.0.0-rc.1"), "sync": None}, cfg)
-        self.assertEqual(got["header"], ["Local Copy · freeze (v1.0.0-rc.1)"])   # (a phase names its role: said once)
-        got, _ = plan.build(req | {"env": _policy_env("development", diff=True, gate="push", base="origin/dev", CALLBOARD_CONFIG=path), "sync": None, "checks_only": True}, cfg)
-        self.assertEqual((got["header"], got["gate"], got["diff"], got["kind"]), (["Local Copy · development · push gate · Diff · Checks only"], "push", True, "checks"))
-
-    def test_the_file_is_written_as_it_is_read(self):
-        """dumps (the UI's save) writes a file tomllib reads back the same: tables for the top level and each integration's
-        role and diff tables, inline tables for a number with a level and the targets."""
-        import tomllib
-
-        from callboard import policy
-        with open(os.path.join(DEVLIB, "starter.toml"), "rb") as fh:
-            data = tomllib.load(fh)
-        text = policy.dumps(data)
-        self.assertEqual(tomllib.loads(text), data)
-        self.assertIn("\n[coverage.release]\nevery_line = {value = 98, level = \"fail\"}", text)
-        self.assertIn("\n[i18n.release]\ntargets = {\"*\" = 100}", text)
-        self.assertIn("\n[integrations.unit]\ntitle = \"Unit Tests\"", text)
-        self.assertIn('\n[branches."hotfix/*"]\nrole = "hotfix"', text)
-
-
 class GateTests(unittest.TestCase):
     """dev/gate.py: the checks run as a moment in the code's life holds them (push, merge, release), by hand, from the
     pre-push hook and on GitHub alike; what GitHub's workflows ask of callboard.toml; and the release's own steps
@@ -19402,28 +18212,9 @@ class GateTests(unittest.TestCase):
             env.pop(k, None)
         return folder, git, env
 
-    def test_what_github_asks(self):
-        """dev/gate.py --outputs: the config job's outputs — whether GitHub runs the gates ([github] enabled), which gate
-        this event is (a pull request the merge gate, a tag the release gate, else the push gate), and whether it runs:
-        true, false, or warn (reported, never blocking)."""
-        import tomllib
-
-        from callboard import gate, policy
-        with open(os.path.join(DEVLIB, "starter.toml"), "rb") as fh:
-            data = tomllib.load(fh)
-        cfg = policy.Config(os.path.join(ROOT, "callboard.toml"), data)
-        self.assertEqual(gate.github_config(cfg), {"enabled": False, "push": False, "merge": True, "release": True})   # (the starter: off until switched on)
-        self.assertEqual([gate.event_gate(e) for e in ({}, {"GITHUB_EVENT_NAME": "pull_request"}, {"GITHUB_EVENT_NAME": "pull_request_target"},
-                                                       {"GITHUB_EVENT_NAME": "push", "GITHUB_REF_TYPE": "tag"}, {"GITHUB_REF": "refs/tags/v1.0.0"}, {"GITHUB_EVENT_NAME": "workflow_dispatch"})],
-                         ["push", "merge", "merge", "release", "release", "push"])
-        self.assertEqual(gate.outputs(cfg, {"GITHUB_EVENT_NAME": "pull_request"}), {"enabled": "false", "gate": "merge", "run": "false"})
-        data["github"]["enabled"] = True
-        data["gates"]["push"]["github"] = "warn"
-        self.assertEqual(gate.outputs(cfg, {}), {"enabled": "true", "gate": "push", "run": "warn"})
-        self.assertEqual(gate.outputs(cfg, {"GITHUB_EVENT_NAME": "pull_request"}), {"enabled": "true", "gate": "merge", "run": "true"})
-        data["gates"]["release"]["github"] = False
-        self.assertEqual(gate.outputs(cfg, {"GITHUB_REF_TYPE": "tag"}), {"enabled": "true", "gate": "release", "run": "false"})
-        # the workflows ask exactly that: gates.yml its outputs and the gate by name, publish.yml the release gate, the notes and the bump
+    def test_the_workflows_ask_what_callboard_answers(self):
+        """GitHub's workflows ask callboard exactly what its gate answers (callboard's own tests hold gate.py to it): gates.yml
+        its outputs and the gate by name, publish.yml the release gate, the notes and the bump."""
         gates = _read(os.path.join(ROOT, ".github", "workflows", "gates.yml"), encoding="utf-8")
         self.assertIn("callboard gate --outputs | tee -a \"$GITHUB_OUTPUT\"", gates)
         self.assertIn("if: needs.config.outputs.run != 'false'", gates)
@@ -19436,45 +18227,6 @@ class GateTests(unittest.TestCase):
         build = _read(os.path.join(ROOT, ".github", "workflows", "build.yml"), encoding="utf-8")
         self.assertNotIn('tags: ["v*"]', build)   # (a tag is publish.yml's)
         self.assertNotIn("type=semver", build)
-
-    @unittest.skipUnless(shutil.which("git"), "no git here")
-    def test_a_gate_runs_the_board_as_the_moment_holds_it(self):
-        """python3 dev/gate.py push: the blocks callboard.toml turns on, as the board runs them, in the gate's context (its
-        role, diff mode when [gates.push] says so); the verdict the exit code — a warning passes, a failure doesn't.
-        --ci: skipped when [github] says so; a "warn" gate reports and exits 0."""
-        import subprocess
-        folder, git, env = self.project(unit="echo 2 tests passed", types="echo 1 warning; exit 4", build="echo 1 error; exit 1")
-        run = lambda *args, **more: subprocess.run([sys.executable, os.path.join(DEVLIB, "gate.py"), *args], cwd=folder, env=dict(env, **more),
-                                                   capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
-        got = run("push")
-        self.assertEqual(got.returncode, 1, got.stdout + got.stderr)
-        self.assertIn("Dev · development · push gate · Diff · Checks only", got.stdout)
-        self.assertIn("push gate (diff mode, development): FAILED: build", got.stdout)
-        self.assertIn("Python Validation: CHECK ABOVE (1 warning)", got.stdout)
-        got = run("push", "--ci")   # ([github] enabled = false: skipped, blocking nothing)
-        self.assertEqual(got.returncode, 0, got.stdout + got.stderr)
-        self.assertIn("the push gate is skipped on GitHub (callboard.toml: [github] enabled = false)", got.stdout)
-        toml = _read(os.path.join(folder, "callboard.toml"), encoding="utf-8")
-        with open(os.path.join(folder, "callboard.toml"), "w", encoding="utf-8") as fh:
-            fh.write(toml.replace("enabled = false", "enabled = true").replace('github = false', 'github = "warn"'))
-        got = run("push", "--ci")
-        self.assertEqual(got.returncode, 0, got.stdout + got.stderr)
-        self.assertIn("(reported only: [gates.push] github = \"warn\")", got.stdout)
-        got = run("merge", "--ci")   # (a merge gate: the code judged as the branch it's going to — main, a release's)
-        self.assertEqual(got.returncode, 1, got.stdout + got.stderr)
-        self.assertIn("merge gate (diff mode, release): FAILED: build", got.stdout)
-        git("checkout", "-q", "-b", "main")
-        git("tag", "-a", "-m", "rc", "v1.0.0-rc.1")
-        got = run("release", "--ci")   # (a release candidate: the freeze, the whole codebase)
-        self.assertEqual(got.returncode, 1, got.stdout + got.stderr)
-        self.assertIn("release gate (full mode, freeze, freeze v1.0.0-rc.1): FAILED: build", got.stdout)
-        got = run("deploy")
-        self.assertEqual(got.returncode, 2)
-        records = sorted(os.listdir(os.path.join(folder, "state", "callboard", "runs")))
-        self.assertEqual(len(records), 4)   # (each run a record, like callboard's own)
-        with open(os.path.join(folder, "state", "callboard", "runs", records[-1], "plan.json"), encoding="utf-8") as fh:
-            plan = json.load(fh)
-        self.assertEqual((plan["gate"], plan["diff"], plan["phase"], plan["tag"], [s["id"] for s in plan["sections"]]), ("release", False, "freeze", "v1.0.0-rc.1", ["unit", "types", "build"]))
 
     @unittest.skipUnless(shutil.which("git"), "no git here")
     def test_the_release_notes_and_the_next_version(self):
@@ -20000,26 +18752,6 @@ class CheckToolTests(unittest.TestCase):
         for rule in re.findall(r"(?m)^\s*-\s*(DL\d+|SC\d+)", hadolint):
             self.assertRegex(hadolint, rf"(?s)#[^\n]*\n(?:\s*#[^\n]*\n)*\s*-\s*{rule}", f"{rule}: turned off without a word on why")
 
-    def test_result_line_and_exit_code(self):
-        from callboard import checks
-        from callboard.checks import Check, Finding, Outcome
-        clean = Check("A", lambda: Outcome("A", "1.0", []))
-        found = Check("B", lambda: Outcome("B", "2.0", [Finding("B", "x.sh", 1, 2, "warning", "m", "SC1")]))
-        broken = Check("C", lambda: Outcome("C", "3.0", None, "C couldn't be fetched: no network"))
-        def run(*cs, github=False):   # (where it runs pinned: on GitHub's runners a finding is annotated on its line too)
-            out = io.StringIO()
-            with mock.patch.dict(os.environ, {"PLEXCACHE_PROGRESS": ""}), mock.patch.object(checks, "ON_GITHUB", github):
-                return checks.run(list(cs), stream=out), out.getvalue().splitlines()
-        self.assertEqual(run(clean), (0, ["0 A findings"]))
-        self.assertEqual(run(clean, found), (4, ["  x.sh:1:2 - warning: m (B SC1)", "0 A findings · 1 B finding"]))   # (a warning: held as one, exit 4)
-        self.assertEqual(run(clean, found, github=True), (4, ["  x.sh:1:2 - warning: m (B SC1)", "::warning file=x.sh,line=1,col=2,title=B SC1::m",
-                                                               "0 A findings · 1 B finding"]))
-        self.assertEqual(run(found, broken), (2, ["  x.sh:1:2 - warning: m (B SC1)", "  C couldn't be fetched: no network",
-                                                   "1 B finding · C didn't run"]))
-        # a tool whose findings don't fail it (pyright's information notes) says its own facts
-        notes = Check("D", lambda: Outcome("D", "4.0", [Finding("D", "y.py", 1, 1, "information", "n")], facts=["0 errors"], failed=False))
-        self.assertEqual(run(notes), (3, ["  y.py:1:1 - information: n (D)", "0 errors"]))   # (a note: exit 3, told on the board, nothing failed)
-
     def test_a_check_that_fails_says_what_it_found_as_it_comes(self):
         """On callboard's board every check tool's findings go above the board as they come, as the tests' failures do
         (progress.tell, the one way every tool says a failure): a check that's done and failed says them at once, not
@@ -20058,105 +18790,6 @@ class CheckToolTests(unittest.TestCase):
         # and the tests' failures by the same call (tests/run.py), so no tool says a failure another way
         self.assertIn("tell(text, feed=True)", _read(os.path.join(ROOT, "tests", "run.py"), encoding="utf-8"))
         self.assertNotIn('json.dumps({"tell"', _read(os.path.join(ROOT, "tests", "run.py"), encoding="utf-8"))
-
-    def test_two_checks_wanting_one_tool_fetch_it_once(self):
-        """Build Validation's ShellCheck and actionlint (which hands ShellCheck each step's script) both want ShellCheck, in
-        threads of one run: the first fetches it, the second waits and finds it there; neither's download is the other's."""
-        from callboard import checks
-        tool = {"name": "T", "version": "1.0", "get": "release", "url": "https://example.invalid/{asset}",
-                "assets": {checks.platform(): "t"}, "sha256": {checks.platform(): hashlib.sha256(b"#!/bin/sh\n").hexdigest()}}
-        gate, fetched = threading.Event(), []
-
-        def fetch(url):
-            fetched.append(url)
-            gate.wait(10)
-            return b"#!/bin/sh\n"
-        with tempfile.TemporaryDirectory() as d, mock.patch.object(checks, "CACHE", d), \
-                mock.patch.object(checks, "tools", return_value={"t": tool}), mock.patch.object(checks, "fetch", fetch):
-            got = []
-            threads = [threading.Thread(target=lambda: got.append(checks.command("t"))) for _ in range(3)]
-            for t in threads:
-                t.start()
-            threading.Timer(0.3, gate.set).start()
-            for t in threads:
-                t.join(20)
-            exe = os.path.join(d, f"t-1.0-{checks.platform()}", "t")
-            self.assertEqual(got, [([exe], "")] * 3)
-            self.assertEqual(len(fetched), 1)
-            self.assertEqual(os.listdir(d), [os.path.basename(os.path.dirname(exe))])   # (no download left half made)
-
-    def test_a_tool_just_fetched_and_still_busy_is_waited_for(self):
-        """'Text file busy': another check's subprocess, started while the download was written, holds it open a moment."""
-        import errno
-        import subprocess
-
-        from callboard import checks
-        done = subprocess.CompletedProcess(["t"], 0, "[]", "")
-        busy = OSError(errno.ETXTBSY, "Text file busy")
-        with mock.patch("subprocess.run", side_effect=[busy, busy, done]) as run, mock.patch("time.sleep"):
-            self.assertEqual(checks.json_out(["t"]), ([], done))
-        self.assertEqual(run.call_count, 3)
-        with mock.patch("subprocess.run", side_effect=FileNotFoundError(errno.ENOENT, "gone")), mock.patch("time.sleep"):
-            self.assertRaises(FileNotFoundError, checks.call, ["t"])   # (any other failure is said as it is)
-
-    def test_the_bar_counts_the_files_checked(self):
-        """On callboard's board a check tool's bar is the files its checks read, each counted once every check that reads it is
-        done (a file two tools read: when the second ends); a check that doesn't say what it reads: the checks done."""
-        from callboard import checks
-        from callboard.checks import Check, Outcome
-        self.assertEqual(checks.project_files("tools.toml", under=("dev",)), ["dev/tools.toml"])
-        self.assertIn("dev/upkeep.py", checks.project_files("*.py", under=("dev",)))
-        self.assertNotIn("dev/upkeep.py", checks.project_files("*.py", skip=("dev",)))
-        gate = threading.Event()
-
-        def slow():
-            gate.wait(10)
-            return Outcome("B", "2.0", [])
-        a = Check("A", lambda: Outcome("A", "1.0", []), lambda: ["x.py", "y.py"])
-        b = Check("B", slow, lambda: ["y.py", "z.sh"])
-        out = io.StringIO()
-        sent = []
-
-        def run(cs):
-            with mock.patch.dict(os.environ, {"PLEXCACHE_PROGRESS": "feed"}):
-                return checks.run(cs, stream=out)
-        with mock.patch("callboard.progress.Progress._feed", lambda self: sent.append((self.done, self.total, self.unit))):
-            threading.Timer(0.3, gate.set).start()
-            self.assertEqual(run([a, b]), 0)
-            self.assertEqual(sent[0], (0, 3, "files checked"))
-            self.assertIn((1, 3, "files checked"), sent)    # (A done: x.py; y.py waits for B too)
-            self.assertEqual(sent[-1][:2], (3, 3))
-            sent.clear()
-            gate.set()
-            self.assertEqual(run([Check("A", lambda: Outcome("A", "1.0", [])), b]), 0)
-            self.assertEqual((sent[0], sent[-1][:2]), ((0, 2, "checks done"), (2, 2)))
-
-    def test_a_release_binary_is_the_one_named(self):
-        from callboard import checks
-        data = b"#!/bin/sh\necho hi\n"
-        good = {"name": "T", "version": "1.0", "get": "release", "url": "https://example.invalid/{version}/{asset}", "binary": "",
-                "assets": {checks.platform(): "t"}, "sha256": {checks.platform(): hashlib.sha256(data).hexdigest()}}
-        bar = mock.Mock()   # (the bar of a run under way: a first run's wait is said on it)
-        with tempfile.TemporaryDirectory() as cache, mock.patch.object(checks, "CACHE", cache), \
-                mock.patch.object(checks, "fetch", return_value=data) as fetched, mock.patch.object(checks, "_BAR", [bar]):
-            with mock.patch.object(checks, "tools", return_value={"t": good}):
-                cmd, why = checks.command("t")
-                bar.show.assert_called_once_with("fetching T 1.0 (the first run only)", ticking=True)
-                assert cmd is not None
-                with open(cmd[0], "rb") as fh:
-                    self.assertEqual((why, fh.read()), ("", data))
-                assert cmd is not None
-                self.assertTrue(os.access(cmd[0], os.X_OK))
-                self.assertEqual(fetched.call_args[0][0], "https://example.invalid/1.0/t")
-                self.assertEqual(checks.command("t")[0], cmd)   # (the second time: the cached copy)
-                self.assertEqual((fetched.call_count, bar.show.call_count), (1, 1))
-            bad = {**good, "version": "2.0", "sha256": {checks.platform(): "0" * 64}}
-            with mock.patch.object(checks, "tools", return_value={"t": bad}):
-                cmd, why = checks.command("t")
-                self.assertIsNone(cmd)
-                self.assertIn("isn't the one dev/tools.toml names", why)
-                self.assertFalse(os.path.exists(os.path.join(cache, f"t-2.0-{checks.platform()}")))
-
 
 def _release_check(name: str, ok: bool, line: str, todo: list[str] | None = None):
     """A dev/release.py check for a test: check_<name>, so its rule in callboard.toml's [release] is <name>'s."""
@@ -26012,7 +24645,7 @@ class AppEdgeTests2(unittest.TestCase):
             resp = mock.MagicMock()
             resp.__enter__.return_value.read.return_value = json.dumps(md).encode()
             with mock.patch("urllib.request.urlopen", return_value=resp):
-                self.assertEqual(app.match_info("plex://movie/abcdef123456")["url"], want, named)
+                self.assertEqual(some(app.match_info("plex://movie/abcdef123456"))["url"], want, named)
 
     def test_scheduler_turn_and_helpers(self):
         app = _new_app()

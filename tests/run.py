@@ -62,6 +62,27 @@ from callboard.progress import OFF, RED, Progress, detail, drawn, feeding, short
 from callboard.progress import result as result_line  # noqa: E402 — (``result`` is run's: the result line every dev tool says)
 
 FEED = feeding()  # (read before main() takes PLEXCACHE_PROGRESS out of the tests' environment)
+# How this run talks to the board (callboard/board.py sets them for the block): its bars as records, and where its page's
+# detail goes. Taken here and out of the environment (_run), as CONTEXT is — a test that runs dev/upkeep.py, a check tool or
+# tests/run.py itself would otherwise send the board its own records ("upstream not reached: x" in the board's Issues, the
+# Unit Tests block's line a test's), and a test of what a tool prints with no board would see records instead. This run's
+# own (its result's note, its page) are sent with them put back: board_says.
+BOARD_KEYS = ("CALLBOARD_PROGRESS", "PLEXCACHE_PROGRESS", "CALLBOARD_DETAIL")
+BOARD = {k: os.environ[k] for k in BOARD_KEYS if k in os.environ}
+
+
+def board_says(fn, *args):
+    """``fn(*args)`` (progress.status, progress.detail) as this run's, to the board: with how it talks to it put back."""
+    was = {k: os.environ.get(k) for k in BOARD}
+    os.environ.update(BOARD)
+    try:
+        return fn(*args)
+    finally:
+        for k, v in was.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 # What callboard told this run (the integration that runs the suite, the project's callboard.toml, the code's role and the
 # rest of its context), taken here and then out of the environment (main): the tests, and every tool they run, see none
 # of it — a tool a test runs reads its own rules as it would by hand, and the suite's verdict is the same wherever
@@ -107,7 +128,7 @@ def verdict(failed: int, warned: int, skipped: int) -> int:
     worst = policy.worst([lv for lv in levels if lv != "off"])
     if worst in ("warn", "info"):
         said = [counted(n, w) for n, w, lv in ((failed, "failure", held["failures"]), (warned, "warning", held["warnings"]), (skipped, "skipped test", held["skipped"])) if n and lv == worst]
-        status(" · ".join(said) if FEED else "")
+        board_says(status, " · ".join(said) if FEED else "")
     return rc
 # (dev/future.py's run: the image build's steps, before the tests on the board's one bar — not the tests' own)
 BEFORE = int(os.environ.pop("PLEXCACHE_BAR_BEFORE", "") or 0) if FEED else 0
@@ -381,7 +402,7 @@ def detailed(passed: int, failed: list[str], warned: int, total: int, took: floa
              times: dict | None = None, skipped: int = 0) -> None:
     """The run's page in the callboard UI (callboard/progress.py's detail): the counts, each failure as unittest printed it, what
     the suite ran on, and the slowest classes (the times run_parallel keeps for its sharing-out)."""
-    detail({"kind": "tests", "passed": passed, "failed": len(failed), "warnings": warned, "skipped": skipped, "total": total, "not_run": max(0, total - passed - len(failed)),
+    board_says(detail, {"kind": "tests", "passed": passed, "failed": len(failed), "warnings": warned, "skipped": skipped, "total": total, "not_run": max(0, total - passed - len(failed)),
             "took": round(took, 1), "workers": workers, "stopped": stopped, "ran_on": ran_on(),
             "failures": [{"kind": failure_name(t)[0], "test": failure_name(t)[1], "text": t} for t in failed],
             "times": sorted(((k, v) for k, v in (times or {}).items()), key=lambda kv: -kv[1])[:25]})
@@ -656,7 +677,8 @@ def _run(module: str, jobs_n: int, excluded: set[str], started: float) -> int:
         suite = _without(suite, excluded)
     total = suite.countTestCases()
     tty = drawn(sys.stdout)
-    os.environ.pop("PLEXCACHE_PROGRESS", None)  # (this run's, not the tests': one that runs tests/run.py itself says its own)
+    for k in BOARD_KEYS:   # (this run's, not the tests': one that runs tests/run.py itself says its own)
+        os.environ.pop(k, None)
     for k in CONTEXT_KEYS:   # (callboard's context: this run's, taken above — not the tests')
         os.environ.pop(k, None)
     units = _units(suite) if jobs_n > 1 else None

@@ -82,7 +82,7 @@ SCHEMA = policy.Schema("audit", "Security Audit", {
 }, "Which app code the security audits have seen, and the release rules.")
 TYPES = ("vulnerability", "hardening")   # (exploitable, CVSS scored; or hardening, not exploitable: a priority, never a release block)
 PRIORITIES = ("low", "medium", "high")   # (a hardening finding's)
-NO_SEVERITY = "none"   # (shown as "None - False Positive": a severity only a false positive may have, as sac has it)
+NO_SEVERITY = "none"   # (shown as "None - False Positive": a severity only a false positive may have, as ghostlight has it)
 UNRATED = ("false-positive", "duplicate")   # (statuses whose finding may have no severity at all: nothing real to rate)
 CODE = ("there", "changed", "gone", "unknown")   # (a finding's lines in the code now: see code_state)
 ID = re.compile(r"^\d{4}-\d{2}-\d{2}-\d+$")
@@ -162,7 +162,14 @@ def private_root() -> str:
     if os.environ.get("PLEXCACHE_AUDITS"):
         return os.environ["PLEXCACHE_AUDITS"]
     base = os.environ.get("CALLBOARD_REPO") or ROOT
-    return os.path.normpath(os.path.join(base, config().get("private", "../TrueNAS-Plex-Caching-audits")))
+    named = config().get("private")
+    if named:
+        return os.path.normpath(os.path.join(base, named))
+    for name in ("../Dionysus-Media-Server-Manager-audits", "../TrueNAS-Plex-Caching-audits"):   # (its name before the rename)
+        path = os.path.normpath(os.path.join(base, name))
+        if os.path.isdir(path):
+            return path
+    return os.path.normpath(os.path.join(base, "../Dionysus-Media-Server-Manager-audits"))
 
 
 # ---------------------------------------------------------------- the records

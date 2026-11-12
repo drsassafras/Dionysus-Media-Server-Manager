@@ -381,6 +381,8 @@ def build_local(src: str, status: Callable[[str], None] | None = None) -> tuple[
                     tell(f"building {LOCAL_LABEL} · step {m.group(1)}/{m.group(2)}: {m.group(3)[:50]}")
             rc = proc.wait(timeout=60)
         if rc != 0:
+            if broken := future.docker_broken(lines):   # (Docker's own failure, said as the future run says it)
+                return "", future.docker_broken_why(broken)
             if future.fetch_failed(lines):
                 return "", f"a download for it failed; {BUILD_LOG}"
             return "", (lines[-1].strip()[:160] if lines else f"docker build: exit {rc}") + f"; {BUILD_LOG}"

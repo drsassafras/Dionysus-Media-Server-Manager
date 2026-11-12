@@ -3,7 +3,7 @@
 import os
 
 __version__ = "0.16.22"
-REPO_URL = "https://github.com/drsassafras/TrueNAS-Plex-Caching"
+REPO_URL = "https://github.com/drsassafras/Dionysus-Media-Server-Manager"
 # Which build this is: "stable" (the main branch, released and tagged) or "dev" (the dev branch, the
 # same version number until the next release). Set when the image is built (Dockerfile ARG); the
 # commit it was built from too, so a dev build knows whether dev has moved on.

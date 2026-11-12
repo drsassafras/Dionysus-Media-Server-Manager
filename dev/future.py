@@ -55,7 +55,8 @@ import dev  # noqa: E402 — (puts the callboard install on the path: dev/__init
 from dev import upkeep  # noqa: E402 — the exit codes; the pins, the stable releases and the version arithmetic are its
 
 from callboard import policy  # noqa: E402 — the exit codes; the pins, the stable releases and the version arithmetic are its
-from callboard.progress import Progress, detail, feeding, record, result, said, timed  # noqa: E402 — the bar the dev tools share (on callboard's board: sent to it)
+from callboard.progress import Progress, detail, feeding, record, result, said, status, timed  # noqa: E402 — the bar the dev tools share (on callboard's board: sent to it)
+from callboard.progress import tell as tell_above  # noqa: E402 — a failure in full, above the board (this file's tell: a word on the way)
 
 WARN = ["-X", "dev", "-W", "error::DeprecationWarning", "-W", "error::PendingDeprecationWarning", "-W", "error::SyntaxWarning"]
 IMAGE = "plex-cache:future"
@@ -695,6 +696,50 @@ def fetch_failed(lines: list[str]) -> bool:
     return any(FETCH_FAILED.search(x) for x in lines)
 
 
+# Docker itself failing, not the build or the tag: its own storage (it can't write its database, can't start a program in
+# a container, its disk full or gone read-only) or its engine gone mid-run. Nothing about the next Python is known from
+# that, and nothing runs in Docker till it's put right, so the run says "not run" (NOTRUN) with how to put it right —
+# never "no such tag yet, or the build fails there". (sac's deploy says the same of the same words: StorageFailing.)
+DOCKER_BROKEN = re.compile(r"/var/lib/(?:containerd|docker)/\S*: (?:input/output error|no space left on device|read-only file system)|"
+                           r"exec /\S+: input/output error|Cannot connect to the Docker daemon|Is the docker daemon running\?", re.I)
+DOCKER_FIX = ("so nothing can run in Docker till it's put right: restart Docker (in Docker Desktop, Quit, then open it again) and "
+              "run this again. If it keeps happening, check this computer has free disk space, then in Docker Desktop, "
+              "Troubleshoot, Clean / Purge data")
+
+
+class DockerBroken(Exception):
+    pass
+
+
+def docker_broken(lines: list[str]) -> str:
+    """What Docker said of itself failing (DOCKER_BROKEN) in ``lines``, its first such line; "" when it said nothing so."""
+    return next((m.group(0) if len(x.strip()) > 160 else x.strip() for x in lines if (m := DOCKER_BROKEN.search(x))), "")
+
+
+def docker_broken_why(said: str) -> str:
+    """The reason a run wasn't run when Docker itself failed (docker_broken's line): what it said and how to put it right."""
+    return f"Docker itself is failing ({said}), {DOCKER_FIX}"
+
+
+def docker_broken_report(line: str, tag: str) -> int:
+    """Docker itself failing (docker_broken's ``line``), said as the board says a problem to act on: yellow (WARN,
+    "DOCKER FAILING" beside the title) with a short line under the bar, and what to do in full above the board, as a
+    failure is (progress.tell) — printed instead off the board. Nothing is known about python:``tag`` from it, so it's
+    never red; but it's not grey either, as the next run fails the same way till Docker is put right."""
+    status("Docker failing")
+    short = "Docker is failing (input/output error)" if "input/output error" in line else "Docker is failing"
+    said(result(short, "restart Docker Desktop: see above"))
+    full = (f"Docker itself is failing, so the future tests didn't run on python:{tag}: nothing is known about it from this.\n"
+            f"  Docker said: {line}\n"
+            "  To put it right:\n"
+            "    1. Restart Docker (in Docker Desktop, Quit, then open it again).\n"
+            "    2. Run the future tests again.\n"
+            "  If it keeps happening: check this computer has free disk space, then in Docker Desktop, Troubleshoot, Clean / Purge data.")
+    if not tell_above(full):
+        print("\n" + full)
+    return policy.WARN
+
+
 def build_image(tag: str, args: list[str], verbose: bool) -> bool:
     """The project's image built on python:<tag> with the build arguments: with -v as docker prints it; otherwise one line
     that moves, the full output kept in LOG and its tail shown when the build fails."""
@@ -742,11 +787,14 @@ def build_image(tag: str, args: list[str], verbose: bool) -> bool:
     if rc == 0:
         line.end(f"image built on python:{tag}")
         return True
-    line.end(f"the image didn't build on python:{tag}", ok=False)
     with open(LOG, encoding="utf-8") as fh:
         tail = fh.read().splitlines()[-40:]
+    broken = docker_broken(tail)
+    line.end(f"Docker failed while building on python:{tag}" if broken else f"the image didn't build on python:{tag}", ok=False)
     print("\n".join("    " + x for x in tail))
     print(f"    (the whole build log: {LOG})")
+    if broken:   # (Docker's own failure, not the build's: before the download check, whose words it can share)
+        raise DockerBroken(broken)
     if fetch_failed(tail):
         raise FetchFailed(next(x.strip() for x in tail if FETCH_FAILED.search(x)))
     return False
@@ -865,6 +913,13 @@ def parallel_route(tag: str, args: list[str], picks: list[Pick], node_pick: Pick
         page.write(tag, picks, None, results, f"a download the build needs failed ({e})")
         print(f"\nNot run: a download the build needs failed ({e}). Nothing is known about python:{tag} from this — run it again.")
         return policy.NOTRUN
+    except DockerBroken as e:   # (nothing runs in Docker now: the plain part stopped too, its result not the run's)
+        given_up.set()
+        subprocess.run(["docker", "kill", f"{named}-plain"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        early_run.join(timeout=60)
+        ONE[0] = None
+        page.write(tag, picks, None, results, docker_broken_why(str(e)))
+        return docker_broken_report(str(e), tag)
     if not built:   # (a failure whatever the plain part finds: said now, not once every test has run on it)
         given_up.set()
         subprocess.run(["docker", "kill", f"{named}-plain"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -927,6 +982,8 @@ def image_route(python: str, tag: str | None, tests: list[str], verbose: bool, s
     except FetchFailed as e:
         print(f"\nNot run: a download the build needs failed ({e}). Nothing is known about python:{tag} from this — run it again.")
         return policy.NOTRUN
+    except DockerBroken as e:
+        return docker_broken_report(str(e), tag)
     if not built:
         print(f"\nThe image doesn't build on python:{tag} (no such tag yet, or the build fails there).")
         return 1

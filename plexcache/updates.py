@@ -235,7 +235,9 @@ class UpdateChecker:
         want = self.app._load_json(PULLED)
         if not isinstance(want, dict) or not isinstance(want.get("digest"), str):
             return None
-        at = want.get("at") if isinstance(want.get("at"), (int, float)) else 0
+        at = want.get("at")
+        if not isinstance(at, (int, float)):
+            at = 0
         if time.time() - at > PULLED_FOR:
             self._drop_pulled()
             return None

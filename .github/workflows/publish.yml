@@ -26,13 +26,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
         with:
           fetch-depth: 0
-      # the dev tools (their own project: github.com/drsassafras/callboard), fetched beside the code and named to it
+      # the dev tools (their own project: github.com/drsassafras/Callboard), fetched beside the code and named to it
       # (CALLBOARD_HOME: dev/__init__.py finds the install by that; its bin on the PATH, for `callboard gate`, `callboard tool`)
       - name: The dev tools
         env:
           CALLBOARD_REF: main
         run: |
-          git clone --quiet --depth 1 --branch "$CALLBOARD_REF" https://github.com/drsassafras/callboard "$RUNNER_TEMP/callboard"
+          git clone --quiet --depth 1 --branch "$CALLBOARD_REF" https://github.com/drsassafras/Callboard "$RUNNER_TEMP/callboard"
           echo "CALLBOARD_HOME=$RUNNER_TEMP/callboard" >> "$GITHUB_ENV"
           echo "$RUNNER_TEMP/callboard/bin" >> "$GITHUB_PATH"
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7
@@ -51,7 +51,7 @@ jobs:
         env:
           CALLBOARD_REF: main
         run: |
-          git clone --quiet --depth 1 --branch "$CALLBOARD_REF" https://github.com/drsassafras/callboard "$RUNNER_TEMP/callboard"
+          git clone --quiet --depth 1 --branch "$CALLBOARD_REF" https://github.com/drsassafras/Callboard "$RUNNER_TEMP/callboard"
           echo "CALLBOARD_HOME=$RUNNER_TEMP/callboard" >> "$GITHUB_ENV"
           echo "$RUNNER_TEMP/callboard/bin" >> "$GITHUB_PATH"
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4
@@ -116,7 +116,7 @@ jobs:
         env:
           CALLBOARD_REF: main
         run: |
-          git clone --quiet --depth 1 --branch "$CALLBOARD_REF" https://github.com/drsassafras/callboard "$RUNNER_TEMP/callboard"
+          git clone --quiet --depth 1 --branch "$CALLBOARD_REF" https://github.com/drsassafras/Callboard "$RUNNER_TEMP/callboard"
           echo "CALLBOARD_HOME=$RUNNER_TEMP/callboard" >> "$GITHUB_ENV"
           echo "$RUNNER_TEMP/callboard/bin" >> "$GITHUB_PATH"
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7
@@ -148,7 +148,7 @@ jobs:
         env:
           CALLBOARD_REF: main
         run: |
-          git clone --quiet --depth 1 --branch "$CALLBOARD_REF" https://github.com/drsassafras/callboard "$RUNNER_TEMP/callboard"
+          git clone --quiet --depth 1 --branch "$CALLBOARD_REF" https://github.com/drsassafras/Callboard "$RUNNER_TEMP/callboard"
           echo "CALLBOARD_HOME=$RUNNER_TEMP/callboard" >> "$GITHUB_ENV"
           echo "$RUNNER_TEMP/callboard/bin" >> "$GITHUB_PATH"
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7

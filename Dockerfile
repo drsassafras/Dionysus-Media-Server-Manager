@@ -2,7 +2,7 @@
 # dev/upkeep.py moves it to the tag's newest at each look, which is how patch releases arrive). The tag is an argument so
 # dev/future.py can build the same image on the next Python (--build-arg PYTHON_TAG=3.16-rc-slim-trixie, digest and all).
 # Debian, because MKVToolNix's own repository (mkvtoolnix.download) builds for it: each release there within days.
-ARG PYTHON_TAG=3.15-slim-trixie@sha256:e97b88e416c3c01eb427b21fd8cd3ebf006e6ee38afcfcc3cae1c54ee2ab0a75
+ARG PYTHON_TAG=3.15-slim-trixie@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928
 # The Debian that jpegtran and ffmpeg are built on (the stages below): the Python image's own, without Python — neither
 # uses it, so a new Python (dev/future.py's alpha, or the image refreshed upstream) doesn't build ffmpeg again (minutes).
 # Moved with PYTHON_TAG's Debian (the suite checks the two agree).
@@ -24,7 +24,7 @@ ARG FFMPEG_SOURCE=""
 ARG FFMPEG_STAMP=""
 # The Node that builds the web app's CSS, scripts and pages (the web stage below): its current LTS release. Only the build uses
 # it; the image has none.
-ARG NODE_TAG=26-slim@sha256:5adad64f9a1fca2d51972caa65983634c8a774eb300d72b20f7f2a0f60368072
+ARG NODE_TAG=26-slim@sha256:e6bedef217677b276c591795e169840edd9096dbf13f29df8ef8d1856b8820bc
 
 # What each download must hash to (SHA-256) before it's unpacked, and the signing key's fingerprint: a compromised release
 # or a man in the middle on the build network fails the build instead of reaching the image. Each hash moves with its
@@ -110,7 +110,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 LABEL org.opencontainers.image.title="Dionysus" \
       org.opencontainers.image.description="Keeps Plex media warm in ZFS ARC/L2ARC on TrueNAS" \
-      org.opencontainers.image.source="https://github.com/drsassafras/TrueNAS-Plex-Caching" \
+      org.opencontainers.image.source="https://github.com/drsassafras/Dionysus-Media-Server-Manager" \
       org.opencontainers.image.licenses="MIT"
 
 # Which branch this image is from ("stable": main, released; "dev": the dev branch, shown as 0.x.y-dev)

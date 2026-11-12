@@ -155,7 +155,7 @@ def _this_machines_address(host: str) -> bool:
         return False  # (a name: it could resolve anywhere)
     own: set = set()
     with contextlib.suppress(OSError):
-        own |= {ipaddress.ip_address(i[4][0].split("%")[0]) for i in socket.getaddrinfo(socket.gethostname(), None)}
+        own |= {ipaddress.ip_address(str(i[4][0]).split("%")[0]) for i in socket.getaddrinfo(socket.gethostname(), None)}
     for probe, family in (("192.0.2.1", socket.AF_INET), ("2001:db8::1", socket.AF_INET6)):
         with contextlib.suppress(OSError, ValueError), socket.socket(family, socket.SOCK_DGRAM) as sk:
             sk.connect((probe, 9))  # (a UDP connect sends nothing: it only picks the address this machine would send from)

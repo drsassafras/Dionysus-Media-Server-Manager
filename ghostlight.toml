@@ -1,8 +1,9 @@
-# Security Audit Coverage (sac): this project's settings. Public on purpose: nothing here names an auditor.
+# Ghostlight: this project's settings. Public on purpose: nothing here names an auditor.
 # The release rules (they do) are the private audits repo's rules.toml.
 
 [project]
-name = 'TrueNAS-Plex-Caching'
+name = 'Dionysus-Media-Server-Manager'
+aliases = ['TrueNAS-Plex-Caching']   # its name before the rename: records made under it are still its own
 mode = 'owner'
 
 [code]
@@ -10,7 +11,7 @@ include = ['plexcache/**/*.py', 'plexcache/web/*.js', 'plexcache/web/*.html', 'p
 
 [records]
 public = 'security/audits'
-private = '../TrueNAS-Plex-Caching-audits'
+private = '../Dionysus-Media-Server-Manager-audits'
 
 [git]
 
@@ -34,7 +35,7 @@ port = 0
 idle = 1800
 quiet = 1800
 open = true
-name = 'sac'
+name = 'ghostlight'
 bench = true
 own_cases = true
 
