@@ -2,6 +2,7 @@
 # The release rules (they do) are the private audits repo's rules.toml.
 
 [project]
+id = "1"   # this project's id: its findings are F-1-YYYY-NNN. Never change or reuse it
 name = 'Dionysus-Media-Server-Manager'
 aliases = ['TrueNAS-Plex-Caching']   # its name before the rename: records made under it are still its own
 mode = 'owner'

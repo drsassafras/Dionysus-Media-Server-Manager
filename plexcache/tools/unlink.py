@@ -29,6 +29,7 @@ from . import MAX_ROWS, Tool
 
 
 class UnlinkFiles(Tool):
+    """Unlink Files: symlinks and hard links made files of their own, or their extra paths removed."""
     name = "unlink"
     title = M("Unlink Files")
     page = "/unlink"
@@ -39,10 +40,12 @@ class UnlinkFiles(Tool):
     flag_help = M("A media file that’s a link: a hard link (one file under two paths — Plex lists one and ignores the other, and a folder sync turns it into two whole copies that drift apart) or a symlink. Unlink Files makes each a file of its own, or on a library that isn’t synced removes the extra paths.")
 
     def flag_lines(self, rows):
+        """Each row's line for Library Health."""
         return [M("{name}: a symlink to {target}", name=r.get("name") or "", target=r.get("target") or "") if r.get("kind") == "symlink"
                 else M("{name}: a hard link, {n} paths to one file", name=r.get("name") or "", n=r.get("links") or 2) for r in rows]
 
     def scan(self, data) -> dict:
+        """A library scanned for symlinks and hard links."""
         library = data.key
         lib = self.app.library_info(library)
         if not lib:
@@ -72,14 +75,17 @@ class UnlinkFiles(Tool):
     history = [("what", M("What was done")), ("written", M("Written")), ("paths", M("Paths"))]
 
     def history_row(self, row: dict, outcome: dict) -> dict:
+        """A row as its history shows it."""
         removed = int(outcome.get("removed") or 0)
         return {"what": M("{n} paths removed", one="{n} path removed", n=removed) if removed else M("Made a file of its own (was a {kind})", kind=row.get("kind") or "link"),
                 "written": int(outcome.get("bytes") or 0), "paths": int(row.get("links") or 1)}
 
     def changed_paths(self, row: dict, outcome: dict) -> list[str]:
+        """The paths a row changes: a link made a file of its own."""
         return [] if outcome.get("removed") else [row["local"]]  # (a link made a file of its own: its path; paths removed are re-linked instead)
 
     def revert_row(self, row: dict, outcome: dict, backup: dict, log) -> None:
+        """A row undone: the paths removed linked again, or the file put back from the backup."""
         if outcome.get("removed"):  # the extra paths removed: made again as links to the file, where Plex still has it
             for p in row.get("removable") or []:
                 self.file_action("link", row["local"], to=p)
@@ -101,10 +107,12 @@ class UnlinkFiles(Tool):
         return self.enabled(library).get("remove") == "remove"
 
     def needed_bytes(self, rows: list[dict]) -> int:
+        """The space Apply needs: a whole copy for each link made a file."""
         remove = bool(rows) and self.removes(str(rows[0].get("library") or ""))
         return sum(int(r.get("size") or 0) for r in rows if not (remove and r.get("removable")))  # (a link made a copy: a whole copy to write)
 
     def apply_async(self, ids: list[str], choices: dict | None = None) -> bool:
+        """The rows ticked applied, unless paths would be removed where the mirror isn't ready for it."""
         key = str((self.scan_result or {}).get("library") or "")
         mirror = self.mirrored(key)
         if self.removes(key) and mirror is not None:
@@ -112,6 +120,7 @@ class UnlinkFiles(Tool):
         return super().apply_async(ids, choices)
 
     def apply_row(self, row: dict, log) -> dict:
+        """A row applied: its extra paths removed, or the link made a file of its own."""
         remove = self.removes(str(row.get("library") or ""))
         if remove and row.get("removable"):
             gone = []

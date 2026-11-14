@@ -13,6 +13,7 @@ from .wsclient import WebSocket, WebSocketError
 
 
 class TrueNASError(Exception):
+    """A TrueNAS API call that failed."""
     pass
 
 
@@ -48,6 +49,7 @@ def missing_methods(known) -> dict:
 
 
 def ws_url(url: str) -> str:
+    """The API's WebSocket address for a TrueNAS address, refusing anything but HTTPS."""
     u = urllib.parse.urlparse(url if "://" in url else "https://" + url)
     if u.scheme != "https":
         # TrueNAS revokes API keys that are sent over unencrypted connections.
@@ -79,6 +81,7 @@ def probe(url: str, timeout: float = 5) -> bool:
 
 
 class TrueNASClient:
+    """A client for TrueNAS's JSON-RPC API, over a WebSocket."""
     def __init__(self, url: str, api_key: str, verify_tls: bool = False, timeout: float = 20, tls=None):
         """``tls``: the context the connection is verified with (tlspin, through App.truenas: the pin, or full
         verification); without one, ``verify_tls`` as before (False: unverified — tests and probes only)."""
@@ -99,6 +102,7 @@ class TrueNASClient:
             raise TrueNASError(M("TrueNAS rejected the API key"))
 
     def call(self, method: str, params: list | None = None):
+        """An API method called: its result, raising TrueNASError on an error."""
         msg_id = next(self._ids)
         try:
             self.ws.send_text(json.dumps({"jsonrpc": "2.0", "id": msg_id, "method": method, "params": params or []}))
@@ -117,16 +121,20 @@ class TrueNASClient:
             raise TrueNASError(M("TrueNAS sent a reply that isn’t JSON")) from None
 
     def close(self) -> None:
+        """The connection closed."""
         self.ws.close()
 
     def __enter__(self):
+        """The client, as a context."""
         return self
 
     def __exit__(self, *exc):
+        """The connection closed on leaving the context."""
         self.close()
 
     # ------------------------------------------------------------- queries
     def version(self) -> str:
+        """TrueNAS's version, or "" where it can't be had."""
         try:
             return str(self.call("system.version"))
         except TrueNASError:
@@ -165,6 +173,7 @@ class TrueNASClient:
         return None
 
     def pool(self, name: str) -> dict | None:
+        """A pool by name, or None."""
         pools = self.call("pool.query", [[["name", "=", name]]])
         return pools[0] if pools else None
 
@@ -218,6 +227,7 @@ class TrueNASClient:
         return self.call("app.query") or []
 
     def disk_sizes(self, names: list[str]) -> dict:
+        """Each disk's size, by name."""
         if not names:
             return {}
         rows = self.call("disk.query", [[["name", "in", names]]])

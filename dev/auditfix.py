@@ -157,6 +157,7 @@ def where_is(root: str, fid: str) -> tuple[audit.Audit, dict]:
 
 
 def note(f: dict, said: str) -> None:
+    """A dated note added to a finding's checks."""
     f["checks"] = [*list(f.get("checks") or []), f"{datetime.date.today().isoformat()}: {said}"]
 
 

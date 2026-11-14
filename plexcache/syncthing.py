@@ -85,6 +85,7 @@ class SyncthingError(Exception):
     (something else)."""
 
     def __init__(self, why: M, code: str = "answer"):
+        """The error ``why``, of kind ``code``."""
         super().__init__(why)
         self.why, self.code = why, code
 
@@ -95,7 +96,7 @@ class SyncthingClient:
     def __init__(self, url: str, api_key: str, timeout: float = 10, tls: ssl.SSLContext | None = None):
         """``tls``: the context the connection is verified with (tlspin, through Syncthing.client: the pin, or full
         verification); without one, a keyless probe's certificate isn't checked (there's nothing to take), and a keyed client
-        gets a pinning context with no pin, which refuses every certificate before the key is sent (F-2026-053)."""
+        gets a pinning context with no pin, which refuses every certificate before the key is sent (F-1-2026-053)."""
         self.url, self.key, self.timeout = url.rstrip("/"), api_key, timeout
         self.after_tls: Callable[[bool], object] | None = None  # called with whether the connection was made (app.tls_ok / tls_refused)
         if tls is not None:
@@ -146,6 +147,7 @@ class SyncthingClient:
             raise SyncthingError(M("What answered at {url} isn’t Syncthing (its answer to {what} isn’t JSON).", url=self.url, what=path)) from None
 
     def status(self) -> dict:
+        """Syncthing's system status."""
         return self._req("GET", "/rest/system/status")
 
     def healthy(self) -> bool:
@@ -156,18 +158,23 @@ class SyncthingClient:
             return False
 
     def version(self) -> dict:
+        """Syncthing's version."""
         return self._req("GET", "/rest/system/version")
 
     def config(self) -> dict:
+        """Syncthing's config."""
         return self._req("GET", "/rest/config")
 
     def connections(self) -> dict:
+        """Syncthing's connections to its devices."""
         return self._req("GET", "/rest/system/connections")
 
     def folder_status(self, folder: str) -> dict:
+        """A folder's status."""
         return self._req("GET", "/rest/db/status", {"folder": folder})
 
     def ignores(self, folder: str) -> list[str]:
+        """A folder's ignore patterns."""
         return list(self._req("GET", "/rest/db/ignores", {"folder": folder}).get("ignore") or [])
 
     def browse(self, folder: str) -> list[str]:
@@ -189,15 +196,19 @@ class SyncthingClient:
         return [str(f.get("name")) for f in got.get("files") or [] if isinstance(f, dict) and f.get("name")][:TRANSIT_MAX]
 
     def set_ignores(self, folder: str, lines: list[str]) -> None:
+        """A folder's ignore patterns set."""
         self._req("POST", "/rest/db/ignores", {"folder": folder}, {"ignore": list(lines)})
 
     def patch_folder(self, folder: str, fields: dict) -> None:
+        """A folder's config changed: ``fields`` patched over it."""
         self._req("PATCH", "/rest/config/folders/" + urllib.parse.quote(folder, safe=""), None, fields)
 
     def patch_device(self, device: str, fields: dict) -> None:
+        """A device's config changed: ``fields`` patched over it."""
         self._req("PATCH", "/rest/config/devices/" + urllib.parse.quote(device, safe=""), None, fields)
 
     def scan(self, folder: str, sub: str = "") -> None:
+        """A folder scanned, or one path in it (``sub``)."""
         self._req("POST", "/rest/db/scan", {"folder": folder, **({"sub": sub} if sub else {})})
 
 
@@ -333,6 +344,7 @@ class Syncthing:
     """Syncthing as this app sees it (app.syncthing): asked every couple of minutes while set up, the answer kept."""
 
     def __init__(self, app):
+        """Syncthing for ``app``: nothing asked yet."""
         self.app = app
         self.lock = threading.Lock()
         self.status: dict = {}
@@ -353,12 +365,15 @@ class Syncthing:
 
     # ------------------------------------------------------------ settings, the client
     def settings(self) -> dict:
+        """The Syncthing settings."""
         return self.app.settings.get().get("syncthing") or {}
 
     def wanted(self) -> bool:
+        """Whether Syncthing is set up (its address set)."""
         return bool(self.settings().get("url"))
 
     def client(self, timeout: float = 10) -> SyncthingClient:
+        """A client for the Syncthing set up, with its TLS settings."""
         s = self.settings()
         make = getattr(self.app, "tls_context", None)  # (tests' fakes have no TLS machinery)
         c = SyncthingClient(s.get("url") or "", s.get("api_key") or "", timeout, tls=make("syncthing", s) if make else None)
@@ -367,10 +382,12 @@ class Syncthing:
         return c
 
     def talking(self) -> bool:
+        """Whether Syncthing answered when last asked."""
         return bool(self.status.get("ok"))
 
     # ------------------------------------------------------------ asking
     def tick_async(self, force: bool = False) -> None:
+        """Syncthing asked again in a thread of its own, when it's due (or now, with ``force``)."""
         if not self.wanted():
             if self.status:
                 with self.lock:
@@ -570,6 +587,7 @@ class Syncthing:
         return covering(self.status.get("folders") or [], cands)
 
     def pause(self, folder: str, paused: bool) -> None:
+        """A folder paused or resumed, and the activity log told."""
         self.client().patch_folder(folder, {"paused": paused})
         self.app.activity.event("sync", M("Syncthing asked to pause the folder {folder}", folder=folder) if paused else M("Syncthing asked to resume the folder {folder}", folder=folder))
         self.refresh()
@@ -1129,6 +1147,7 @@ class Syncthing:
             save(THROTTLE_FILE, self.throttled or {})
 
     def throttle_light(self) -> dict:
+        """The throttle's light: whether Syncthing is held back, and why."""
         s, r = self.settings(), self.reading
         if not s.get("throttle") and not s.get("giveway"):
             return {"status": "off", "text": M("Not held back for the disks or the internet"), "detail": M("Tick a box below to hold Syncthing to a rate while something plays and the media pool’s disks are busy, or while a stream plays to a remote player.")}

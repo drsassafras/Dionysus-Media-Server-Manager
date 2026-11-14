@@ -45,18 +45,21 @@ def plan(app) -> dict:
 
 
 def backups(app) -> list[dict]:
+    """The backups of Plex's records, read once."""
     if getattr(app, "_plex_backups", None) is None:
         app._plex_backups = [b for b in ((app._load_json(STORE) or {}).get("backups") or []) if isinstance(b, dict)]
     return app._plex_backups
 
 
 def save(app) -> None:
+    """The backups saved (the last KEEP)."""
     with _lock:
         data = {"backups": [dict(b) for b in backups(app)[-KEEP:]]}
     app._save_json(STORE, data)
 
 
 def find(app, backup_id: str) -> dict | None:
+    """A backup by id, or None."""
     return next((b for b in backups(app) if b.get("id") == backup_id), None)
 
 

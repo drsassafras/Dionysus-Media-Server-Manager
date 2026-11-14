@@ -47,7 +47,9 @@ class Mirror(Library):
 
 
 class Mirrors:
+    """The mirrors: the account's other Plex servers, their libraries, and which of ours each mirrors."""
     def __init__(self, app):
+        """The mirrors for ``app``: nothing read yet."""
         self.app = app
         self.lock = threading.Lock()
         self.libs: dict[str, tuple[list[Library] | None, float, str | None]] = {}  # server id -> (its libraries, when read, the last error)
@@ -60,6 +62,7 @@ class Mirrors:
         self._reconnected: dict[str, float] = {}
 
     def settings(self) -> dict:
+        """The mirror settings."""
         return self.app.settings.section("plex2")
 
     def servers(self) -> dict:
@@ -80,6 +83,7 @@ class Mirrors:
         return s.get("name") or s.get("url") or next((x["name"] for x in self.found if x["id"] == server), None) or server
 
     def configured(self, server: str) -> bool:
+        """Whether a server has an address and a token."""
         s = self.servers().get(server) or {}
         return bool(s.get("url") and s.get("token"))
 
@@ -180,6 +184,7 @@ class Mirrors:
 
     # ------------------------------------------------------------ reaching a server
     def client(self, server: str, timeout: float = 30) -> PlexClient:
+        """A client for a mirror's server, raising PlexError when it isn't reached yet."""
         s = self.servers().get(server) or {}
         if not (s.get("url") and s.get("token")):
             raise PlexError(M("{name} isn’t reached yet", name=self.name_of(server)))
@@ -300,7 +305,7 @@ class Mirrors:
     def set_address(self, server: str, url: str) -> None:
         """An address for a server entered by hand (one plex.tv's list doesn't reach from here): kept when a Plex answers
         there as that server. Only for a server the account lists, and only with the token plex.tv gave for that server:
-        never the account's or this server's own, which would go to whatever answers at the address (F-2026-052)."""
+        never the account's or this server's own, which would go to whatever answers at the address (F-1-2026-052)."""
         with self.lock:
             entry = next((x for x in self.found if x["id"] == server), None)
         if entry is None:
@@ -315,7 +320,7 @@ class Mirrors:
             raise ValueError(M("That server isn’t among your account’s: look again."))
         ctx, after = self._tls(server)  # hand-entered addresses rarely have a plex.direct certificate: a pin, once confirmed
         if ctx is not None and getattr(ctx, "pinning", False) and not ctx.pin:
-            ctx.observe = True  # (the identity probe sends no token: its certificate read for the page to confirm, F-2026-053)
+            ctx.observe = True  # (the identity probe sends no token: its certificate read for the page to confirm, F-1-2026-053)
         try:
             probe = PlexClient(url, token, timeout=10, tls=ctx)
             probe.after_tls = after
@@ -376,6 +381,7 @@ class Mirrors:
             return self.libs.get(server, (None, 0.0, None))[0] is not None
 
     def error(self, server: str) -> str | None:
+        """The last error reading a server's libraries, or None."""
         with self.lock:
             return self.libs.get(server, (None, 0.0, None))[2]
 
@@ -454,6 +460,7 @@ class Mirrors:
                 self.compare(key, there)
 
     def refresh_async(self) -> None:
+        """The mirrors' libraries read again in a thread of their own, where there's a mirror."""
         if self.any_mirror():
             threading.Thread(target=self.refresh, name="plex2", daemon=True).start()
 

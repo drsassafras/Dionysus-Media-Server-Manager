@@ -82,6 +82,7 @@ DATED = re.compile(r"\d{4}-\d{2}-\d{2}$")   # a fix given as a date: NVD's versi
 
 @dataclass
 class Vuln:
+    """One vulnerability: its id, the package and version that has it, and how bad."""
     id: str               # the CVE's ID (or the advisory's, where it has no CVE)
     package: str          # what has it
     version: str          # the version we have
@@ -99,6 +100,7 @@ class Vuln:
 
 @dataclass
 class Judged:
+    """The CVEs judged: those to act on, and those a dependency's move already fixes."""
     act: list[tuple[str, str]] = field(default_factory=list)   # (what, what to do): shown, orange
     shown: int = 0        # the CVEs in act (an image's package's are one line)
     handled: dict[str, list[str]] = field(default_factory=dict)  # upkeep's dependency → the CVEs its move fixes
@@ -118,6 +120,7 @@ def _open(url: str, body: bytes | None = None, headers: dict | None = None):
 
 
 def get_json(url: str, body: dict | None = None, headers: dict | None = None):
+    """A URL's JSON answer (POSTing ``body`` where it's given)."""
     with _open(url, json.dumps(body).encode() if body is not None else None, headers) as r:
         return json.loads(r.read().decode("utf-8", "replace"))
 
@@ -135,6 +138,7 @@ def _when(stamp: str) -> float:
 
 
 def parse(version: str) -> tuple[int, ...]:
+    """A version's numbers, or () where it isn't one."""
     from dev import upkeep
     return upkeep.parse(version) if re.match(r"v?\d", version.strip()) else ()
 
@@ -207,6 +211,7 @@ def osv(queries: list[tuple[str, str, str]]) -> dict[int, list[dict]]:
 
 
 def npm_vulns(lock_path: str, package_json: str) -> list[Vuln]:
+    """The vulnerabilities of the web's npm packages, from their lock file."""
     if not os.path.exists(lock_path):   # (a copy from before the web's npm packages: none to look at)
         return []
     with open(lock_path, encoding="utf-8") as fh:
@@ -229,6 +234,7 @@ def npm_vulns(lock_path: str, package_json: str) -> list[Vuln]:
 
 
 def crate_vulns(pins: dict[str, str]) -> list[Vuln]:
+    """The vulnerabilities of the crates the project pins, from OSV."""
     wanted = [(dep, CRATES[dep], pins[dep]) for dep in CRATES if dep in pins]
     out = []
     for i, found in osv([("crates.io", crate, v) for _, crate, v in wanted]).items():
@@ -404,6 +410,7 @@ def copy_os() -> str:
 
 
 def trivy_vulns(got: dict, image: str) -> list[Vuln]:
+    """Trivy's scan of an image as vulnerabilities."""
     built = _when(((got.get("Metadata") or {}).get("ImageConfig") or {}).get("created", ""))
     distro = str(((got.get("Metadata") or {}).get("OS") or {}).get("Family") or "").lower()
     out = []

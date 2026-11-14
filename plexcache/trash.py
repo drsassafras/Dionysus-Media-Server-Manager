@@ -21,18 +21,22 @@ STUCK_AFTER = 14 * 86400  # held this long without meeting the criteria: said on
 
 
 class Trash:
+    """Files held before they're deleted, until the criteria to delete them are met on both sites."""
     def __init__(self, app):
+        """The trash for ``app``: its items read from where they're saved."""
         self.app = app
         self.lock = threading.Lock()
         self.items: list[dict] = [e for e in (app._load_json(STORE) or {}).get("items") or [] if isinstance(e, dict)]
         self.busy = False
 
     def save(self) -> None:
+        """The items saved."""
         with self.lock:
             data = {"items": [dict(e) for e in self.items]}
         self.app._save_json(STORE, data)
 
     def add(self, library: str, path: str, plex_path: str, trashed: str, why: str, title: str = "") -> dict:
+        """A file put in the trash, waiting."""
         e = {"library": str(library), "path": path, "plex_path": plex_path, "trashed": trashed, "why": why, "title": title or os.path.basename(path),
              "at": time.time(), "state": "waiting", "checked": 0.0, "here": False, "there": None}
         with self.lock:
@@ -41,6 +45,7 @@ class Trash:
         return e
 
     def hold_days(self) -> int:
+        """How many days a file is held."""
         from . import safety
         return safety.life(self.app) // 86400
 
@@ -52,6 +57,7 @@ class Trash:
         return None
 
     def tick(self) -> None:
+        """Each item waiting checked: deleted once its criteria are met."""
         with self.lock:
             if self.busy:
                 return
@@ -133,9 +139,11 @@ class Trash:
         self.save()
 
     def stuck(self) -> list[dict]:
+        """The items held longer than they should be without meeting the criteria."""
         with self.lock:
             return [dict(e) for e in self.items if e["state"] == "waiting" and e.get("stuck")]
 
     def snapshot(self) -> dict:
+        """The items waiting, newest first, as the page shows them."""
         with self.lock:
             return {"items": sorted((dict(e) for e in self.items if e["state"] in ("waiting",)), key=lambda e: -e["at"]), "hold_days": self.hold_days()}

@@ -47,10 +47,12 @@ KINDS = ("records", "files", "details", "mirror")  # (libdata.ALL, in the order 
 
 # ---------------------------------------------------------------- a count: the one shape every page's number comes in
 def done(n: int) -> dict:
+    """A count that's in: ``n``."""
     return {"s": "done", "n": int(n or 0)}
 
 
 def pending(why, progress: dict | None = None, partial: int | None = None) -> dict:
+    """A count still to come: why it waits, how far it's got, and what's counted so far (``partial``)."""
     out = {"s": "pending", "why": why}
     if progress and progress.get("total"):
         out["progress"] = {"done": int(progress.get("done") or 0), "total": int(progress.get("total") or 0)}
@@ -61,10 +63,12 @@ def pending(why, progress: dict | None = None, partial: int | None = None) -> di
 
 
 def na(why) -> dict:
+    """A count that doesn't apply to the library: why not."""
     return {"s": "na", "why": why}
 
 
 def failed(why) -> dict:
+    """A count that couldn't be had: why."""
     return {"s": "failed", "why": why}
 
 
@@ -130,6 +134,7 @@ class Unit:
     stale_after = 24 * 3600  # seconds: worked out again after this long, though nothing it reads changed (its count standing)
 
     def __init__(self, app):
+        """A unit of the app's evaluation."""
         self.app = app
 
     def applies(self, key: str) -> M | None:
@@ -146,9 +151,11 @@ class Unit:
         raise NotImplementedError
 
     def current(self, key: str) -> bool:
+        """Whether its evaluation of the library is current: what it reads unchanged, its stale period not up."""
         raise NotImplementedError
 
     def evaluate(self, key: str) -> None:
+        """The library evaluated, its result kept where its page reads it."""
         raise NotImplementedError
 
     def due(self, key: str) -> bool:
@@ -174,6 +181,7 @@ class ToolUnit(Unit):
     """A tool's scan (tools/): its analysis over the library's data."""
 
     def __init__(self, app, tool):
+        """The unit of ``tool``'s scan: its name, what it reads and what it's evaluated after, the tool's."""
         super().__init__(app)
         self.tool, self.name, self.needs = tool, tool.name, tuple(tool.reads)
         self.before = tuple(tool.evaluated_after())
@@ -181,20 +189,25 @@ class ToolUnit(Unit):
         self.stale_after = tool.stale_after
 
     def applies(self, key: str):
+        """None when the tool works on the library, else why not."""
         if not self.tool.works_on(key):
             return M("{tool} doesn’t work on this kind of library.", tool=self.tool.title)
         return self.tool.not_applicable(key)
 
     def sig(self, key):
+        """What its analysis is of: the tool's key for the library's data."""
         return self.tool._akey(self.app.libdata.data(key))
 
     def current(self, key):
+        """Whether the tool has an analysis of the library's data as it is now."""
         return self.tool.analysis_if_current(self.app.libdata.data(key)) is not None
 
     def evaluate(self, key):
+        """The tool's analysis of the library's data, worked out."""
         self.tool.analysis(self.app.libdata.data(key))
 
     def again(self, key):
+        """The tool's analysis of the library dropped and worked out again."""
         with self.tool.lock:
             self.tool._analysis.pop(str(key), None)
         self.evaluate(key)
@@ -208,9 +221,11 @@ class MirrorUnit(Unit):
     title = M("Mirror Checks")
 
     def applies(self, key: str):
+        """None when Mirror Checks apply to the library, else why not."""
         return self.app.mirror_health.not_applicable(key)
 
     def waiting(self, key):
+        """What Mirror Checks wait for besides the library's data (the mirror's Plex), or None."""
         w = self.app.mirror_health.waiting()
         if not w:
             return None
@@ -219,23 +234,29 @@ class MirrorUnit(Unit):
         return pending(M("Reading the mirror’s libraries…"))
 
     def busy(self, key: str):
+        """True while Mirror Checks read the other site, else None."""
         return True if getattr(self.app.mirror_health, "reading", False) else None
 
     def sig(self, key):
+        """What the evaluation is of: the library's data's stamp."""
         return self.app.libdata.data(key).stamp
 
     def current(self, key):
+        """Whether the library's Mirror Checks are current."""
         return self.app.mirror_health.current(key)
 
     @property
     def stale_after(self):
+        """Mirror Checks' stale period: how often they're made again."""
         from .mirrorhealth import CHECK_EVERY
         return CHECK_EVERY
 
     def due(self, key):
+        """Whether the library's Mirror Checks are due again though current (a scan from before FORMAT)."""
         return self.app.mirror_health.due_for(key)
 
     def evaluate(self, key):
+        """The library's Mirror Checks made."""
         self.app.mirror_health.evaluate(key)
 
 
@@ -248,24 +269,30 @@ class HealthUnit(Unit):
     title = M("the checks")
 
     def applies(self, key: str):
+        """None when the library is checked (it has a kind and isn't excluded), else why not."""
         lib = self.app.library_info(key) or {}
         return None if lib.get("kind") and not lib.get("excluded") else M("This library isn’t checked.")
 
     def sig(self, key):
+        """What Library Health's evaluation is of (App._health_sig)."""
         return self.app._health_sig(key)
 
     @property
     def stale_after(self):
+        """Library Health's stale period."""
         from .libhealth import STALE_AFTER
         return STALE_AFTER
 
     def current(self, key):
+        """Whether the library's health is current."""
         return self.app.health_current(key)
 
     def evaluate(self, key):
+        """The library's health worked out."""
         self.app.library_health(key)
 
     def again(self, key):
+        """The library's health forgotten and worked out again."""
         self.app.forget_health(key)
         self.evaluate(key)
 
@@ -278,24 +305,30 @@ class OptimizerUnit(Unit):
     title = M("the optimizer’s scan")
 
     def applies(self, key: str):
+        """None when the optimizer works on the library, else why not."""
         return self.app.optimizing.not_applicable(key)
 
     def sig(self, key):
+        """What the scan is of: the library's data's stamp."""
         return self.app.libdata.data(key).stamp
 
     @property
     def stale_after(self):
+        """The optimizer's scan's stale period."""
         from .optimizing import STALE_AFTER
         return STALE_AFTER
 
     def current(self, key):
+        """Whether the optimizer's scan of the library is current."""
         return self.app.optimizing.current(key)
 
     def busy(self, key: str):
+        """How far the optimizer's scan has got while it runs (or True), else None."""
         op = self.app.optimizing
         return (dict(op.survey_progress or {}) or True) if op.surveying else None
 
     def holds_off(self, key, focus):
+        """Whether the scan waits for now: until every library's data is in, unless the optimizer's page is in focus."""
         if focus and focus[0] == "optimizer":
             return False
         ld = self.app.libdata
@@ -303,6 +336,7 @@ class OptimizerUnit(Unit):
             return bool(ld.queue or ld.current)
 
     def evaluate(self, key):
+        """The optimizer's scan started soon (it runs in a thread of its own, over every library)."""
         self.app.optimizing.survey_soon()
 
 
@@ -321,6 +355,7 @@ class Evaluator:
     isn't current and can be — its data in, what comes before it settled — and gives every page's count (count, counts)."""
 
     def __init__(self, app):
+        """The evaluator for ``app``: no page in focus, nothing running yet."""
         self.app = app
         self.cond = threading.Condition()
         self.focused: tuple[str, str, float] | None = None  # (page, library, until)
@@ -370,6 +405,7 @@ class Evaluator:
         return out
 
     def focus_units(self, page: str) -> tuple[str, ...]:
+        """The units a page's count is made from: its own, or those FOCUS_UNITS names for it."""
         if page in FOCUS_UNITS:
             return FOCUS_UNITS[page]
         return (page,) if page in self.units() else ()
@@ -408,6 +444,7 @@ class Evaluator:
         self.kick()
 
     def focus_now(self) -> tuple[str, str] | None:
+        """The page in focus and its library, while its focus lasts, else None."""
         f = self.focused
         return (f[0], f[1]) if f and f[2] > time.time() else None
 
@@ -448,6 +485,7 @@ class Evaluator:
         return None
 
     def next_job(self) -> tuple[str, str] | None:
+        """The next (unit, library) to evaluate: the first in order that isn't current and can be, else None."""
         units = self.units()
         later = None
         for name, key in self.order():
@@ -485,6 +523,7 @@ class Evaluator:
         threading.Thread(target=self._work, name="evaluate", daemon=True).start()
 
     def start(self) -> None:
+        """The evaluator started: its thread woken to work through the queue."""
         self.started = True
         self.kick()
 
@@ -777,6 +816,7 @@ class Evaluator:
         return m[k]
 
     def snapshot(self) -> dict:
+        """The page in focus and what's being evaluated now, as the status says them."""
         f = self.focus_now()
         r = self.running
         return {"focus": {"page": f[0], "library": f[1]} if f else None, "running": {"unit": r[0], "library": r[1]} if r else None}

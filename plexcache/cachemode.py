@@ -24,6 +24,7 @@ FALLBACK_KEEP = 24 * 3600  # how long Health keeps showing a fallback after the 
 
 @dataclass
 class Dynamic:
+    """What "default" means for a cache mode, with an L2ARC and without."""
     l2arc: str                 # what "default" means with an L2ARC
     ram: str                   # ... and without one
     l2arc_only: tuple = ()     # choices that need an L2ARC (they fall back to `ram`)
@@ -50,14 +51,17 @@ class Fallbacks:
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def note(self, sid: str, label, chosen: str, used: str) -> None:
+        """A choice that fell back noted: what was chosen and what was used."""
         with self.lock:
             self.items[sid] = {"id": sid, "label": label, "chosen": chosen, "used": used, "at": time.time()}
 
     def clear(self, sid: str) -> None:
+        """A fallback's note cleared."""
         with self.lock:
             self.items.pop(sid, None)
 
     def recent(self, now: float | None = None) -> list[dict]:
+        """The fallbacks noted lately (older ones dropped)."""
         now = time.time() if now is None else now
         with self.lock:
             for sid in [k for k, v in self.items.items() if now - v["at"] > FALLBACK_KEEP]:

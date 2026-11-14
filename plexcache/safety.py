@@ -145,6 +145,7 @@ def _slug(text: str) -> str:
 
 
 def taken(app) -> list[dict]:
+    """The snapshots taken, read once."""
     if getattr(app, "_snapshots", None) is None:
         app._snapshots = [s for s in (app._load_json(SNAPS) or []) if isinstance(s, dict)]
     return app._snapshots

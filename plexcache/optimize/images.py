@@ -50,6 +50,7 @@ def pixels(path: str) -> str:
 
 
 def available() -> dict:
+    """Which image tools are here: PNG and JPEG."""
     return {"png": bool(find("oxipng")), "jpeg": bool(find("jpegtran"))}
 
 

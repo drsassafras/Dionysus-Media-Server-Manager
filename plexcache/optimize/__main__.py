@@ -10,6 +10,7 @@ from .tools import ToolError, missing
 
 
 def main(argv=None) -> int:
+    """``python -m plexcache.optimize``: files optimized (or checked), or the optimizer service run."""
     ap = argparse.ArgumentParser(prog="python -m plexcache.optimize", description=(__doc__ or "").split("\n\n")[0])
     ap.add_argument("files", nargs="+", help="MKV files, or 'serve' to run the optimizer service")
     ap.add_argument("--check", action="store_true", help="only say whether each file is optimized")

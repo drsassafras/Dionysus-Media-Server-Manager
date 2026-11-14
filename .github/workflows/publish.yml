@@ -99,7 +99,7 @@ jobs:
           digest="$(docker inspect --format '{{index .RepoDigests 0}}' plex-cache:test | cut -d@ -f2)"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
       # This build's provenance, signed with the workflow's own identity and kept in the repository's attestations: an app
-      # pressing Update Now pulls only an image attested here (plexcache/updates.py verify_image, F-2026-043)
+      # pressing Update Now pulls only an image attested here (plexcache/updates.py verify_image, F-1-2026-043)
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
         with:
           subject-name: ghcr.io/${{ github.repository_owner }}/plex-cache

@@ -714,6 +714,7 @@ class HomeAssistantBridge:
     """Keeps an MQTT connection while it's enabled, publishing status and taking commands."""
 
     def __init__(self, app):
+        """The bridge for ``app``: not connected yet."""
         self.app = app
         self.stop = threading.Event()
         self.wake = threading.Event()  # set to publish straight away (e.g. after a command)
@@ -731,6 +732,7 @@ class HomeAssistantBridge:
         self.status["steps"][name] = {"status": status, "text": text}
 
     def start(self):
+        """The bridge's thread started."""
         self.thread = threading.Thread(target=self._loop, name="mqtt", daemon=True)
         self.thread.start()
 

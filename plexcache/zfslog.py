@@ -53,6 +53,7 @@ def grade(value) -> str | None:
 
 
 class ZfsLog:
+    """ZFS's figures over time: the ARC and the pools, sampled."""
     def __init__(self, load, save):
         """``load()`` → the saved record or None; ``save(data)`` stores it."""
         self._save = save
@@ -146,6 +147,7 @@ class ZfsLog:
             return len(old) + len(gone)
 
     def save(self) -> None:
+        """The log saved, where it's changed."""
         with self.lock:
             if not self.dirty:
                 return

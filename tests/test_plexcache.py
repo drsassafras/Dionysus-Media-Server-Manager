@@ -82,12 +82,23 @@ def _toml(project: str, **cmds: str) -> str:
     return path
 
 
+# The code a test runs a tool as: the branch it's on, the gate whose rules hold for it, their cap, its phase and the
+# branch a pull request goes into (callboard/policy.py's context) — development's code on dev at the push gate, a
+# release's on main at the release gate, a feature branch's at the push gate, a hotfix's pull request into main, a
+# release candidate (the freeze) at the release gate, a preview (a beta tag on dev) at the release gate as warnings.
+POLICY_CODE = {"development": ("dev", "push", "", "", ""), "release": ("main", "release", "", "", ""), "feature": ("topic", "push", "", "", ""),
+               "hotfix": ("main", "merge", "", "", "main"), "freeze": ("dev", "release", "", "freeze", ""),
+               "preview": ("dev", "release", "warn", "preview", "")}
+
+
 def _policy_env(role: str = "development", diff: bool = False, gate: str = "", base: str = "", **more: str) -> dict[str, str]:
-    """The context callboard gives each check (dev/policy.py), for a test that runs a tool as the board would: that role's
-    rules, whatever branch this checkout is on."""
-    return {"CALLBOARD_CONFIG": os.path.join(ROOT, "callboard.toml"), "CALLBOARD_CODE": "local", "CALLBOARD_BRANCH": "dev",
-            "CALLBOARD_ROLE": role, "CALLBOARD_PHASE": "", "CALLBOARD_TAG": "", "CALLBOARD_DIFF": "1" if diff else "0",
-            "CALLBOARD_GATE": gate, "CALLBOARD_BASE": base, **more}
+    """The context callboard gives each check (callboard/policy.py), for a test that runs a tool as the board would: that
+    kind of code's (POLICY_CODE) branch and rules, whatever branch this checkout is on."""
+    branch, rules, cap, phase, into = POLICY_CODE[role]
+    return {"CALLBOARD_CONTEXT": "1", "CALLBOARD_CONFIG": os.path.join(ROOT, "callboard.toml"), "CALLBOARD_CODE": "local",
+            "CALLBOARD_BRANCH": branch, "CALLBOARD_RULES": rules, "CALLBOARD_CAP": cap, "CALLBOARD_INTO": into, "CALLBOARD_GITHUB": "0",
+            "CALLBOARD_PHASE": phase, "CALLBOARD_TAG": "", "CALLBOARD_DIFF": "1" if diff else "0", "CALLBOARD_GATE": gate,
+            "CALLBOARD_BASE": base, **more}
 
 CAT = fakes.make_media(MEDIA)
 # TV sits on its own child dataset, like many real setups.
@@ -197,7 +208,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(pub["plex"]["token"], config.SECRET_MASK)
         self.assertTrue(pub["plex"]["token_set"])
         s.update({"plex": {"token": config.SECRET_MASK, "url": "192.168.1.10:32400"}})
-        self.assertEqual(s.section("plex")["token"], "")  # (an address given to a token saved for none: not sent there, F-2026-035/036)
+        self.assertEqual(s.section("plex")["token"], "")  # (an address given to a token saved for none: not sent there, F-1-2026-035/036)
         self.assertEqual(s.section("plex")["url"], "https://192.168.1.10:32400")
         s.update({"plex": {"token": "secret"}})
         s.update({"plex": {"token": config.SECRET_MASK, "url": "https://192.168.1.10:32401"}})
@@ -1794,7 +1805,7 @@ class AppTests(unittest.TestCase):
             "plex": {"url": PLEX.url, "token": "good-token"},
             "truenas": {"url": TRUENAS.url, "api_key": "good-key"},
             "nowplaying": {"enabled": True, "delay_sec": 0, "min_delay_sec": 0},
-            "tls": {"pins": _fake_pins()},  # (the fakes' certificates, confirmed: F-2026-053)
+            "tls": {"pins": _fake_pins()},  # (the fakes' certificates, confirmed: F-1-2026-053)
         })
         force_settings(cls.app, {"general": {"poll_seconds": 2}})
         from plexcache.server import serve
@@ -2617,7 +2628,7 @@ _FAKE_PINS: dict[str, str] = {}
 
 
 def _fake_pins() -> dict[str, str]:
-    """The fake servers' certificates, as a person confirms them on the System page (F-2026-053: none is trusted until
+    """The fake servers' certificates, as a person confirms them on the System page (F-1-2026-053: none is trusted until
     then): what a test app starts with, so its connections go through."""
     if not _FAKE_PINS:
         from plexcache import tlspin
@@ -3217,7 +3228,7 @@ class ServerTests(unittest.TestCase):
                 return e.code, e.read(), e.headers
 
     def test_no_request_moves_a_saved_secret_to_a_host_it_names(self):
-        """F-2026-035, 036 and 038, with the login off (every request is anyone's): a request's Host header fills no address
+        """F-1-2026-035, 036 and 038, with the login off (every request is anyone's): a request's Host header fills no address
         in unless it names this machine itself, and none for a service with a secret saved; tls.pins can't be written through the settings API; and moving a keyed
         service (every one in config.SECRET_HOMES, and a mirror) to another host leaves no secret or pin behind to be
         sent there, while the same host on another port or scheme keeps them."""
@@ -3232,7 +3243,9 @@ class ServerTests(unittest.TestCase):
             with mock.patch("plexcache.app.PlexClient", side_effect=lambda url, *a, **kw: went.append(url) or _raise(PlexError("no"))), \
                     mock.patch("plexcache.app.probe_truenas", side_effect=lambda url, **kw: went.append(url) or False):
                 app._autodetect_inner(canary)
-            self.assertEqual(went, [])
+            # (the app's own background work from before — a connection test, the checks — may probe its saved addresses
+            # meanwhile: only an address naming the host the request gave counts)
+            self.assertEqual([u for u in went if canary in u], [])
             self.assertEqual((app.settings.section("plex")["url"], app.settings.section("truenas")["url"]), ("", ""))
             # nor, with no secret saved yet, any address that isn't this machine's own (the secret entered next would go there);
             # this machine's own address is still probed
@@ -3241,7 +3254,7 @@ class ServerTests(unittest.TestCase):
                     mock.patch("plexcache.app.probe_truenas", side_effect=lambda url, **kw: went.append(url) or False):
                 for named in (canary, "[2001:db8::99]", "nas.local"):
                     app._autodetect_inner(named)
-                self.assertEqual(went, [])
+                self.assertEqual([u for u in went if any(h in u for h in (canary, "2001:db8::99", "nas.local"))], [])
                 app._autodetect_inner("127.0.0.1")
                 self.assertTrue(went)
             self.assertEqual((app.settings.section("plex")["url"], app.settings.section("truenas")["url"]), ("", ""))
@@ -3284,7 +3297,7 @@ class ServerTests(unittest.TestCase):
             app.settings.update(before | {"tls": {"pins": {}}})
 
     def test_no_route_sends_a_saved_token_to_an_address_a_request_names(self):
-        """F-2026-052: a route that takes an address from the request (a body's url, address, host or uri) is in
+        """F-1-2026-052: a route that takes an address from the request (a body's url, address, host or uri) is in
         server.SIGNED_ONLY — refused with the login off, when every request is anyone's — or is /api/settings, whose
         secrets stay with their host (config.SECRET_HOMES, the check above). With the login off nothing reaches the
         address; signed in, a mirror's address set by hand gets only the token plex.tv gave for that server, never the
@@ -3389,7 +3402,7 @@ class ServerTests(unittest.TestCase):
 
     def test_unauthenticated_answers_say_nothing_but_ok_and_version(self):
         """Every JSON answer given without a sign-in or a token, in the app and the optimizer, says it's up and its
-        version, and nothing about the machine, its tokens or its folders (F-2026-045). The optimizer adds why it has no
+        version, and nothing about the machine, its tokens or its folders (F-1-2026-045). The optimizer adds why it has no
         token only while it has none: there's nothing to protect yet, and the app's setup page needs it."""
         from http.server import ThreadingHTTPServer
 
@@ -3701,7 +3714,7 @@ class ThemeTests(unittest.TestCase):
             self.assertIn('<link rel="icon" type="image/svg+xml" href="/static/theatre-tab.svg">', head, name)
             self.assertIn('<img src="/static/theatre.svg"', html, name)
         js = _read(self._root("plexcache", "web", "app.js"), encoding="utf-8")
-        self.assertEqual(js.count("setHtml(main, PAGES[page]());"), 1)  # (every page's markup goes in through setHtml: F-2026-058)
+        self.assertEqual(js.count("setHtml(main, PAGES[page]());"), 1)  # (every page's markup goes in through setHtml: F-1-2026-058)
         draw = js[js.index("setHtml(main, PAGES[page]());"):]
         self.assertLess(draw.index("PCDECOR.paint(main)"), draw.index("\n  }"))
         # /theme.js loads decor.js (once, as the build's file) when the theme shown has a decoration, with its own nonce
@@ -3713,9 +3726,9 @@ class ThemeTests(unittest.TestCase):
         self.assertIn("if(NONCE)s.nonce=NONCE", body)
         self.assertEqual(self.req("GET", "/static/decor.js")[0], 200)
         page = devui.page()
-        # (callboard's copy of the script, which it wears as its own project: Classic its default — callboard/ui/refresh.py —
-        # where the app's is Dionysus; nothing else of it different)
-        own = re.sub(r'SEL=\{"theme":"[^"]*"', 'SEL={"theme":"classic"', themes.script(None), count=1)
+        # (callboard's copy of the script, which it wears as its own project: Classic in auto mode its default —
+        # callboard/themekit.py DEFAULT — where the app's is Dionysus, light; nothing else of it different)
+        own = re.sub(r'SEL=\{"theme":"[^"]*","mode":"[^"]*"\}', 'SEL={"theme":"classic","mode":"auto"}', themes.script(None), count=1)
         self.assertIn(own, page)
         self.assertNotIn("decor.js\"", page.replace(own, ""))
         served = devui.files()
@@ -4445,7 +4458,7 @@ class AppEdgeTests(unittest.TestCase):
 
     def test_connection_lights(self):
         app = App(tempfile.mkdtemp(dir=TMP))
-        app.settings.update({"tls": {"pins": _fake_pins()}})  # (the fakes' certificates, confirmed: F-2026-053)
+        app.settings.update({"tls": {"pins": _fake_pins()}})  # (the fakes' certificates, confirmed: F-1-2026-053)
         c = app.test_connections()
         self.assertEqual(c["plex_server"]["text"], "Plex server address needed")
         app.settings.update({"plex": {"url": PLEX.url, "token": "good-token"}})
@@ -5254,7 +5267,7 @@ class TestRunnerTests(unittest.TestCase):
         got, _ = plan.build(req, policy.Config(req["config"]))
         sec = got["sections"][-1]   # (--no-sample: no "then", no finale, the check as it was, CALLBOARD_SAMPLE=0)
         self.assertEqual((sec["id"], sec["env"]["CALLBOARD_SAMPLE"], "then" in sec, "finale" in sec), ("style", "0", False, False))
-        self.assertEqual(got["header"], ["Local Copy · development · No sample"])
+        self.assertEqual(got["header"], ["Local Copy · No sample"])
 
     def test_callboard_opens_the_review_once_the_board_is_done(self):
         """Once the rest of the board is done with looks waiting (Style Approval LOOKS WAITING, none failed), their review is
@@ -5487,7 +5500,7 @@ class DevToolsUITests(unittest.TestCase):
         path = os.path.join(folder, "detail.json")
         a = coverage.File("plexcache/a.py", {1, 2, 3, 4}, {1, 2, 3}, fresh={4}, units=[coverage.Unit("function", "f", 4, {4})])
         b = coverage.File("plexcache/b.py", {1, 2}, {1, 2}, fresh=set(), units=[])
-        shown = {"fresh_days": 14, "settled": 98, "fresh": "warn", "role": "development"}   # (the rules as the tool read them from callboard.toml)
+        shown = {"fresh_days": 14, "settled": 98, "fresh": "warn", "gate": "push"}   # (the rules as the tool read them from callboard.toml)
         got = coverage.page([b, a], "no git history here", shown, "python3 tests/run.py --coverage")
         self.assertEqual((got["kind"], got["note"], got["rules"], got["tests"]), ("coverage", "no git history here", shown, "python3 tests/run.py --coverage"))
         self.assertEqual(got["totals"], {"lines": 6, "ran": 5, "pct": 83.3, "settled": 5, "settled_ran": 5, "settled_pct": 100.0, "fresh": 1, "fresh_units": 1, "fresh_reached": 0})
@@ -5611,7 +5624,7 @@ class DevToolsUITests(unittest.TestCase):
         import http.client
         import threading
 
-        from callboard import devui
+        from callboard import devui, policy
         folder = tempfile.mkdtemp(dir=TMP)
         runs = os.path.join(folder, "runs")
         script = os.path.join(folder, "callboard")
@@ -5685,7 +5698,10 @@ class DevToolsUITests(unittest.TestCase):
                 self.assertEqual(ask("GET", "/api/run", token="wrong")[0], 403)
                 status, body = ask("GET", "/api/run")
                 view = json.loads(body)
-                self.assertEqual((status, view["wanted"], view["mode"], [b["id"] for b in view["blocks"]]), (200, "build", "dev", ["unit", "build"]))
+                self.assertEqual((status, view["wanted"], view["mode"], [b["id"] for b in view["blocks"]][:2]), (200, "build", "dev", ["unit", "build"]))
+                # (and every other integration on this project's board, waiting for its first run)
+                self.assertEqual([(b["id"], b["state"]) for b in view["blocks"][2:]],
+                                 [(i["id"], "notrun") for i in policy.Config(os.path.join(ROOT, "callboard.toml")).integrations() if i["id"] not in ("unit", "build")])
                 self.assertEqual(json.loads(ask("GET", "/api/run")[1])["wanted"], "")   # (taken once)
                 with open(os.path.join(record, "wanted"), "w", encoding="utf-8") as fh:   # (the board's: u pressed)
                     fh.write("")
@@ -5751,20 +5767,20 @@ class DevToolsUITests(unittest.TestCase):
         # a block's output asked for while the server was away (the page's "Failed to fetch") is asked again once it answers,
         # and another record's output is never shown for this one: the page keeps what it read by record
         page = _read(os.path.join(DEVLIB, "devui.html"), encoding="utf-8")
-        # a Config tab: the default table, then only the roles it says something for (others added from the picker); the
-        # diff checks behind their arrow, open when there are some, and kept as opened across the page's redraws
-        self.assertIn('[["", "default"], ...shown.map(r => [r, r])]', page)
-        self.assertIn('"+ Add a role…"', page)
-        self.assertIn('"Diff Checks"', page)
-        self.assertIn("openNow === undefined ? says(table.diff) : openNow", page)
+        # an integration's rules, a card per gate it runs at (more added from "Add a gate", one taken off with its ×), each
+        # with its rules and what's different for a pull request into a branch
+        self.assertIn('"Add a gate"', page)
+        self.assertIn("function gateCard(e, i, draft, g, sch, floored, noGh)", page)
+        self.assertIn('"Remove the rules for pull requests into " + b', page)
+        self.assertIn('"+ More <integration> <gate> rules"', page)
         self.assertIn("else if (!editing()) render();", page)   # (a field in use, an open drop-down: not drawn again under it)
         self.assertIn("table[k] = v; EDITED(); };", page)       # (Save and Undo follow the draft without a redraw)
         # the Integration card edits [integrations.<id>] itself (enabled, title, cmd, letter, after) and can remove it;
-        # the Integrations page adds one and lists the check tools; a blank rule says the default it falls back to
-        for part in ('"Remove this integration"', 'data.integrations[f.id] = Object.assign', "function toolsCard()",
-                     '"default (" + shown(under(name)) + ")"', 'data.integrations[id] = JSON.parse(JSON.stringify(DRAFT._spec[id]));'):
+        # the Integrations page adds one and lists the check tools it runs
+        for part in ('"Remove from callboard.toml"', "delete data.integrations[id]", 'data.integrations[f.id] = Object.assign', "function toolsSec(e, draft, put)",
+                     "= JSON.parse(JSON.stringify(DRAFT._spec[dkey || id]));"):
             self.assertIn(part, page)
-        self.assertNotIn("<details", page.split("function configTab")[1].split("function fields")[0])
+        self.assertNotIn("<details", page)
         self.assertIn("catch (e) { e.gone = true; throw e; }", page)
         self.assertIn("if (VIEW.run !== SHOWN) { SHOWN = VIEW.run; LOGS = {}; DETAILS = {}; }", page)
         self.assertIn("if (kept[id] && kept[id].gone) delete kept[id];", page)
@@ -5772,9 +5788,9 @@ class DevToolsUITests(unittest.TestCase):
 
     def test_the_config_tabs_and_the_gates_page(self):
         """callboard.toml in the UI (dev/devui.py): the Integrations page and the Config tabs read the file as dev/policy.py
-        does (every integration, on the board or hidden, with its letter; each integration's rules as each role reads
-        them, full and diff mode), Save writes the file again — checked first, refused when [config] read_only — and
-        never commits; the Gates page says what the gates are and what GitHub runs of them, the tags and phases, the
+        does (every integration, on the board or hidden, with its letter; each integration's rules at each gate, and by
+        hand), Save writes the file again — checked first, refused when [config] read_only — and
+        never commits; the Gates page says what the gates are and what GitHub runs of them, the tags and branches, the
         change notes since the last release, and the manual items, ticked from the page (python3 dev/release.py tick).
         The hub's letter and the code's context come from the plan; Push posts no --release."""
         import subprocess
@@ -5791,7 +5807,7 @@ class DevToolsUITests(unittest.TestCase):
         _toml(project, unit="echo 1 test passed", coverage="echo ok", release="echo ok", style="echo ok")
         subprocess.run(["git", "init", "-q", "-b", "dev", project], check=True)
         data = devui.Data(runs=os.path.join(folder, "runs"), script="/bin/true", root=project)
-        # the file, read: every integration with its letter (the menu's: Hub h and Sync s first), and the rules by role
+        # the file, read: every integration with its letter (the menu's: Hub h and Sync s first), and the rules by gate
         got = data.config({})
         self.assertEqual((got["path"], got["read_only"], got["hub_key"]), (os.path.join(project, "callboard.toml"), False, "h"))
         self.assertIn("tests", got["kinds"])   # (the Add form's kinds)
@@ -5802,30 +5818,30 @@ class DevToolsUITests(unittest.TestCase):
         self.assertEqual((ruff["name"], ruff["config"], ruff["get"]), ("Ruff", "ruff.toml", "pip"))   # (this project's dev/tools.toml: each tool, and the file it reads)
         self.assertEqual([(i["id"], i["letter"], i["enabled"] and i["ready"]) for i in got["integrations"]],
                          [("unit", "u", True), ("coverage", "c", True), ("release", "e", True), ("style", "w", True)])   # (Wardrobe: its first letter)
-        self.assertEqual(got["roles"][:2], ["development", "release"])
-        self.assertIn("every_line: 98% (fail)", got["said"]["coverage"]["release"]["full"])
-        self.assertIn("every_line: off", got["said"]["coverage"]["development"]["full"])
-        self.assertIn("every_line: skipped in diff mode", got["said"]["coverage"]["release"]["diff"])
+        self.assertEqual([g["id"] for g in got["gates"]], ["push", "merge", "release"])
+        self.assertIn("every_line: fail under 98%", got["said"]["coverage"]["release"])
+        self.assertIn("every_line: off", got["said"]["coverage"]["merge"])
+        self.assertIn("changed: fail under 90%", got["said"]["coverage"]["merge"])   # (a pull request's: only what changed)
         self.assertEqual(got["schemas"]["coverage"]["settings"]["settled"]["kind"], "threshold")
-        self.assertEqual(got["data"]["coverage"]["release"]["every_line"], {"value": 98, "level": "fail"})
+        self.assertEqual(got["data"]["coverage"]["release"]["every_line"], {"fail": 98})
         # Save: the tables as the page holds them, written back as TOML (checked first: a bad level is refused, nothing written)
         before = os.stat(got["path"]).st_mtime_ns
         bad = json.loads(json.dumps(got["data"]))
-        bad["coverage"]["fresh"] = "loud"
+        bad["coverage"]["merge"]["fresh"] = "loud"
         with self.assertRaises(ValueError) as cm:
             data.save_config({"data": bad})
         self.assertIn("fresh", str(cm.exception))
         self.assertEqual(os.stat(got["path"]).st_mtime_ns, before)
         good = json.loads(json.dumps(got["data"]))
-        good["coverage"]["settled"] = {"value": 95, "level": "fail"}
-        good["coverage"]["hotfix"] = {"fresh": "off"}
+        good["coverage"]["release"]["settled"] = {"fail": 95}
+        good["coverage"]["push"] = {"fresh": "warn"}
         saved = data.save_config({"data": good})
         self.assertEqual(saved["path"], got["path"])
-        self.assertIn("settled = {value = 95, level = \"fail\"}", saved["text"])
-        self.assertIn("[coverage.hotfix]\nfresh = \"off\"", saved["text"])
+        self.assertIn("settled = {fail = 95}", saved["text"])
+        self.assertIn("[coverage.push]\nfresh = \"warn\"", saved["text"])
         again = data.config({})
-        self.assertIn("settled: 95% (fail)", again["said"]["coverage"]["development"]["full"])
-        self.assertEqual(again["said"]["coverage"]["hotfix"]["full"][1], "fresh: off")
+        self.assertIn("settled: fail under 95%", again["said"]["coverage"]["release"])
+        self.assertEqual(again["said"]["coverage"]["push"][1:3], ["fresh: warn", "settled: off"])
         self.assertEqual(subprocess.run(["git", "-C", project, "log", "--oneline"], capture_output=True, text=True).stdout, "")   # (nothing committed)
         # read only: the page shows, Save is refused
         ro = json.loads(json.dumps(again["data"]))
@@ -5835,10 +5851,11 @@ class DevToolsUITests(unittest.TestCase):
         with self.assertRaises(ValueError) as cm:
             data.save_config({"data": again["data"]})
         self.assertIn("read only", str(cm.exception))
-        # the Gates page: the gates and GitHub, the tags and phases, the notes since the last release, the manual items
+        # the Gates page: the gates and GitHub, the tags and branches, the notes since the last release, the manual items
         g = data.gates({})
-        self.assertEqual((g["github"]["enabled"], g["gates"]["push"], g["gates"]["release"]), (False, {"diff": True, "github": False}, {"diff": False, "github": True}))
-        self.assertEqual((g["tags"]["freeze"], g["phases"], g["branches"]["dev"]), ("v{version}-rc.{n}", {"preview": "preview", "freeze": "freeze"}, "development"))
+        self.assertEqual((g["github"], [(x["id"], x["diff"]) for x in g["gates"]]),
+                         ({"enabled": False, "push": False, "merge": True, "release": True}, [("push", True), ("merge", True), ("release", False)]))
+        self.assertEqual((g["tags"]["freeze"], g["branches"]["release"], g["branches"]["development"]), ("v{version}-rc.{n}", "main", "dev"))
         self.assertEqual((g["version"], g["last_release"], g["notes_dir"], g["notes"]), ("1.2.0", "", "changes", ["changes/a-change.md"]))
         self.assertEqual(g["manual"], [{"item": "Read the release notes through", "done": False}, {"item": "Check the README's screenshots still match", "done": False}])
         self.assertEqual(data.tick({"item": "Read the release notes through"})["ok"], True)
@@ -5854,12 +5871,12 @@ class DevToolsUITests(unittest.TestCase):
         self.assertIn("callboard init", str(cm.exception))
         # the view: the hub's letter and the code's context are the plan's; nothing of --release
         runs = os.path.join(folder, "runs")
-        self.record(runs, "20260101-100000-1", {"kind": "checks", "mode": "local", "header": ["Local Copy · freeze (v1.2.0-rc.1) · Checks only"], "role": "freeze",
+        self.record(runs, "20260101-100000-1", {"kind": "checks", "mode": "local", "header": ["Local Copy · freeze (v1.2.0-rc.1) · Checks only"], "rules": "release",
                                                  "phase": "freeze", "tag": "v1.2.0-rc.1", "branch": "dev", "gate": "", "diff": False, "hub_key": "h", "letters": {"unit": "u"}, "sections": []},
                     {"header": ["Local Copy · freeze (v1.2.0-rc.1) · Checks only"], "done": True, "sections": [self.section("unit", "Unit Tests", "pass", "1 test passed", "u")]})
         view = data.view()
         self.assertEqual((view["hub_key"], view["letters"], view["context"]),
-                         ("h", {"unit": "u"}, {"role": "freeze", "phase": "freeze", "tag": "v1.2.0-rc.1", "gate": "", "diff": False, "branch": "dev"}))
+                         ("h", {"unit": "u"}, {"rules": "release", "phase": "freeze", "tag": "v1.2.0-rc.1", "gate": "", "diff": False, "branch": "dev"}))
         self.assertNotIn("release", view)
         self.assertEqual(data._mode({"mode": "dev", "release": True}), ["dev"])
         page_text = devui.page()
@@ -5869,7 +5886,7 @@ class DevToolsUITests(unittest.TestCase):
         self.assertNotIn("TN_I18N", page_text)
         for route in ("/api/config", "/api/gates", "/api/tick"):
             self.assertIn(route, page_text)
-        for name in ("function integrations()", "function configTab(id)", "function gates()", "function tally()"):
+        for name in ("function integrations()", "function gateSays(g)", "function gates()", "function tally()"):
             self.assertIn(name, page_text)
         self.assertEqual(policy.letters(["Hub", "Sync", "Unit Tests"]), ["h", "s", "u"])
 
@@ -9175,7 +9192,7 @@ class OptimizerTests(unittest.TestCase):
         self.assertEqual((view["summary"]["mix"]["files"], view["summary"]["mix"]["round_disk"]), (1, 0))
 
     def test_media_element_walks_are_capped(self):
-        """F-2026-056: a library file is often downloaded, so it's untrusted. Every loop in the app that walks a file's EBML
+        """F-1-2026-056: a library file is often downloaded, so it's untrusted. Every loop in the app that walks a file's EBML
         elements, reading the file as it goes, stops after a MAX_ count (or visits each place once, the ones marked
         here), so a crafted file of many tiny elements can't hold a reader for hours. And the optimizer refuses a file
         with more attachments than it walks, rather than rewriting it without the rest."""
@@ -9223,14 +9240,14 @@ class OptimizerTests(unittest.TestCase):
             fh.write(element(mkv.EBML, b"") + element(mkv.SEGMENT, element(mkv.ATTACHMENTS, attached * (mkv.MAX_ATTACHMENTS + 1)) + element(mkv.CLUSTER, b"")))
         with self.assertRaisesRegex(mkv.NotMatroska, "attachments"):
             mkv.read_layout(p)
-        with open(p, "wb") as fh:  # (F-2026-060: many tiny elements before the first Cluster)
+        with open(p, "wb") as fh:  # (F-1-2026-060: many tiny elements before the first Cluster)
             fh.write(element(mkv.EBML, b"") + element(mkv.SEGMENT, element(mkv.VOID, b"") * (mkv.MAX_PARTS + 1) + element(mkv.CLUSTER, b"")))
         with self.assertRaisesRegex(mkv.NotMatroska, "before the first Cluster"):
             mkv.read_layout(p)
         self.assertEqual(uncapped, [])
 
     def test_synced_folder_files_are_read_only_through_read_synced(self):
-        """F-2026-059: a claim or marker in a library's .plexcache folder may come from the other site as anything. Every
+        """F-1-2026-059: a claim or marker in a library's .plexcache folder may come from the other site as anything. Every
         function in the app that reads JSON and names that folder does so through claims.read_synced (a size cap, an
         object, a number for "at"), and a list, a number, a string, a bad "at", a huge file or broken JSON there is
         skipped: claims, markers and peers.read go on with the rest."""
@@ -9349,7 +9366,7 @@ class OptimizerTests(unittest.TestCase):
         self.assertTrue(app.updates.status()["updating"])                                        # (said as updating until the restart)
         self.assertIn(("app.pull_images", ["plex-cache", {"redeploy": True}]), TRUENAS.apps_called)
         self.assertTrue(any("pulling the newer image" in en(e["message"]) for e in app.activity.snapshot()["events"]))
-        # F-2026-050 (mitigated: TrueNAS pulls by tag): once restarted, the image TrueNAS holds for the tag is compared with the one checked
+        # F-1-2026-050 (mitigated: TrueNAS pulls by tag): once restarted, the image TrueNAS holds for the tag is compared with the one checked
         from plexcache import updates
         tag = f"ghcr.io/{updates.IMAGE}:{updates.IMAGE_TAG[app.updates.channel]}"
         held = [{"id": "x", "repo_tags": [tag], "repo_digests": [f"ghcr.io/{updates.IMAGE}@sha256:" + "ab" * 32]}, {"id": "y", "repo_tags": ["other:1"], "repo_digests": []}]
@@ -9371,7 +9388,7 @@ class OptimizerTests(unittest.TestCase):
             self.assertIsNone(app._load_json(updates.PULLED))
 
     def test_update_now_pulls_only_githubs_own_build(self):
-        """F-2026-043: before Update Now (the page's, Home Assistant's or a paired side's ask) has TrueNAS pull, the image the
+        """F-1-2026-043: before Update Now (the page's, Home Assistant's or a paired side's ask) has TrueNAS pull, the image the
         channel's tag points at now is checked: its digest, from GitHub's registry, must be attested by this repository's own
         build workflow. Not attested, attested by another repository, a statement of another kind, or nothing reachable to
         check with: refused, and TrueNAS is never asked."""
@@ -10342,7 +10359,7 @@ class OptimizerTests(unittest.TestCase):
                 with e:
                     return e.code, json.loads(e.read())
         code, hz = call("/healthz", token="")                                   # no token needed, and none shown
-        self.assertEqual((code, hz), (200, {"ok": True, "service": "optimizer", "version": hz["version"], "token": True}))  # (and nothing else: F-2026-045)
+        self.assertEqual((code, hz), (200, {"ok": True, "service": "optimizer", "version": hz["version"], "token": True}))  # (and nothing else: F-1-2026-045)
         self.assertNotIn("a-long-test-token-123456", json.dumps(hz))
         self.assertEqual(call("/api/status", token="wrong")[0], 401)
         self.assertEqual(call("/api/check", {"path": "/etc/passwd"})[0], 403)
@@ -12379,7 +12396,7 @@ class OptimizerSetupTests(unittest.TestCase):
     """Setting the optimizer up: as little to edit as possible, and Health → Dionysus says how."""
 
     def test_no_other_container_gets_the_settings_folder(self):
-        """F-2026-025, for every container the project sets up — the compose files, and the YAML Health hands out: only
+        """F-1-2026-025, for every container the project sets up — the compose files, and the YAML Health hands out: only
         the app's own container mounts the settings folder (its keys and tokens). Any other container mounts at most a
         folder inside it, never the folder itself or one that holds it."""
         from plexcache import checks
@@ -13135,7 +13152,7 @@ class LoginTests(unittest.TestCase):
         # A copy of the cookie no longer works, even after a restart; other sessions carry on
         self.assertEqual(self.req("GET", "/api/state", headers={"Cookie": cookie})[0], 401)
         restarted = self.authmod.Auth("admin", "hunter2", self.app.config_dir)
-        self.assertFalse(restarted.session_ok(cookie.split("=", 1)[1], "127.0.0.1"))   # (each session bound to where it was issued: F-2026-042)
+        self.assertFalse(restarted.session_ok(cookie.split("=", 1)[1], "127.0.0.1"))   # (each session bound to where it was issued: F-1-2026-042)
         self.assertTrue(restarted.session_ok(other.split("=", 1)[1], "127.0.0.1"))
         self.assertEqual(self.req("GET", "/api/state", headers={"Cookie": other})[0], 200)
 
@@ -13174,7 +13191,7 @@ class LoginTests(unittest.TestCase):
             self.assertLess(len(auth._fails), 6000)
 
     def test_no_page_takes_an_inline_style(self):
-        """F-2026-058: the app's policy has no 'unsafe-inline' for styles, so markup that slipped past the escaping couldn't
+        """F-1-2026-058: the app's policy has no 'unsafe-inline' for styles, so markup that slipped past the escaping couldn't
         restyle a page. Nothing the app serves under it writes a style="…" or a <style> of its own (the refusal page's one,
         allowed by its hash, aside); what a script works out goes in as data-css, which only setHtml's cssSet turns into
         styles (some properties, numbers and colours only); and every bit of HTML app.js puts in goes through setHtml. The
@@ -13248,7 +13265,7 @@ class LoginTests(unittest.TestCase):
         cm.exception.close()
 
     def test_every_password_check_counts_toward_the_lockout(self):
-        """F-2026-031, everywhere in the app: each place a password is checked (Auth.check_password) first asks whether
+        """F-1-2026-031, everywhere in the app: each place a password is checked (Auth.check_password) first asks whether
         the address is locked out, and then counts the attempt, so no way in lets someone guess faster than the sign-in
         form. And every request check (Auth.request_ok) is given the address, without which it can't count."""
         import ast
@@ -13286,7 +13303,7 @@ class LoginTests(unittest.TestCase):
         self.assertEqual(self.req("GET", "/api/state", headers={"Authorization": good})[0], 200)
         self.assertEqual(self.req("GET", "/api/state", headers={"Authorization": bad})[0], 401)
         self.assertEqual(self.req("GET", "/api/state", headers={"Authorization": "Basic !!"})[0], 401)
-        # Wrong guesses count against the same per-address lockout as the sign-in form (F-2026-031)
+        # Wrong guesses count against the same per-address lockout as the sign-in form (F-1-2026-031)
         self.assertEqual(auth._fails["127.0.0.1"][0], 2)  # (the guess, and the junk header's empty credentials)
         auth._fails["127.0.0.1"] = (self.authmod.LOCKOUT_FAILS, time.time())
         self.assertEqual(self.req("GET", "/api/state", headers={"Authorization": good})[0], 401)  # locked out: even the right password waits
@@ -13383,7 +13400,7 @@ class LoginTests(unittest.TestCase):
 
 
 class LockoutKeyTests(unittest.TestCase):
-    """F-2026-049, 051: what a sign-in attempt is counted against, and the address a session is bound to. From a reverse
+    """F-1-2026-049, 051: what a sign-in attempt is counted against, and the address a session is bound to. From a reverse
     proxy named in PLEXCACHE_TRUSTED_PROXY, the client the proxy names, its last X-Forwarded-For hop, so one bad client
     doesn't lock out everyone behind the proxy; from anyone else, the connection's own address, whatever header it sends."""
 
@@ -13401,7 +13418,7 @@ class LockoutKeyTests(unittest.TestCase):
             self.assertTrue(auth.locked_out(bad))
             self.assertFalse(auth.locked_out(good))                            # (the proxy's other clients still sign in)
             self.assertEqual(len(Auth.client({"X-Forwarded-For": "x" * 500}, "172.17.0.1")), 64)
-            self.assertEqual(Auth.client({"X-Forwarded-For": "192.168.1.30"}, "192.168.1.20"), "192.168.1.20")  # (a direct client names no one: F-2026-051)
+            self.assertEqual(Auth.client({"X-Forwarded-For": "192.168.1.30"}, "192.168.1.20"), "192.168.1.20")  # (a direct client names no one: F-1-2026-051)
         for env in ({"PLEXCACHE_URL": "https://plexcache.example.com", "PLEXCACHE_TRUSTED_PROXY": ""}, {"PLEXCACHE_URL": "", "PLEXCACHE_TRUSTED_PROXY": "nonsense"}):
             with mock.patch.dict(os.environ, env):
                 self.assertEqual(Auth.client({"X-Forwarded-For": "10.0.0.5"}, "192.168.1.20"), "192.168.1.20")  # (no proxy named: the header is anyone's)
@@ -13410,7 +13427,7 @@ class LockoutKeyTests(unittest.TestCase):
         self.assertNotRegex(server, r"locked_out\(self\.client_address|request_ok\(self\.headers, self\.client_address")
 
     def test_a_proxys_headers_are_believed_only_from_the_trusted_proxy(self):
-        """F-2026-051: anywhere in the app, an X-Forwarded-* header is read only in Auth.client, behind trusted_proxy: from
+        """F-1-2026-051: anywhere in the app, an X-Forwarded-* header is read only in Auth.client, behind trusted_proxy: from
         anyone else it's whatever the sender chose. The reads marked here aren't real cases, each with why."""
         not_real = {
             # a browser can't send it cross-site without a preflight the app never answers, and a script sends no Origin
@@ -13444,7 +13461,7 @@ class LockoutKeyTests(unittest.TestCase):
 
 
 class SessionBindingTests(unittest.TestCase):
-    """F-2026-042 (mitigated: plain HTTP on the local network, a reverse proxy with TLS for more): a session cookie works
+    """F-1-2026-042 (mitigated: plain HTTP on the local network, a reverse proxy with TLS for more): a session cookie works
     only from the address it was issued to, so one read off the network can't be used from another device."""
 
     def test_a_session_works_only_from_where_it_was_issued(self):
@@ -13462,7 +13479,7 @@ class SessionBindingTests(unittest.TestCase):
 
 
 class NetworkControlDefaultsTests(unittest.TestCase):
-    """F-2026-044: nothing that lets the network drive the app ships on. MQTT commands (Home Assistant's switches) and a
+    """F-1-2026-044: nothing that lets the network drive the app ships on. MQTT commands (Home Assistant's switches) and a
     paired side's remote update are off on a fresh install; an install that turned them on keeps them."""
 
     def test_nothing_that_lets_the_network_drive_the_app_ships_on(self):
@@ -13842,7 +13859,7 @@ class UpdateCheckTests(unittest.TestCase):
         # an update it can't install says what would let it; one it can is just offered
         self.assertIn("To install it from here, connect the TrueNAS API", info["release_summary"])
         ok = {"platform": {"truenas": True}, "connections": {"truenas_key": {"status": "ok"}}}
-        app.settings.update({"mqtt": {"allow_control": True}})   # (off as shipped: F-2026-044)
+        app.settings.update({"mqtt": {"allow_control": True}})   # (off as shipped: F-1-2026-044)
         self.assertNotIn("release_summary", update_info(app, st=ok))
         app.settings.update({"mqtt": {"allow_control": False}})
         self.assertEqual(update_info(app, st=ok)["release_summary"], "A newer version is on GitHub. To install it from here, turn on Allow control (System → MQTT).")
@@ -13952,7 +13969,7 @@ class MQTTTests(unittest.TestCase):
         self.app.ha = type(self.app.ha)(self.app)
 
     def enable(self, **extra):
-        cfg = {"enabled": True, "host": "127.0.0.1", "port": self.broker.port, "username": "ha", "password": "secret", "allow_control": True}  # (control: off as shipped, F-2026-044)
+        cfg = {"enabled": True, "host": "127.0.0.1", "port": self.broker.port, "username": "ha", "password": "secret", "allow_control": True}  # (control: off as shipped, F-1-2026-044)
         cfg.update(extra)
         self.app.settings.update({"mqtt": cfg})
         self.app.ha.start()
@@ -14631,7 +14648,7 @@ class MQTTTests(unittest.TestCase):
             self.app.settings.update({"mqtt": {"enabled": True, "host": "127.0.0.1", "port": tls_broker.port, "username": "ha",
                                                "password": "secret", "tls": True, "verify_tls": False}})
             self.app.ha.start()
-            # its certificate not confirmed yet: refused at the TLS step, nothing sent, and offered for trust (F-2026-053)
+            # its certificate not confirmed yet: refused at the TLS step, nothing sent, and offered for trust (F-1-2026-053)
             self.assertTrue(wait_for(lambda: self.app.ha.status["steps"]["tls"]["status"] == "fail"), self.app.ha.status)
             self.assertIn("hasn’t been confirmed", self.app.ha.status["steps"]["tls"]["text"])
             self.assertEqual(tls_broker.connects, [])
@@ -15181,7 +15198,7 @@ class SyncthingTests(unittest.TestCase):
         sy.refresh()
         self.assertEqual(app.settings.get()["syncthing"]["url"], st.url)
         self.assertEqual(en(sy.lights()["found"]["text"]), f"Syncthing found at {st.url} by itself")
-        self.assertEqual(app.settings.get()["syncthing"]["api_key"], "")  # (the key went with the address it was saved for: F-2026-035)
+        self.assertEqual(app.settings.get()["syncthing"]["api_key"], "")  # (the key went with the address it was saved for: F-1-2026-035)
         app.settings.update({"syncthing": {"api_key": "st-key"}})
         sy.refresh()
         self.assertTrue(sy.talking())
@@ -16070,8 +16087,8 @@ class TranslationTests(unittest.TestCase):
 
     def test_the_board_block(self):
         """dev/i18n.py --callboard, callboard's Translations block: the overall share translated, one number; between
-        releases (the development role: targets of 0) it only tells (exit 3), and where the catalogs gate (strict_now:
-        a release's roles, targets of 100% held as "fail") a language short of its target is a finding, red — the one
+        releases (the push gate: targets of 0) it only tells (exit 3), and where the catalogs gate (strict_now: the
+        release gate, and a pull request into main — targets of 100% held as "fail") a language short of its target is a finding, red — the one
         place that decides, for this suite's strictness too."""
         quiet = _policy_env("development", PLEXCACHE_PROGRESS="")
         catalogs = lambda code: {"Idle": "x", "Busy": "y" if code == "de" else None}
@@ -16085,7 +16102,7 @@ class TranslationTests(unittest.TestCase):
             self.assertEqual(self.tool.main(["i18n.py", "--callboard"]), 3)   # (between releases: it only tells)
         self.assertIn("75.0% translated · 2 languages · 2 texts", out.getvalue())
         self.assertNotIn("error", out.getvalue())
-        for role in ("release", "hotfix", "freeze"):   # (a release's code, and the roles that inherit its rules)
+        for role in ("release", "hotfix", "freeze"):   # (a release's code, a hotfix's pull request into main, a release candidate)
             with self.subTest(role), contextlib.ExitStack() as stack:
                 out = io.StringIO()
                 for m in patched() + (mock.patch.dict(os.environ, _policy_env(role, PLEXCACHE_PROGRESS="")), contextlib.redirect_stdout(out)):
@@ -16161,7 +16178,7 @@ class TranslationTests(unittest.TestCase):
                 page = json.load(fh)
             self.assertEqual((page["kind"], page["strict"], len(page["languages"])), ("i18n", strict, 2))
             self.assertEqual(page["targets"], {"fr": 100, "de": 100} if strict else {"fr": 0, "de": 0})   # (the rules as read)
-            self.assertEqual(page["context"]["role"], role)
+            self.assertEqual(page["context"]["rules"], POLICY_CODE[role][1])
             # each language its own check (the bar counts them), with its findings: short of its target, strict; between
             # releases, with no target, how far it still is (grey: not met, not failed)
             self.assertEqual([t["name"] for t in page["tools"]], ["fr", "de"])
@@ -16398,17 +16415,17 @@ class FutureTests(unittest.TestCase):
 
     def test_the_suite_in_the_container_is_held_to_this_blocks_rules(self):
         """The suite inside the container is told callboard's context (the block's integration, the file as /src has it,
-        the role…), so its exit code is what Future Tests' rules hold its failures, warnings and skipped tests as; the
+        the gate whose rules hold…), so its exit code is what Future Tests' rules hold its failures, warnings and skipped tests as; the
         parts' codes are combined through dev/policy.py: a failure in either fails the run, else its worst warning or note
         stands — a skipped test held as a note is never a failure."""
         from dev import future
 
         from callboard import policy
-        with mock.patch.dict(os.environ, {"CALLBOARD_ROLE": "release", "CALLBOARD_BRANCH": "main", "CALLBOARD_INTEGRATION": ""}):
+        with mock.patch.dict(os.environ, {"CALLBOARD_CONTEXT": "1", "CALLBOARD_RULES": "release", "CALLBOARD_BRANCH": "main", "CALLBOARD_INTEGRATION": ""}):
             args = future.suite_context()
         env = dict(a.split("=", 1) for a in args[1::2])
         self.assertEqual(args[0::2], ["-e"] * len(env))
-        self.assertEqual((env["CALLBOARD_INTEGRATION"], env["CALLBOARD_CONFIG"], env["CALLBOARD_REPO"], env["CALLBOARD_ROLE"], env["CALLBOARD_BRANCH"]),
+        self.assertEqual((env["CALLBOARD_INTEGRATION"], env["CALLBOARD_CONFIG"], env["CALLBOARD_REPO"], env["CALLBOARD_RULES"], env["CALLBOARD_BRANCH"]),
                          ("future", "/src/callboard.toml", "/src", "release", "main"))
         self.assertTrue(set(future.CONTEXT_KEYS) <= set(__import__("tests.run", fromlist=["CONTEXT_KEYS"]).CONTEXT_KEYS))   # (what the suite reads)
         self.assertEqual([future.combined(c) for c in ([0, 0], [0, 3], [4, 3], [1, 3], [2, 0], [5, 5], [5, 0], [])],
@@ -16998,7 +17015,7 @@ class StyleGuideTests(unittest.TestCase):
 
     def test_the_guide_holds_every_kind_of_look(self):
         kinds = {k.split(" ")[0] for k in self.style.load_guide()["looks"]}
-        self.assertLessEqual({"css", "scripted", "svg", "mark", "theme", "file"}, kinds)   # (inline: none since F-2026-058, the policy takes no style="…")
+        self.assertLessEqual({"css", "scripted", "svg", "mark", "theme", "file"}, kinds)   # (inline: none since F-1-2026-058, the policy takes no style="…")
         g = self.style.load_guide()["looks"]
         for look in ("css .btn.pri", "css @media (prefers-reduced-motion:reduce) | .mvine .ripen", "theme dionysus/light lost",
                      "theme dionysus decor grapes", "mark themes.py css",
@@ -17437,7 +17454,7 @@ class StyleGuideTests(unittest.TestCase):
         its decor.js) hold look files only, are sealed with the looks, and are held to git's history: files changed with
         no approval, or a blob that isn't that file as it was committed with them (one committed and reverted since,
         say), fail the check, and the sample then makes no Before of them. themes.py is read as data, never run
-        (F-2026-015)."""
+        (F-1-2026-015)."""
         import subprocess
         s = self.style
         self.assertTrue(s.look_file("plexcache/themes.py") and s.look_file("plexcache/web/decor.js") and s.look_file("plexcache/web/fonts/x.woff2"))
@@ -18153,7 +18170,7 @@ class PolicyTests(unittest.TestCase):
 
     def test_no_tool_decides_a_rule_of_its_own(self):
         """The old switches and constants are gone from every tool: the rules are callboard.toml's, read through
-        dev/policy.py (the context callboard sets, CALLBOARD_ROLE and the rest, is all a tool is told)."""
+        dev/policy.py (the context callboard sets, CALLBOARD_RULES and the rest, is all a tool is told)."""
         tools = [os.path.join(ROOT, "dev", f) for f in os.listdir(os.path.join(ROOT, "dev")) if f.endswith(".py")] + \
             [os.path.join(ROOT, "tests", "run.py"), os.path.join(CALLBOARD, "bin", "callboard")]
         gone = ("CALLBOARD_MODE", "CALLBOARD_RELEASE", "PLEXCACHE_I18N_RELEASE", "MOVES_ON", "MINORS_ON", "FRESH_DAYS", "SETTLED =",
@@ -18189,7 +18206,7 @@ class PolicyTests(unittest.TestCase):
                     mock.patch.object(run, "CONFIG", os.path.join(ROOT, "callboard.toml")), contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(run.verdict(2, 0, 0), rc, block)
                 self.assertEqual(run.verdict(0, 0, 0), 0, block)
-        self.assertTrue(set(run.CONTEXT_KEYS) >= {"CALLBOARD_INTEGRATION", "CALLBOARD_CONFIG", "CALLBOARD_ROLE", "CALLBOARD_PHASE", "CALLBOARD_DIFF", "CALLBOARD_GATE"})
+        self.assertTrue(set(run.CONTEXT_KEYS) >= {"CALLBOARD_INTEGRATION", "CALLBOARD_CONFIG", "CALLBOARD_RULES", "CALLBOARD_PHASE", "CALLBOARD_DIFF", "CALLBOARD_GATE"})
         self.assertFalse(set(run.CONTEXT_KEYS) & set(os.environ), "callboard's context reached the tests")   # (this very run: taken out)
 
 class GateTests(unittest.TestCase):
@@ -18687,7 +18704,7 @@ class CheckToolTests(unittest.TestCase):
             self.assertIn("from callboard import checks", text, f"dev/{name} isn't on callboard/checks.py")
             self.assertNotRegex(text, r'"npx"|"pip"|Progress\(', f"dev/{name} fetches or reports a tool its own way")
             used |= set(re.findall(r'checks\.command\("([\w-]+)"\)', text))
-        self.assertEqual(used, set(table), "every tool in dev/tools.toml is run by a check, and only those")
+        self.assertEqual(used - set(checks.TOOLCHAIN), set(table), "every tool in dev/tools.toml is run by a check, and only those")   # (a toolchain's own, go vet, is the project's Go's: never pinned there)
         for key, tool in table.items():
             self.assertIn(tool["get"], ("npx", "pip", "release"), key)
             self.assertTrue(tool.get("name") and tool.get("version") and tool.get("upstream"), key)
@@ -18696,7 +18713,7 @@ class CheckToolTests(unittest.TestCase):
                 self.assertTrue(all(re.fullmatch(r"[0-9a-f]{64}", h) for h in tool["sha256"].values()), key)
 
     def test_every_download_the_build_makes_is_pinned(self):
-        """What the image build and the workflows fetch is pinned (F-2026-029/030): every RUN in the Dockerfile that
+        """What the image build and the workflows fetch is pinned (F-1-2026-029/030): every RUN in the Dockerfile that
         downloads checks what it got (a SHA-256, or the signing key's fingerprint) before using it; every base image is
         pinned to a digest, not a tag someone could re-push; and every workflow step runs an action at a full commit."""
         df = _read(os.path.join(ROOT, "Dockerfile"), encoding="utf-8")
@@ -18857,12 +18874,12 @@ class ReleaseTests(unittest.TestCase):
                 self.assertEqual(release.main(args), rc)
             with open(path, encoding="utf-8") as fh:
                 got = json.load(fh)
-            level = "fail" if strict else "info"   # (each check's level: [release]'s for the role — info between releases, fail for a release's code)
+            level = "fail" if strict else "info"   # (each check's level: [release]'s at the gate — info between releases, fail for a release's code)
             self.assertEqual({k: v for k, v in got.items() if k not in ("tools", "result", "files", "level", "rc", "note", "context", "rules")},
                              {"kind": "release", "strict": strict, "ready": 1, "total": 2, "skipped": [], "checks": [
                                  {"name": "Version", "ok": True, "line": "0.17.0, a new release", "todo": [], "level": level},
                                  {"name": "Looks", "ok": False, "line": "2 looks waiting for approval", "todo": ["new: css .a", "python3 dev/style.py review"], "level": level}]})
-            self.assertEqual((got["context"]["role"], got["level"], got["rc"]), (role, level, rc))
+            self.assertEqual((got["context"]["rules"], got["level"], got["rc"]), (POLICY_CODE[role][1], level, rc))
 
     def test_every_setting_is_placed_for_mqtt(self):
         from dev import release
@@ -18925,7 +18942,7 @@ class ReleaseTests(unittest.TestCase):
         self.assertTrue(got.ok)
         self.assertEqual(got.line, said)
         env = run.call_args.kwargs["env"]   # (as a release's code holds them, the whole codebase: the one set of rules, dev/policy.py's context)
-        self.assertEqual((env["CALLBOARD_ROLE"], env["CALLBOARD_DIFF"], env["CALLBOARD_INTEGRATION"]), ("release", "0", "audit"))
+        self.assertEqual((env["CALLBOARD_RULES"], env["CALLBOARD_DIFF"], env["CALLBOARD_INTEGRATION"]), ("release", "0", "audit"))
         bad = mock.Mock(returncode=1, stdout="  sensitive code waits\n2 release rules not met\n")
         with mock.patch.object(release.subprocess, "run", return_value=bad):
             got = release.check_audits()
@@ -18993,9 +19010,9 @@ class ReleaseTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("rsync") and shutil.which("bash") and shutil.which("git"), "no rsync or git here (callboard copies with it)")
     def test_callboard_release_and_translations_every_run(self):
         """callboard's Release checks and Translations blocks, every run: the tools alone decide how strict they are, from
-        the code's role (callboard.toml's [branches]: told them as CALLBOARD_ROLE) — on a feature branch exit 3 only tells
-        (grey, the run goes on), and on main, a release's code, exit 1 is a failure like a failing test. A pass as one
-        role doesn't count for another."""
+        the gate whose rules hold (told them as CALLBOARD_RULES) — by hand exit 3 only tells (grey, the run goes on), and
+        at the release gate (--gate release) exit 1 is a failure like a failing test. A pass at one gate doesn't count for
+        another."""
         import subprocess
         folder = tempfile.mkdtemp(dir=TMP)
         project, nas, fake = (os.path.join(folder, d) for d in ("project", "nas", "bin"))
@@ -19020,9 +19037,9 @@ class ReleaseTests(unittest.TestCase):
 
         def settings(strict_rc: int, i18n_ok: bool = False):
             told = "printf '\\036{\"status\": \"in progress\"}\\n'"   # (the note beside the block's title, as the tools send it)
-            _toml(project, unit="echo tests: role=$CALLBOARD_ROLE",
-                  i18n="echo 100% translated; exit 0" if i18n_ok else f'echo 32.9% translated; [ "$CALLBOARD_ROLE" = release ] && exit 1; {told}; exit 3',
-                  release=f'echo the version is wrong; echo 4 of 7 ready; if [ "$CALLBOARD_ROLE" = release ]; then exit {strict_rc}; else {told}; exit 3; fi')
+            _toml(project, unit="echo tests: rules=${CALLBOARD_RULES:-nearest}",
+                  i18n="echo 100% translated; exit 0" if i18n_ok else f'echo 32.9% translated; [ "$CALLBOARD_RULES" = release ] && exit 1; {told}; exit 3',
+                  release=f'echo the version is wrong; echo 4 of 7 ready; if [ "$CALLBOARD_RULES" = release ]; then exit {strict_rc}; else {told}; exit 3; fi')
         env = dict(os.environ, PATH=fake + os.pathsep + os.environ.get("PATH", ""), CALLBOARD_CONFIG=os.path.join(folder, "config"),
                    XDG_STATE_HOME=os.path.join(folder, "state"), TMPDIR=folder)
         env.pop("PLEXCACHE_PROGRESS", None)
@@ -19033,32 +19050,29 @@ class ReleaseTests(unittest.TestCase):
                                  text=True, timeout=120, stdin=subprocess.DEVNULL)
             return got.returncode, got.stdout + got.stderr
         settings(1)
-        rc, out = callboard("push")   # (a feature branch: both blocks only tell, grey, and the run passes)
+        rc, out = callboard("push")   # (by hand: both blocks only tell, grey, and the run passes)
         self.assertEqual(rc, 0, out)
         self.assertIn("Release checks: IN PROGRESS", out)
         self.assertIn("Translations: IN PROGRESS", out)
-        self.assertIn("tests: role=feature", out)
-        self.assertRegex(out, r"\nLocal Copy[^\n]* · feature")
-        git("checkout", "-q", "-b", "main")   # (a release's code now: in sync, and passed — but not as this role, so tested again)
-        rc, out = callboard()
+        self.assertIn("tests: rules=nearest", out)
+        rc, out = callboard("--gate", "release")   # (the release gate now: in sync, and passed — but not at this gate, so tested again)
         self.assertEqual(rc, 1, out)
-        self.assertIn("The last tests weren't run for this code's role or phase", out)
+        self.assertIn("The last tests weren't run as this gate or mode", out)
         self.assertIn("Release checks: FAILED", out)
         self.assertIn("Translations: FAILED", out)
         self.assertIn("\nthe version is wrong\n", out)   # (what it said, above the board)
-        self.assertIn("tests: role=release", out)
-        self.assertRegex(out, r"\nLocal Copy[^\n]* · release")   # (the board's header: the role)
+        self.assertIn("tests: rules=release", out)
         settings(0)
-        rc, out = callboard()
-        self.assertEqual(rc, 1, out)   # (the translations still gate a release's code)
+        rc, out = callboard("--gate", "release")
+        self.assertEqual(rc, 1, out)   # (the translations still gate a release)
         self.assertIn("Release checks: PASSED", out)
         self.assertIn("Translations: FAILED", out)
         settings(0, i18n_ok=True)
-        rc, out = callboard()
+        rc, out = callboard("--gate", "release")
         self.assertEqual(rc, 0, out)
         self.assertIn("Release checks: PASSED", out)
         self.assertIn("Translations: PASSED", out)
-        rc, out = callboard()   # (passed, and nothing changed: readiness runs again all the same, quick; the tests don't)
+        rc, out = callboard("--gate", "release")   # (passed, and nothing changed: readiness runs again all the same, quick; the tests don't)
         self.assertEqual(rc, 0, out)
         self.assertIn("Release checks: PASSED", out)
         self.assertIn("Unit Tests: ALREADY PASSED", out)
@@ -21774,7 +21788,7 @@ class MirrorLinkTests(unittest.TestCase):
         good = pl.signature(a.mirror_link._key(), "GET", "/peer/v1/status", str(now), "n2", b"")
         self.assertEqual(send(now, "n2", good)[0], 200)
         self.assertEqual(send(now, "n2", good), (403, {"error": "seen before"}))
-        b.peerlinks.nonces, b.peerlinks.born = {}, now + 1  # a restart (F-2026-055): the nonces gone, and that request refused all the same
+        b.peerlinks.nonces, b.peerlinks.born = {}, now + 1  # a restart (F-1-2026-055): the nonces gone, and that request refused all the same
         self.assertEqual(send(now, "n2", good), (403, {"error": "sent before this side started: send it again"}))
         b.peerlinks.born = now
         old = now - pl.MAX_AGE - 60
@@ -22998,7 +23012,7 @@ class FileActionTests(unittest.TestCase):
     }
 
     def test_no_file_action_loses_a_files_only_copy(self):
-        """F-2026-027, for every action the optimizer's /api/folder takes (each one in folder_action): asked about a
+        """F-1-2026-027, for every action the optimizer's /api/folder takes (each one in folder_action): asked about a
         media file whose content exists nowhere else, and another file that differs, no action leaves the media folder
         without that content — the file there still, or moved somewhere, but never gone."""
         import inspect
@@ -23081,7 +23095,7 @@ class FileActionTests(unittest.TestCase):
         self.assertTrue(os.path.isdir(os.path.join(root, files.TRASH)))
 
     def test_no_copy_is_written_through_a_name_planted_beside_it(self):
-        """F-2026-046, for every writer in optimize/files.py that copies beside a file and swaps it in: a symlink planted at
+        """F-1-2026-046, for every writer in optimize/files.py that copies beside a file and swaps it in: a symlink planted at
         the name the copy used to take (.plexcache-copy-<name>), pointing out of the media folder, is never written
         through; the copy goes to a name the kernel made for it alone. No fixed temporary name is left in the module."""
         from plexcache.optimize import files
@@ -23138,7 +23152,7 @@ class FileActionTests(unittest.TestCase):
         bigger = self._file("bigger.mkv", b"abcdef")
         with self.assertRaisesRegex(ValueError, "isn't the same file"):
             files.unlink(new, keep=bigger)
-        # a different file of the same size isn't "the same file" either (F-2026-027): refused, the only copy never deleted
+        # a different file of the same size isn't "the same file" either (F-1-2026-027): refused, the only copy never deleted
         same_size = self._file("same-size.mkv", b"xyz")
         with self.assertRaisesRegex(ValueError, "isn't the same file"):
             files.unlink(new, keep=same_size)
@@ -23845,7 +23859,7 @@ class ServerRouteTests(unittest.TestCase):
                 mock.patch.object(other, "choose", return_value=M("Movies: no mirror")) as ch, mock.patch.object(other, "forget") as fg, \
                 mock.patch.object(other, "refresh") as rf, mock.patch.object(other, "snapshot", return_value={"snap": 1}):
             self.assertEqual(self.req("POST", "/api/plex2/servers", {})[1], {"servers": [{"id": "x"}]})
-            self.assertEqual(self.req("POST", "/api/plex2/address", {"server": "x", "url": "http://10.0.0.2:32400"})[0], 400)  # (the login off: F-2026-052)
+            self.assertEqual(self.req("POST", "/api/plex2/address", {"server": "x", "url": "http://10.0.0.2:32400"})[0], 400)  # (the login off: F-1-2026-052)
             sa.assert_not_called()
             self.assertEqual(self.req("POST", "/api/plex2/choose", {"key": "1", "state": "mirror", "server": "x", "their_key": "7"})[1], {"snap": 1})
             ch.assert_called_once_with("1", "mirror", "x", "7")
@@ -24015,7 +24029,7 @@ class PeerLinkEdgeTests(unittest.TestCase):
             fd.assert_not_called()                                                                    # (tried lately: not again until FIND_EVERY)
 
     def test_no_peer_request_makes_this_side_fetch_where_it_says(self):
-        """F-2026-026, for every peer command (peerlink.COMMANDS): a request anyone can send, before any pairing, never
+        """F-1-2026-026, for every peer command (peerlink.COMMANDS): a request anyone can send, before any pairing, never
         makes this side connect to an address it names, whatever field it's in; and every fetch to a peer goes through
         the opener that refuses redirects, so a peer can't send this side on somewhere else either."""
         import urllib.parse
@@ -24055,7 +24069,7 @@ class PeerLinkEdgeTests(unittest.TestCase):
         self.assertEqual(re.findall(r"urllib\.request\.urlopen\(|urlopen\(", src), [])
 
     def test_a_proven_peer_cant_point_reach_elsewhere(self):
-        """F-2026-041: reach, from a proven peer, tries only addresses of that server as this side knows them (plex.tv's
+        """F-1-2026-041: reach, from a proven peer, tries only addresses of that server as this side knows them (plex.tv's
         listing to this side's sign-in, or the address set by hand): any other address it names answers "not an address
         of that server", and nothing connects there."""
         from plexcache import peerlink as pl
@@ -24083,7 +24097,7 @@ class PeerLinkEdgeTests(unittest.TestCase):
         self.assertEqual(pl.REACH_MAX, 12)
 
     def test_a_pairing_request_cant_point_probes_or_flood_them(self):
-        """A pairing request makes this side fetch a hello back, so what it may make us probe is held down (F-2026-026):
+        """A pairing request makes this side fetch a hello back, so what it may make us probe is held down (F-1-2026-026):
         only where we'd look ourselves and where the request came from — never the body's own list of addresses — the
         refusals that need no hello come before anything is fetched, no redirect is followed, and each source address
         gets a few asks a minute."""
@@ -24129,7 +24143,7 @@ class PeerLinkEdgeTests(unittest.TestCase):
         self.assertEqual((status, got["why"]), (200, "asked too often: wait a minute"))
 
     def test_pairing_is_proven_by_marker_or_code(self):
-        """F-2026-021, 039 and 040: a pairing records what vouched for its key, and nothing else makes one. Pair Now on
+        """F-1-2026-021, 039 and 040: a pairing records what vouched for its key, and nothing else makes one. Pair Now on
         both sides with no code and no marker pairs nothing (both say to enter the code); a pairing from before, kept
         unproven, is answered nothing but unpair, and never displaces a proven one; the one-time code one side shows,
         typed into the other, proves it (the code never travels: an HMAC keyed by it and the two sides' shared key does,
@@ -24171,7 +24185,7 @@ class PeerLinkEdgeTests(unittest.TestCase):
         ask = b.peerlinks.asks().get("plexA") or {}
         self.assertEqual(ask.get("fingerprint"), pl.fingerprint(a.peerlinks.public()))
         self.assertTrue(ask.get("id"))                                 # (the picture the asker's own pages show)
-        # Pair Now on both, no code, no marker: not paired — both sides say to enter the code (F-2026-039)
+        # Pair Now on both, no code, no marker: not paired — both sides say to enter the code (F-1-2026-039)
         b.mirror_link.pair_now()
         self.assertEqual(b.mirror_link.snapshot()["code"], b.mirror_link.code)
         self.assertTrue(b.mirror_link.code)
@@ -24280,7 +24294,7 @@ class PeerLinkEdgeTests(unittest.TestCase):
         got = b.peerlinks.snapshot()["asked"]
         self.assertEqual((set(got), got["plexA"]["name"], got["plexA"]["wanted"], 290 < got["plexA"]["left"] <= 300), ({"plexA"}, "Box A", True, True))
         self.assertIn("Pairing by itself is off", got["plexA"]["why"])
-        # F-2026-054 (mitigated: the request isn't signed): whatever it says of itself is kept to one short plain line each —
+        # F-1-2026-054 (mitigated: the request isn't signed): whatever it says of itself is kept to one short plain line each —
         # every text the page gets from it, not just the fields named here
         hostile = dict(ask, name="Evil\n\x1b[2J" + "N" * 5000, instance="<b>" * 100, identity={"id": "../" * 50, "extra": "x" * 9999})
         b.peerlinks.handle("POST", "/peer/v1/pair", {}, json.dumps(hostile).encode(), "127.0.0.1")
@@ -24435,7 +24449,7 @@ class PeerLinkEdgeTests(unittest.TestCase):
             a.mirror_link.request("POST", "/peer/v1/carry", {"library": "7", "mirrors": "1", "marker": {"at": 1.0}, "claims": []})
             a.mirror_link.request("POST", "/peer/v1/update", {"version": a.version, "commit": "", "channel": pl.CHANNEL})
             reached = a.mirror_link.request("POST", "/peer/v1/reach", {"urls": [PLEX.url, "ftp://x", "http://10.0.0.99:1"], "machine": "plexA"})
-            self.assertEqual([(r["url"], r["ok"], r["why"]) for r in reached["results"]],   # (only that server's addresses tried: F-2026-041)
+            self.assertEqual([(r["url"], r["ok"], r["why"]) for r in reached["results"]],   # (only that server's addresses tried: F-1-2026-041)
                              [(PLEX.url, False, "another Plex server answers there"), ("ftp://x", False, "not an http(s) address"), ("http://10.0.0.99:1", False, "not an address of that server")])
             a.mirror_link.unpair()
         for c, fields in sent.items():
@@ -24615,7 +24629,7 @@ class AppEdgeTests2(unittest.TestCase):
             app.match_info("plex://show/abcdef123457")
 
     def test_every_size_read_from_a_media_file_is_capped(self):
-        """F-2026-047: no element size or tail length read from a media file is read into memory past MAX_ELEMENT: such a
+        """F-1-2026-047: no element size or tail length read from a media file is read into memory past MAX_ELEMENT: such a
         file is refused as not one mkvmerge writes, before the read. Every read in the parser names how much it reads."""
         from plexcache.optimize import mkv
         d = tempfile.mkdtemp(dir=TMP)
@@ -24635,7 +24649,7 @@ class AppEdgeTests2(unittest.TestCase):
         self.assertEqual(re.findall(r"\.read\(\)", src), [], "a read of a media file with no size: everything that's left, however large")
 
     def test_links_the_page_is_handed_carry_https(self):
-        """F-2026-037: a link from outside data (Plex's metadata service) reaches the page only as an https:// address; any
+        """F-1-2026-037: a link from outside data (Plex's metadata service) reaches the page only as an https:// address; any
         other scheme it names (javascript:, data:) is dropped for the link the app builds itself."""
         app = _new_app()
         for named, want in (("javascript:alert(1)", "https://watch.plex.tv/movie/a-2000"), ("data:text/html,x", "https://watch.plex.tv/movie/a-2000"),
@@ -24875,7 +24889,7 @@ class ToolBaseTests(unittest.TestCase):
 
     def test_a_choice_sets_only_the_keys_its_tool_declares(self):
         """A page's choice may set only the keys its tool declares (choice_keys): nothing else about a row — its paths,
-        what it does, what holds it — can be rewritten from a request (F-2026-028). Holds for every tool there is."""
+        what it does, what holds it — can be rewritten from a request (F-1-2026-028). Holds for every tool there is."""
         from plexcache import tools
         app = _new_app()
         row = {"id": "r", "local": "/l/a.mkv", "keep": {"path": "/l/a.mkv"}, "moves": [], "blocked": False, "held": False}
@@ -26153,7 +26167,7 @@ class PlaybackEdgeTests2(unittest.TestCase):
 
 
 class TlsPinTests(unittest.TestCase):
-    """Keyed connections are verified (tlspin.py, F-2026-022/023/024, 053): no certificate trusted until a person confirms
+    """Keyed connections are verified (tlspin.py, F-1-2026-022/023/024, 053): no certificate trusted until a person confirms
     it (nothing sent before), a changed one refused and offered for trust by hand, full verification as the alternative —
     and never neither."""
 
@@ -26194,7 +26208,7 @@ class TlsPinTests(unittest.TestCase):
 
         from plexcache import tlspin
         # nothing pinned: refused once the handshake is done, before anything is sent, and what answered kept in `seen`
-        # for the page to show (F-2026-053); a probe that sends nothing (observe) reads it without being refused
+        # for the page to show (F-1-2026-053); a probe that sends nothing (observe) reads it without being refused
         ctx = tlspin.context(False, "")
         with socket.create_connection(("127.0.0.1", self.port), timeout=5) as s, self.assertRaises(tlspin.CertUnconfirmed) as got:
             ctx.wrap_socket(s, server_hostname="127.0.0.1")
@@ -26258,7 +26272,7 @@ class TlsPinTests(unittest.TestCase):
         self.assertTrue(ctx.pinning)
         self.assertEqual(ctx.pin, "")
         ctx.seen = self.fp
-        app.tls_ok("truenas", ctx)  # (a success pins nothing: only a person's confirmation does, F-2026-053)
+        app.tls_ok("truenas", ctx)  # (a success pins nothing: only a person's confirmation does, F-1-2026-053)
         self.assertNotIn("truenas", app.settings.section("tls")["pins"])
         self.assertTrue(app.tls_refused("truenas", ctx))  # refused for want of a pin: shown on the card to confirm
         self.assertEqual(some(app.tls_state("truenas")["changed"]), {"pinned": "", "seen": self.fp, "at": mock.ANY})
@@ -26293,13 +26307,13 @@ class TlsPinTests(unittest.TestCase):
         "optimizer token, default address": "the default is the compose file's own service name, on the private network "
                                             "between the app's two containers on the same host",
         "mqtt password, plain by choice": "the user ticked Send the login unencrypted, warned of what it does: living with it for "
-                                          "brokers that can't use TLS (F-2026-033, mitigated), and off unless they do",
+                                          "brokers that can't use TLS (F-1-2026-033, mitigated), and off unless they do",
     }
     # Sends that may be refused outright, as well as the plain-http addresses: a refusal sends nothing.
     MAY_BE_REFUSED = {"mqtt password, no tls", "optimizer token, other address"}
 
     def test_no_key_or_token_travels_unverified(self):
-        """F-2026-022/023/024, for every secret the app sends anywhere: each connection that carries one is either to
+        """F-1-2026-022/023/024, for every secret the app sends anywhere: each connection that carries one is either to
         this machine, or encrypted and verified (the pinned certificate, or full verification). Every way the app
         connects is caught where the connection is made (urlopen, socket.create_connection, wrap_socket), so a new
         client, or an old one with a new setting, is checked the same way. And every secret setting has a case here."""
@@ -26330,7 +26344,7 @@ class TlsPinTests(unittest.TestCase):
         def verified(ctx) -> bool:
             if ctx is None:
                 return True  # (urllib's own default: full verification)
-            # (a pin, or none yet, which refuses before anything is sent: never an observing one, which wouldn't — F-2026-053)
+            # (a pin, or none yet, which refuses before anything is sent: never an observing one, which wouldn't — F-1-2026-053)
             return ctx.verify_mode == ssl.CERT_REQUIRED or (isinstance(ctx, tlspin.Context) and ctx.pinning and not ctx.observe)
 
         far = "192.0.2.10"  # (TEST-NET-1: never this machine, never reached — every connection stops before it's made)

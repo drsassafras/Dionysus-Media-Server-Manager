@@ -90,6 +90,7 @@ class Data:
     """What the page reads and changes: the records (public and private), git, the runner."""
 
     def __init__(self, private: str | None = None):
+        """The page's data over the private repo ``private`` (the default one where None)."""
         self.private = private
         self.runner = auditrun.Runner(private)
         self.lock = threading.Lock()
@@ -130,6 +131,7 @@ class Data:
         return got
 
     def root(self) -> str:
+        """The private repo's checkout."""
         return audit.private_root() if self.private is None else self.private
 
     def _status(self, repo: str, *paths: str) -> list[str]:
@@ -138,6 +140,7 @@ class Data:
         return [row[3:] for row in got.stdout.splitlines()] if got.returncode == 0 else []
 
     def overview(self) -> dict:
+        """The overview: kept for a while, worked out again when it's old."""
         return self._keep("overview", self._overview)
 
     def _overview(self) -> dict:
@@ -147,7 +150,7 @@ class Data:
         m = audit.measure(audits)
         now = time.time()
         from callboard import checks
-        r = checks.levels("audit")   # (the rules this checkout's role holds the audits to: callboard.toml)
+        r = checks.levels("audit")   # (the rules the gate holds the audits to here: callboard.toml)
         outcomes: list[Outcome] = [audit.coverage_check(m, audits, now, sensitive, r.value("grace_days") if r else None,
                                                         r.value("grace_share") if r else None, r.level("unaudited") if r else "warn"),
                                    audit.config_check(have_private, rule, r.level("config") if r else "warn", r.level("unknown") if r else "info")]
@@ -196,6 +199,7 @@ class Data:
         return auditrun.person(str(q.get("name", ""))) if not q.get("auditor") else str(q["auditor"])
 
     def plan(self, q: dict) -> dict:
+        """The plan for an audit of the target and paths asked: its kind, scope and line count, and its prompt."""
         kind, scope, lines, why = self.runner.plan(str(q.get("target", "")), [str(p) for p in q.get("paths", [])])
         text = ""
         if not why:
@@ -206,11 +210,13 @@ class Data:
         return {"kind": kind, "scope": scope, "lines": lines, "why": why, "prompt": text}
 
     def start(self, q: dict) -> dict:
+        """An audit started by the auditor asked: its run's id."""
         r = self.runner.start(str(q.get("target", "")), [str(p) for p in q.get("paths", [])], self._who(q),
                               int(q.get("thoroughness", 0) or 0))
         return {"id": r.id}
 
     def mark(self, q: dict) -> dict:
+        """An audit done by hand recorded, with its findings."""
         found = [f for f in q.get("findings", []) if isinstance(f, dict)]
         r = self.runner.mark(str(q.get("target", "")), [str(p) for p in q.get("paths", [])], self._who(q),
                              int(q.get("thoroughness", 0) or 0), found)
@@ -225,10 +231,12 @@ class Data:
         return {"draft": r.draft}
 
     def finish(self, q: dict) -> dict:
+        """A run finished: its state, the audit it made and what it said."""
         r = self.runner.finish(str(q.get("id", "")))
         return {"id": r.id, "state": r.state, "audit_id": r.audit_id, "error": r.error, "said": r.said}
 
     def runs(self) -> list[dict]:
+        """Every run, as the page lists them."""
         out = []
         for r in auditrun.load_runs(self.private):
             d = {k: getattr(r, k) for k in ("id", "target", "kind", "scope", "auditor", "thoroughness", "lines", "state",
@@ -242,6 +250,7 @@ class Data:
         return out
 
     def run(self, rid: str, start: int) -> dict:
+        """A run's events from ``start`` on (and its prompt, from the start)."""
         evs, at = auditrun.events(rid, self.private, start)
         prompt = ""
         if start == 0:
@@ -254,6 +263,7 @@ class Data:
 
     # ------------------------------------------------------------ findings
     def findings(self) -> list[dict]:
+        """Every finding: kept for a while, worked out again when it's old."""
         return self._keep("findings", self._findings)
 
     def _findings(self) -> list[dict]:
@@ -436,6 +446,7 @@ class Data:
         return ok
 
     def explorer(self, q: dict) -> dict:
+        """The explorer's map: each file's lines and the audits that saw them, filtered as asked."""
         audits = audit.load(self.private)[0]
         ok = self._filter(q)
         m = audit.measure(audits)
@@ -449,6 +460,7 @@ class Data:
         return {"files": files, "auditors": auditors, "audits": len([a for a in audits if ok(a)])}
 
     def file(self, q: dict) -> dict:
+        """One app code file's lines and the audits that saw each, raising ValueError for a file that isn't app code."""
         rel = str(q.get("path", ""))
         if rel not in audit.code_files():
             raise ValueError(f"{rel} isn't app code")
@@ -468,6 +480,7 @@ class Data:
 
     # ------------------------------------------------------------ the rules
     def rules(self) -> dict:
+        """The private repo's rules.toml, as text."""
         path = os.path.join(self.root(), "rules.toml")
         try:
             with open(path, encoding="utf-8") as fh:
@@ -475,11 +488,12 @@ class Data:
         except OSError:
             text = ""
         from callboard import checks
-        r = checks.levels("audit")   # (the dev rule: callboard.toml's [audit] for this checkout's role)
-        dev = {"grace_days": r.value("grace_days"), "grace_share": r.value("grace_share"), "level": r.level("unaudited"), "role": r.ctx.role} if r else {}
+        r = checks.levels("audit")   # (the dev rule: callboard.toml's [audit] at the gate whose rules hold here)
+        dev = {"grace_days": r.value("grace_days"), "grace_share": r.value("grace_share"), "level": r.level("unaudited"), "gate": r.gate} if r else {}
         return {"text": text, "path": path, "problems": check_rules(text) if text else ["there's no rules.toml"], "dev": dev}
 
     def save_rules(self, q: dict) -> dict:
+        """rules.toml saved, if it's valid (else what's wrong with it)."""
         text = str(q.get("text", ""))
         wrong = check_rules(text)
         if wrong:
@@ -553,6 +567,7 @@ def serve(data: Data, open_browser: bool = True, port: int = 0, ready=None, keep
 
 
 def main(args: list[str]) -> int:
+    """``python3 dev/audit.py gui``: the page served, and opened in the browser unless --no-browser."""
     port = next((int(a.split("=", 1)[1]) for a in args if a.startswith("--port=")), 0)
     return serve(Data(), open_browser="--no-browser" not in args, port=port, keep=True)
 

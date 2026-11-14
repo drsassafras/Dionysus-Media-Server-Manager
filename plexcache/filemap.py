@@ -675,6 +675,7 @@ class FileMaps:
     """Each file's layout as last read, with its identity: read again only once the file changes."""
 
     def __init__(self, config_dir: str):
+        """The layouts in ``config_dir``, read from where they're saved."""
         self.path = os.path.join(config_dir, STORE)
         self.lock = threading.Lock()
         self.dirty = False
@@ -727,6 +728,7 @@ class FileMaps:
             return (self.files.get(path) or {}).get("before")
 
     def known(self, paths) -> int:
+        """How many of the paths it knows."""
         with self.lock:
             return sum(1 for p in paths if p in self.files)
 
@@ -749,6 +751,7 @@ class FileMaps:
             self.dirty = self.dirty or bool(gone)
 
     def save(self) -> None:
+        """The layouts saved, where they've changed."""
         with self.lock:
             if not self.dirty:
                 return
@@ -775,6 +778,7 @@ class Inspector:
     paused by hand (Pause) stays paused until it's started again."""
 
     def __init__(self, app):
+        """The reader for ``app``: no library read yet."""
         self.app = app
         self.lock = threading.Lock()
         self.libs: dict[str, dict] = {}  # key -> {"todo": [paths], "done", "total", "read", "paused", "finished"}
@@ -829,6 +833,7 @@ class Inspector:
             ev.steer()
 
     def rev(self, key: str) -> int:
+        """How many times a library's layouts have changed."""
         with self.lock:
             return self._revs.get(str(key), 0)
 
@@ -935,10 +940,12 @@ class Inspector:
                                                 n=read, library=title))
 
     def snapshot_locked(self) -> dict:
+        """Each library's reading, as the page shows it (the lock held already)."""
         return {"current": self.current, "libs": {k: {"done": v["done"], "total": v["total"], "paused": v["paused"],
                                                       "running": k == self.current and not v["paused"] and bool(v["todo"]),
                                                       "finished": v["finished"]} for k, v in self.libs.items()}}
 
     def snapshot(self) -> dict:
+        """Each library's reading, as the page shows it."""
         with self.lock:
             return self.snapshot_locked()

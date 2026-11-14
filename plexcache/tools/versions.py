@@ -46,6 +46,7 @@ def _copies(row: dict) -> list[dict]:
 
 
 class DuplicateVersions(Tool):
+    """Duplicate Versions: extra copies of a title set aside, one kept."""
     name = "versions"
     choice_keys = ("keep_key",)  # the arrow on the page: which copy is kept
     title = M("Duplicate Versions")
@@ -57,9 +58,11 @@ class DuplicateVersions(Tool):
     flag_help = M("One Plex item holding the same file twice — a copy that slipped in, a second path to one file — or a copy on disk that Plex doesn’t list: it takes space and is cached and optimized twice. Duplicate Versions sets the extra copies aside, and deletes them once every Plex has let go of them.")
 
     def flag_lines(self, rows):
+        """Each row's line for Library Health."""
         return [M("{n} extra copies of {name}", one="{n} extra copy of {name}", n=len(r.get("extras") or []), name=(r.get("keep") or {}).get("name") or r.get("title") or "") for r in rows]
 
     def scan(self, data) -> dict:
+        """A library scanned for titles with more than one copy."""
         library = data.key
         lib = self.app.library_info(library)
         if not lib:
@@ -191,6 +194,7 @@ class DuplicateVersions(Tool):
     history = [("set_aside", M("Set aside")), ("frees", M("Freed")), ("kept", M("Kept"))]
 
     def history_row(self, row: dict, outcome: dict) -> dict:
+        """A row as its history shows it."""
         return {"set_aside": int(outcome.get("set_aside") or len(row.get("extras") or [])), "frees": int(outcome.get("frees") or 0),
                 "kept": (row.get("keep") or {}).get("name") or ""}
 
@@ -207,6 +211,7 @@ class DuplicateVersions(Tool):
             log(M("Plex wasn’t asked to scan: {why}", why=str(e)))
 
     def apply_row(self, row: dict, log) -> dict:
+        """A row applied: the extra copies set aside."""
         library, folders = row["library"], []
         there = self.mirror(library)
         if there is not None:  # (the mirror as it is now: a record there left with no file is refused, as the page does)

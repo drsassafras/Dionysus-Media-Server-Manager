@@ -215,6 +215,7 @@ def _svg(markup: str) -> str:
 
 
 def script_looks(src: str) -> dict:
+    """The looks a script draws: its inline styles."""
     found = {}
     for text in js_texts(src):
         for m in re.finditer(r'\bstyle="([^"]*)"', text):
@@ -230,6 +231,7 @@ def script_looks(src: str) -> dict:
 
 
 def page_looks(html: str, name: str) -> dict:
+    """The looks a page has: its style blocks and inline styles."""
     found = {}
     for m in re.finditer(r"<style\b[^>]*>(.*?)</style>", html, flags=re.S | re.I):
         found.update(css_looks(m.group(1), name))
@@ -399,6 +401,7 @@ DRAWN = (".svg", ".png", ".jpg", ".gif", ".webp", ".ico")   # (of those, what th
 
 
 def file_looks(root: str | None = None) -> dict:
+    """Every look the app's web files have."""
     root = root or ROOT
     found = {}
     for base, _dirs, files in os.walk(os.path.join(root, "plexcache", "web")):
@@ -457,6 +460,7 @@ def seal(items: dict, files: dict | None = None) -> str:
 
 
 def load_guide(path: str = GUIDE) -> dict:
+    """The style guide, read."""
     with open(path, encoding="utf-8") as f:
         return json.load(f)
 
@@ -1858,6 +1862,7 @@ def review_line(n: int, out: str = SAMPLE, now: dict | None = None) -> str:
 
 
 def main(argv: list[str]) -> int:
+    """``python3 dev/style.py``: the looks checked against the guide (or the other commands)."""
     cmd = argv[1] if len(argv) > 1 else "check"
     if cmd == "check":
         now = looks()

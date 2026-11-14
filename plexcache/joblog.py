@@ -87,12 +87,15 @@ def tally_file(t: dict, f: dict) -> None:
 
 
 class JobLog:
+    """The file jobs' log: a line of JSON for each entry."""
     def __init__(self, config_dir: str):
+        """The log in ``config_dir``."""
         self.path = os.path.join(config_dir, LOG)
         self.lock = threading.Lock()
         self._cache: tuple | None = None  # (mtime, size, entries)
 
     def add(self, entry: dict) -> None:
+        """An entry added, stamped with when."""
         entry = dict(entry, at=entry.get("at") or time.time())
         line = json.dumps(entry, separators=(",", ":"), default=str)
         with self.lock:

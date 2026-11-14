@@ -20,13 +20,13 @@ import time
 STALE = 6 * 3600         # a claim older than this is ignored (and removed)
 PEER_DAYS = 30           # another system counts as sharing the folder if seen this recently
 _ID = re.compile(r"[A-Za-z0-9_-]{4,64}")
-MAX_SYNCED = 1024 * 1024  # a claim or marker larger than this isn't read: the other site's files are synced in, not ours (F-2026-059)
+MAX_SYNCED = 1024 * 1024  # a claim or marker larger than this isn't read: the other site's files are synced in, not ours (F-1-2026-059)
 
 
 def read_synced(path: str) -> dict | None:
     """A JSON file in a library's .plexcache folder (a claim, a system's marker), which Syncthing may have brought from
     another site as anything: its object, with "at" a number — else None (missing, too large, not JSON, not an
-    object), so a malformed one is skipped rather than breaking every reader of the folder (F-2026-059)."""
+    object), so a malformed one is skipped rather than breaking every reader of the folder (F-1-2026-059)."""
     try:
         with open(path, "rb") as fh:
             raw = fh.read(MAX_SYNCED + 1)

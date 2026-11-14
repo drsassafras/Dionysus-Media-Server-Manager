@@ -11,7 +11,7 @@ release upstream — looked up once a day by this script (callboard runs it at t
 With the versions it looks up the CVEs in what the app runs and is built with (dev/cves.py): only what needs doing is
 said, in the box (yellow), and a CVE is never a failure, nor a prompt.
 
-Pins are moved only where the checkout's role says so (callboard.toml's [upkeep] move: all on dev, minor on main): dev carries the newest software,
+Pins are moved only where the checkout's branch says so (callboard.toml's [upkeep] move, as a pull request into that branch holds it: all on dev, minor on main): dev carries the newest software,
 majors and all; main is kept at the newest minor and patch release of what it has, and never takes a major (those come
 with dev, when it's released): there a major release isn't looked at, nor reported. Anywhere else — another branch, a
 copy that isn't a checkout (callboard's, the image's) — it reports and moves nothing.
@@ -84,7 +84,7 @@ HOLD: dict[str, str] = {}
 
 # The branch pins are moved on (in a checkout of it), and the one only minor and patch releases count on (moved there too;
 # a major is left to dev). Anywhere else upkeep only reports.
-# What upkeep moves itself in this checkout, and what each state is held as: callboard.toml's [upkeep] for the code's role
+# What upkeep moves itself in this checkout, and what each state is held as: callboard.toml's [upkeep] for the code's branch
 # (through callboard/policy.py — nothing here decides). move: all (minor and patch releases, and majors prompted), minor (minor
 # and patch; a major is a line, not a prompt: it comes with the development branch) or none (reported only).
 SCHEMA = policy.Schema("upkeep", "Dependencies", {
@@ -98,24 +98,37 @@ SCHEMA = policy.Schema("upkeep", "Dependencies", {
 }, "The dependencies: what's current, what's behind, and the CVEs.")
 
 
+def _move_on(cfg: policy.Config, id_: str, branch: str) -> str:
+    """What upkeep moves itself in a checkout of that branch: ``move`` as a pull request into it is held to
+    ([upkeep.merge.into."<branch>"] over [upkeep]), since the pins a branch takes are the ones merged into it."""
+    ctx = policy.Context(root=cfg.root, config=cfg.path, branch=branch, rules="merge", into=branch)
+    return cfg.rules(id_, ctx).text("move") or "none"
+
+
 def moves() -> str:
-    """What this checkout's role lets upkeep move: all, minor or none ([upkeep] move; none without a callboard.toml)."""
+    """What this checkout's branch lets upkeep move: all, minor or none (_move_on(); none without a callboard.toml)."""
     from callboard import checks
     r = checks.levels("upkeep")
-    return (r.text("move") if r else "none") or "none"
+    if not r:
+        return "none"
+    if not r.ctx.branch:
+        return r.text("move") or "none"
+    return _move_on(policy.Config(r.ctx.config or policy.find_file()), r.id, r.ctx.branch)
 
 
 def moves_on() -> str:
-    """The branch a pin behind is moved on by itself: the first named in callboard.toml's [branches] whose code's role moves
-    every pin ([upkeep] move = "all"); "" when no branch does (or there's no callboard.toml)."""
+    """The branch a pin behind is moved on by itself: of callboard.toml's [branches] (development, then release), the
+    first whose checkout moves every pin (_move_on() "all"); "" when neither does (or there's no callboard.toml)."""
     path = policy.find_file()
     if not path:
         return ""
     cfg = policy.Config(path)
-    for role in cfg.roles:
-        if cfg.rules("upkeep", policy.Context(role=role)).text("move") == "all":
-            for name in cfg.branches_of(role):
-                return name
+    id_ = next((i["id"] for i in cfg.integrations(all_=True) if i["kind"] == "upkeep"), "")
+    if not id_:
+        return ""
+    for name in dict.fromkeys((cfg.development_branch(), cfg.release_branch())):
+        if name and _move_on(cfg, id_, name) == "all":
+            return name
     return ""
 WIDTH = 66  # callboard's box: the lines --callboard prints fit it
 
@@ -281,7 +294,7 @@ def _sha256_of(url: str) -> str:
     return h.hexdigest()
 
 
-# The hash each download ARG in the Dockerfile is checked against (F-2026-029), and the file it's of, by version: moved
+# The hash each download ARG in the Dockerfile is checked against (F-1-2026-029), and the file it's of, by version: moved
 # with its version's ARG (bump), and worked out afresh by --hashes. FFMPEG_GH_SHA256 is the GitHub mirror's tarball of
 # the same release — another file, so a hash of its own.
 SUMS: dict[str, dict[str, Callable[[str], str]]] = {
@@ -319,7 +332,7 @@ IMAGE_TAGS = {"PYTHON_TAG": "python", "DEBIAN_TAG": "debian", "NODE_TAG": "node"
 
 def refresh_digests() -> list[str]:
     """Each base image ARG's digest moved to its tag's current one (Docker Hub): how Python, Debian and Node patch
-    releases reach the image now that it's built from a digest, not a tag someone could re-push (F-2026-030). What
+    releases reach the image now that it's built from a digest, not a tag someone could re-push (F-1-2026-030). What
     changed, a line each."""
     out = []
     for arg, image in IMAGE_TAGS.items():
@@ -367,10 +380,12 @@ def _mkvtoolnix_bump(new: str) -> str:
 
 
 def github_release(repo: str) -> Callable[[], str]:
+    """What asks a GitHub repo for its latest release's version."""
     return lambda: _json(f"https://api.github.com/repos/{repo}/releases/latest")["tag_name"].lstrip("v")
 
 
 def mkvtoolnix_latest() -> str:
+    """MKVToolNix's newest version, from its NEWS."""
     m = re.search(r"^# Version (\d+(?:\.\d+)+)", _get("https://mkvtoolnix.download/doc/NEWS.md"), re.M)
     if not m:
         raise ValueError("no version in MKVToolNix's NEWS")
@@ -378,6 +393,7 @@ def mkvtoolnix_latest() -> str:
 
 
 def ffmpeg_latest() -> str:
+    """FFmpeg's newest version, from its releases page."""
     found = {parse(v) for v in re.findall(r"ffmpeg-(\d+(?:\.\d+)+)\.tar\.xz", _get("https://ffmpeg.org/releases/"))}
     if not found:
         raise ValueError("no releases listed at ffmpeg.org")
@@ -385,12 +401,14 @@ def ffmpeg_latest() -> str:
 
 
 def npm_latest(package: str) -> Callable[[], str]:
+    """What asks npm for a package's latest version."""
     return lambda: _json(f"https://registry.npmjs.org/{package}/latest")["version"]
 
 
 # ---------------------------------------------------------------- the dependencies
 @dataclass
 class Dep:
+    """A dependency: the version the project pins and upstream's newest, and how its pin is moved."""
     name: str
     have: Callable[[], str]  # the version the project pins
     newest: Callable[[], str]  # upstream's newest release
@@ -472,12 +490,14 @@ def _tool_dep(key: str, tool: dict) -> Dep:
 
 
 def tool_deps() -> list[Dep]:
+    """The check tools' pins (dev/tools.toml) as dependencies."""
     with open(TOOLS, "rb") as fh:
         table = tomllib.load(fh)
     return [_tool_dep(k, t) for k, t in table.items()]
 
 
 def pypi_latest(package: str) -> Callable[[], str]:
+    """What asks PyPI for a package's latest version."""
     return lambda: _json(f"https://pypi.org/pypi/{package}/json")["info"]["version"]
 
 
@@ -642,6 +662,7 @@ DEPS = [
 # ---------------------------------------------------------------- the check
 @dataclass
 class Report:
+    """What upkeep found: each dependency as it stands, and the pins it moved."""
     lines: list[str] = field(default_factory=list)  # one per dependency, as it stands
     bumped: list[str] = field(default_factory=list)  # pins moved, what changed
     moved: list[str] = field(default_factory=list)  # the same, short: name, from → to
@@ -768,7 +789,7 @@ def branch() -> str | None:
 
 
 def may_move() -> bool:
-    """Whether pins may be moved here: the role's ``move`` (callboard.toml) all or minor."""
+    """Whether pins may be moved here: the branch's ``move`` (callboard.toml) all or minor."""
     return moves() != "none"
 
 
@@ -810,11 +831,11 @@ def check(apply: bool = True, fresh: bool = False, saved: bool = False, progress
     """The report: each dependency as it stands; with ``apply``, pins a minor or patch behind moved. ``saved``: from the
     last look's answers only (see lookup). ``progress`` (callboard/progress.py's bar): each dependency as it's looked up, then
     each pin as it's moved (npm's installs can take a while), so the look is seen to be going. ``where``: the branch it's
-    for (said in the box). A major release is for the branch whose role moves every pin ([upkeep] move = "all",
-    moves_on()): where the role moves less, it's a line, not a prompt; a minor or patch one moves by itself wherever the
-    role moves at all.
+    for (said in the box). A major release is for the branch whose checkout moves every pin ([upkeep] move = "all",
+    moves_on()): where the branch moves less, it's a line, not a prompt; a minor or patch one moves by itself wherever the
+    branch moves at all.
     ``cves``: the CVEs looked up too (dev/cves.py, alongside the versions; ``images``/``local`` what Trivy looks at), and
-    judged against what's moving — r.cves; a warning, never a prompt. ``move``: all, minor or none (moves(): the role's)."""
+    judged against what's moving — r.cves; a warning, never a prompt. ``move``: all, minor or none (moves(): the branch's)."""
     if ROOT not in sys.path:
         sys.path.insert(0, ROOT)
     from dev import cves as cve_check
@@ -1071,6 +1092,7 @@ def page(r: Report | None, where: str | None, error: str = "", step: str = "") -
 
 
 def counted_cves(n: int) -> str:
+    """A count of CVEs, as the result line says it."""
     from callboard.progress import counted
     return counted(n, "CVE")
 
@@ -1137,6 +1159,7 @@ def _progress(callboard: bool):
 
 
 def main() -> int:
+    """``python3 dev/upkeep.py``: each dependency against its newest release, the pins moved where they can be."""
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     ap.add_argument("--fresh", action="store_true", help="ask upstream again rather than using the day's answers")
     ap.add_argument("--report", action="store_true", help="look, but move no pin")
@@ -1209,7 +1232,7 @@ def main() -> int:
             issue(*f)
         return verdict(box(r, where)[0])
     if not args.report and not move:
-        print(f"(on {where or 'a copy that is not a checkout'}: reported only; this role moves nothing — callboard.toml's [upkeep] move)")
+        print(f"(on {where or 'a copy that is not a checkout'}: reported only; this branch moves nothing — callboard.toml's [upkeep] move)")
     if r.stale:
         print("(upstream not reached now: the last look's answers)")
     print("\n".join(r.lines))

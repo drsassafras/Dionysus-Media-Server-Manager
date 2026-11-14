@@ -83,11 +83,12 @@ def board_says(fn, *args):
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
-# What callboard told this run (the integration that runs the suite, the project's callboard.toml, the code's role and the
+# What callboard told this run (the integration that runs the suite, the project's callboard.toml, the gate whose rules hold and the
 # rest of its context), taken here and then out of the environment (main): the tests, and every tool they run, see none
 # of it — a tool a test runs reads its own rules as it would by hand, and the suite's verdict is the same wherever
 # it's run. The verdict reads what was taken.
-CONTEXT_KEYS = ("CALLBOARD_INTEGRATION", "CALLBOARD_CONFIG", "CALLBOARD_ROLE", "CALLBOARD_PHASE", "CALLBOARD_TAG", "CALLBOARD_BRANCH",
+CONTEXT_KEYS = ("CALLBOARD_INTEGRATION", "CALLBOARD_CONFIG", "CALLBOARD_CONTEXT", "CALLBOARD_RULES", "CALLBOARD_CAP", "CALLBOARD_INTO",
+                "CALLBOARD_GITHUB", "CALLBOARD_PHASE", "CALLBOARD_TAG", "CALLBOARD_BRANCH",
                 "CALLBOARD_DIFF", "CALLBOARD_GATE", "CALLBOARD_BASE", "CALLBOARD_CODE", "CALLBOARD_COPY", "CALLBOARD_COMMIT",
                 "CALLBOARD_REPO", "CALLBOARD_HEAD")
 CONTEXT = {k: os.environ[k] for k in CONTEXT_KEYS if k in os.environ}

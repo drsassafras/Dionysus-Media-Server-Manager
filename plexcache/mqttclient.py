@@ -24,6 +24,7 @@ class MQTTError(Exception):
     """``step`` says where it failed: "broker" (reaching it), "tls", "login" or "session" (after connecting)."""
 
     def __init__(self, message: str, step: str = "session"):
+        """The error ``message``, failed at ``step``."""
         super().__init__(message)
         self.step = step
 
@@ -86,6 +87,7 @@ def _packet(kind: int, body: bytes) -> bytes:
 
 
 def topic_matches(pattern: str, topic: str) -> bool:
+    """Whether an MQTT topic matches a pattern (+ and # wildcards)."""
     p, t = pattern.split("/"), topic.split("/")
     for i, part in enumerate(p):
         if part == "#":
@@ -96,9 +98,11 @@ def topic_matches(pattern: str, topic: str) -> bool:
 
 
 class MQTTClient:
+    """A small MQTT 3.1.1 client: connect, publish, subscribe, over TLS where it's asked for."""
     def __init__(self, host: str, port: int = 1883, client_id: str = "plexcache", username: str = "", password: str = "",
                  tls: bool = False, verify_tls: bool = True, keepalive: int = 60, will: tuple | None = None,
                  timeout: float = 10, tls_context: ssl.SSLContext | None = None, allow_plain: bool = False):
+        """A client for the broker at ``host``:``port``, not connected yet."""
         self.host, self.port, self.client_id = host, port, client_id
         self.username, self.password = username, password
         self.tls, self.verify_tls = tls, verify_tls
@@ -112,6 +116,7 @@ class MQTTClient:
 
     # ----------------------------------------------------------- connection
     def connect(self) -> None:
+        """Connected to the broker, over TLS where it's asked for, and logged in."""
         self.open()
         if self.tls:
             self.start_tls()
@@ -158,7 +163,7 @@ class MQTTClient:
     def start_tls(self) -> None:
         """Step 2 (only with TLS): the encrypted connection."""
         ctx = self.tls_context
-        if ctx is None:  # (no context given: fully verified, or a pinning one with no pin, which refuses before the password goes: F-2026-053)
+        if ctx is None:  # (no context given: fully verified, or a pinning one with no pin, which refuses before the password goes: F-1-2026-053)
             ctx = tlspin.context(bool(self.verify_tls))
         sock = self.sock
         if sock is None:
@@ -231,6 +236,7 @@ class MQTTClient:
         self._buf = b""
 
     def close(self) -> None:
+        """Disconnected from the broker."""
         if self.sock:
             try:
                 self._send(_packet(0xE0, b""))
@@ -274,6 +280,7 @@ class MQTTClient:
         self._send(_packet(0x82, body))
 
     def ping_if_due(self) -> None:
+        """A ping sent when half the keepalive has passed without one."""
         if time.monotonic() - self._last_send > self.keepalive / 2:
             self._send(_packet(0xC0, b""))
 

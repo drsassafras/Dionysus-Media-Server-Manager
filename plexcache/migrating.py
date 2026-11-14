@@ -74,7 +74,10 @@ FILES_EVERY = 600  # seconds between comparisons with the other site's files (Ve
 
 
 class Migration:
+    """Turning a library's folder into a dataset of its own: the steps Create, Copy, Switch and Verify, and their state.
+    """
     def __init__(self, app):
+        """The migration for ``app``: its saved state read."""
         self.app = app
         self.lock = threading.Lock()
         self.state: dict | None = app._load_json(STATE) or None
@@ -120,6 +123,7 @@ class Migration:
     # ------------------------------------------------------------ helpers
     @property
     def client(self):
+        """The optimizer's client, which does the copying."""
         return self.app.optimizing.client
 
     def _save(self) -> None:
@@ -209,6 +213,7 @@ class Migration:
 
     # ------------------------------------------------------------ the steps
     def plan(self, library: str, folder: str) -> dict:
+        """The plan for turning ``folder`` of ``library`` into a dataset, raising ValueError where it can't be."""
         c = next((x for x in self.candidates() if x["library"] == str(library) and x["folder"] == folder), None)
         if not c or (c.get("why") and not c.get("partial")) or not c.get("child"):
             raise ValueError(str((c or {}).get("why") or "not a folder that can become a dataset"))
@@ -1005,6 +1010,8 @@ class Migration:
 
     # ------------------------------------------------------------ actions
     def start_copy(self, mirror: bool = False) -> dict:
+        """The copy started (or its last pass, ``mirror`` at the other site too), raising ValueError when it isn't
+        ready."""
         st = self.state
         if not st or st.get("step") not in ("create", "switch"):
             raise ValueError("not ready to copy")
@@ -1078,6 +1085,7 @@ class Migration:
         return self.refresh()
 
     def undo_rename(self) -> dict:
+        """The switch undone: the old folder given its name back."""
         st = self._moving()
         if not st.get("old_path") or st.get("step") != "switch":
             raise ValueError("nothing to undo")
@@ -1090,6 +1098,7 @@ class Migration:
         return self.refresh()
 
     def delete_old(self) -> dict:
+        """The old folder deleted once it's verified and nothing blocks it."""
         self._not_while_optimizing()
         st = self._moving()
         self.refresh()
@@ -1111,6 +1120,7 @@ class Migration:
         return self.snapshot()
 
     def snapshot(self) -> dict:
+        """The migration as the page shows it: its state, its checks and whether it was cancelled."""
         with self.lock:
             return {"state": dict(self.state) if self.state else None, "checks": list(self.checks), "checked_at": self.checked_at,
                     "cancelled": dict(self.cancelled) if self.cancelled else None}
@@ -1126,6 +1136,7 @@ class CopyJob(Job):
     kind = "copy"
 
     def __init__(self, mig: Migration, resumed: dict | None = None):
+        """The copy job for ``mig``'s folder, or the one resumed after a restart."""
         self.mig = mig
         st = mig.state or {}
         super().__init__(mig.app.jobs, resumed, library=st.get("library"), title=st.get("title"), folder=st.get("folder"),
@@ -1133,19 +1144,24 @@ class CopyJob(Job):
         self._held = False
 
     def args(self) -> dict:
+        """What the job is started again with after a restart."""
         return {"folder": self.state["folder"], "mirror": self.state["mirror"]}
 
     def dataset(self) -> str | None:
+        """The dataset the copy goes into."""
         return (self.mig.state or {}).get("dataset")
 
     def extra_pause(self) -> str | None:
+        """Why it pauses besides the rest: something playing."""
         return M("something is playing") if self.app.monitor.playing_paths() else None
 
     def apply_pause(self, paused: bool) -> None:
+        """The copy paused or resumed."""
         self.mig._folder("pause" if paused else "resume")  # the optimizer pauses within the file in hand
         self._held = paused
 
     def run(self) -> None:
+        """The copy followed until the optimizer is done with it."""
         mig, s = self.mig, self.state
         client = mig.client
         if mig.state:
@@ -1216,6 +1232,7 @@ class CopyJob(Job):
             self.stop_event.wait(2) if not self.stopped else time.sleep(1)
 
     def finished(self) -> None:
+        """The copy resumed if it was held, and the migration's state moved on."""
         if self._held:
             self.apply_pause(False)
         st = self.mig.state
@@ -1225,6 +1242,7 @@ class CopyJob(Job):
 
 
 def step_name(step):
+    """A step's name, as the page says it."""
     return {"create": M("Create"), "copy": M("Copy"), "switch": M("Switch"), "verify": M("Verify")}.get(step, step or "")
 
 

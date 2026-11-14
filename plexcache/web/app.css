@@ -879,7 +879,7 @@ svg.edgevine{position:absolute;overflow:visible;pointer-events:none;z-index:-1}
 .themelist{margin:12px 0 6px}
 .themerow{align-items:center;flex-wrap:wrap}
 
-/* What were the page's style="…" attributes (F-2026-058: the CSP takes none). Each class is one element's own look, as
+/* What were the page's style="…" attributes (F-1-2026-058: the CSP takes none). Each class is one element's own look, as
    the attribute had it: !important, as an attribute outranks the stylesheet's other rules. */
 .s-aic_gap12_wrap { align-items: center !important; gap: 12px !important; flex-wrap: wrap !important; }
 .s-aic_gap12_wrap_mt10 { align-items: center !important; gap: 12px !important; flex-wrap: wrap !important; margin-top: 10px !important; }

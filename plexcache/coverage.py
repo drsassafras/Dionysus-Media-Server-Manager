@@ -21,7 +21,9 @@ KEEP = 180 * 24 * HOUR
 
 
 class Coverage:
+    """How much of each library was cached, hour by hour."""
     def __init__(self, path: str | None = None):
+        """The record saved at ``path`` (kept in memory only without one)."""
         self.path = path
         self.hours: list[dict] = []
         self._lock = threading.Lock()
@@ -65,6 +67,7 @@ class Coverage:
         return hour
 
     def save(self) -> None:
+        """The record saved."""
         if not self.path:
             return
         with self._lock:

@@ -7,6 +7,7 @@ URL = "https://www.loc.gov/standards/iso639-2/ISO-639-2_utf-8.txt"
 OUT = "plexcache/languages.py"
 
 def main():
+    """plexcache/languages.py made again from the ISO 639-2 table."""
     text = urllib.request.urlopen(URL, timeout=30).read().decode("utf-8-sig")
     rows = []
     for line in text.splitlines():

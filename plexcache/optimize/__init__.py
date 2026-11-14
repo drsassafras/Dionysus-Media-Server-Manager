@@ -11,6 +11,7 @@ VERSION = "0.1.2"
 
 
 def parse(version) -> tuple[int, int, int] | None:
+    """A version's three numbers, or None where it isn't one."""
     m = re.fullmatch(r"(\d+)\.(\d+)(?:\.(\d+))?", str(version or "").strip())
     return (int(m.group(1)), int(m.group(2)), int(m.group(3) or 0)) if m else None
 

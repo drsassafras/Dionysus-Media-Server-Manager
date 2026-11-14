@@ -82,6 +82,7 @@ def clone(ref: str) -> str:
 
 
 def main() -> int:
+    """The TrueNAS API record made from the middleware's source."""
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     ap.add_argument("--ref", default="master", help="the middleware branch or tag to read (default: master, the next release)")
     ap.add_argument("--checkout", help="an existing checkout of truenas/middleware, instead of cloning")

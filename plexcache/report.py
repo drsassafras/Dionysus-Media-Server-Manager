@@ -36,6 +36,7 @@ COUNTERS = ("streams", "skips", "skips_cached", "next", "next_ready", "next_full
 
 
 def empty() -> dict:
+    """An empty period's figures."""
     out: dict = {k: 0 for k in COUNTERS}
     out.update(busy_peak=None, miss={}, late=[], skips_by={})  # skips_by: library key -> [skips, expected from cache]
     return out
@@ -191,6 +192,7 @@ def fully_cached_tile(app, start: float, now: float) -> dict:
 
 # ------------------------------------------------------------------- report
 def build(app, period: str = "week", now: float | None = None) -> dict:
+    """The report for a period (a week, a month…), from the activity log."""
     now = time.time() if now is None else now
     raw, daily = app.activity.history()
     raw = _Timed(sorted(raw, key=lambda r: r["t"]))
@@ -285,4 +287,5 @@ def build(app, period: str = "week", now: float | None = None) -> dict:
 
 
 def build_all(app, now: float | None = None) -> dict:
+    """The report for every period."""
     return {p: build(app, p, now) for p in PERIODS}

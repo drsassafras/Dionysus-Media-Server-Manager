@@ -24,12 +24,12 @@ WEB_DIR = os.path.join(os.path.dirname(__file__), "web")
 PAGES = {"/", "/health", "/caching", "/ssd", "/library", "/tools", "/optimizer", "/convert", "/dataset", "/merge", "/versions", "/folders", "/unlink", "/filechecks", "/plexchecks", "/mirrorchecks", "/processes", "/sync", "/mirrors", "/activity", "/system", "/features", "/settings", "/mirror"}  # the last three: links from before (0.15; Mirror Checks, once Mirror Health)
 MAX_BODY = 1024 * 1024
 # routes that send a saved token to an address the request names: refused with the login off, when every request is
-# anyone's on the network (F-2026-052)
+# anyone's on the network (F-1-2026-052)
 SIGNED_ONLY = {"/api/plex2/address"}
 HEALTH_WAIT = 120  # seconds a library's first Library Health answer is waited for (the evaluator's: evaluate.py)
 # The refusal page's own look (_refuse): a page that may not load the stylesheet, so its one <style>, allowed by its hash
 REFUSED_CSS = "p{font:16px system-ui;margin:3em auto;max-width:36em}"
-# style-src takes no 'unsafe-inline' (F-2026-058): the pages' looks are app.css's, what a script works out is set through
+# style-src takes no 'unsafe-inline' (F-1-2026-058): the pages' looks are app.css's, what a script works out is set through
 # the CSSOM (app.js setHtml), and the one <style> is allowed by its hash
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'sha256-"
        + base64.b64encode(hashlib.sha256(REFUSED_CSS.encode()).digest()).decode() + "'; img-src 'self' data:; "
@@ -171,6 +171,7 @@ def _plex2_call(app, path: str, body: dict) -> dict:
 
 
 def make_handler(app):
+    """The HTTP handler for ``app``, its login checked."""
     auth = getattr(app, "auth", None) or Auth()
     refused, refused_lock = {}, threading.Lock()  # address -> when a refusal from it was last logged
 
@@ -567,7 +568,7 @@ def make_handler(app):
                             raise SettingsError(why)
                 app.settings.update(body, api=True)
                 moved = list(app.settings.moved)
-                if moved:  # (a service moved to another host: its secret and pin went with the old one, F-2026-035)
+                if moved:  # (a service moved to another host: its secret and pin went with the old one, F-1-2026-035)
                     app.activity.event("settings", M("{services} moved to another address: sign in or enter the key again, for the new one",
                                                      services=", ".join(moved)), "warn")
                 if getattr(app, "ha", None):
@@ -651,7 +652,7 @@ def make_handler(app):
                 # System → Mirror Dionysus (peerlink.py): Pair Now and Unpair on a mirror's link ({"server": its id}), Test Again on every one
                 link = app.peerlinks.for_server(str(body.get("server") or ""))
                 if path == "/api/peer/test":
-                    app.peerlinks.tick_async(force=True)
+                    app.peerlinks.tick_async(force=True, asked=True)
                 elif link is None:
                     raise SettingsError(M("Which mirror: name its server."))
                 elif path == "/api/peer/pair":
@@ -891,6 +892,7 @@ def make_handler(app):
 
 
 def serve(app, host: str, port: int):
+    """The web server run for ``app`` at ``host``:``port``."""
     httpd = ThreadingHTTPServer((host, port), make_handler(app))
     httpd.daemon_threads = True
     log.info("Dionysus %s listening on http://%s:%d", app.version, host, port)

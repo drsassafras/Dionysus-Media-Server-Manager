@@ -33,6 +33,7 @@ NAMES = {"missing": M("files not listed"), "grouping": M("versions grouped"), "m
 
 
 class SyncLibraries(Tool):
+    """Sync Libraries: a library's records brought in line with its mirror's."""
     name = "sync"
     title = M("Sync Libraries")
     page = "/sync"
@@ -69,6 +70,7 @@ class SyncLibraries(Tool):
     held_by_folder_sync = True
 
     def evaluated_after(self) -> tuple[str, ...]:
+        """The units it's evaluated after: Mirror Checks and Merge Duplicates."""
         return ("mirrorchecks", "merge")
 
     def not_applicable(self, library: str) -> M | None:
@@ -84,6 +86,7 @@ class SyncLibraries(Tool):
         return {"this": getattr(self.app, "plex_name", "") or M("This server"), "mirror": self.mirror_name(key)}
 
     def scan(self, data) -> dict:
+        """A library compared with its mirror's: each item they differ on."""
         from .. import libhealth
         key = data.key
         lib = self.app.library_info(key) or {}
@@ -169,6 +172,7 @@ class SyncLibraries(Tool):
         return self.analysis(data).get("regroup") or []
 
     def flag_lines(self, rows):
+        """Each row's line for Library Health."""
         names = self.names(str((rows[0] if rows else {}).get("library") or ""))
         return [M("{what}, brought in line on {server}", what=", ".join(str(NAMES.get(k, k)) for k in r.get("kinds") or []),
                   server=names["mirror"] if r.get("source") != "mirror" else names["this"]) for r in rows]
@@ -179,9 +183,11 @@ class SyncLibraries(Tool):
         return [str(x["key"]) for r in rows if any(k != "missing" for k in r.get("kinds") or []) for x in r.get("dst_items") or []]
 
     def plex_server(self, library: str) -> str:
+        """The Plex the rows change: this site's when the mirror is the source, else the mirror's."""
         return "here" if self.enabled(library).get("source") == "mirror" else "mirror:" + self.app.mirrors.server_of(str(library))
 
     def apply_row(self, row: dict, log) -> dict:
+        """A row applied: the differences brought in line on the server they're changed on."""
         from .. import syncapply
         key = str(row.get("library") or "")
         on = self.enabled(key)
@@ -198,6 +204,7 @@ class SyncLibraries(Tool):
         return {"result": "done", **got}
 
     def history_row(self, row: dict, outcome: dict) -> dict:
+        """A row as its history shows it."""
         names = self.names(str(row.get("library") or ""))
         return {"server": names["this"] if (outcome.get("server") or ("here" if row.get("source") == "mirror" else "mirror")) == "here" else names["mirror"],
                 "what": ", ".join(str(NAMES.get(k, k)) for k in outcome.get("done") or row.get("kinds") or [])}

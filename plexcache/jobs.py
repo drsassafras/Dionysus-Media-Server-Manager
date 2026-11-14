@@ -40,6 +40,7 @@ class Job:
     POLL = 5  # seconds between looks while paused (a resilver is checked six times less often)
 
     def __init__(self, jobs: Jobs, resumed: dict | None = None, **info):
+        """A job of ``jobs``, new with ``info``, or the one resumed after a restart from its saved state."""
         self.jobs, self.app = jobs, jobs.app
         self.stop_event = threading.Event()
         self.state = {"kind": self.kind, "running": True, "started": time.time(), "phase": "checking", "checked": 0,
@@ -54,6 +55,7 @@ class Job:
 
     # ---------------------------------------------------------- for subclasses
     def run(self) -> None:
+        """The job done."""
         raise NotImplementedError
 
     def args(self) -> dict:
@@ -80,9 +82,11 @@ class Job:
     # ---------------------------------------------------------- helpers
     @property
     def stopped(self) -> bool:
+        """Whether it's been asked to stop."""
         return self.stop_event.is_set()
 
     def update(self, **kw) -> None:
+        """Its state updated."""
         with self.jobs.lock:
             self.state.update(kw)
 
@@ -167,6 +171,7 @@ class Job:
             s["eta"] = round(max(0, s["todo_bytes"] - s["done_bytes"] - done) / (done / seconds))
 
     def save(self) -> None:
+        """Its state saved while it runs, so it's resumed after a restart."""
         with self.jobs.lock:
             s = dict(self.state)
         if s.get("running"):
@@ -208,6 +213,7 @@ class Jobs:
     """The one file job running now (or the last one, finished), and starting them again after a restart."""
 
     def __init__(self, app):
+        """The jobs for ``app``: none running."""
         self.app = app
         self.lock = threading.RLock()
         self.job: Job | None = None
@@ -290,6 +296,7 @@ class Jobs:
             return bool((self.job and self.job.state.get("running")) or self.waiting)
 
     def start(self, job: Job) -> bool:
+        """A job started unless one is running; whether it was."""
         with self.lock:
             if self.job and self.job.state.get("running"):
                 return False
@@ -310,6 +317,7 @@ class Jobs:
         return job is not None
 
     def cancel(self) -> bool:
+        """The running job asked to stop; whether there was one."""
         with self.lock:
             job = self.job if self.job and self.job.state.get("running") else None
         if job:
@@ -343,6 +351,7 @@ class Jobs:
             self.app._save_json(LAST_FILE, self.last)
 
     def queued(self) -> list[dict]:
+        """The jobs waiting their turn."""
         with self.lock:
             return [dict(q) for q in self.queue]
 

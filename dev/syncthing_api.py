@@ -118,6 +118,7 @@ def clone(ref: str) -> str:
 
 
 def main() -> int:
+    """The Syncthing API record made from Syncthing's source."""
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     ap.add_argument("--ref", default="main", help="the Syncthing branch or tag to read (default: main, the next release)")
     ap.add_argument("--checkout", help="an existing checkout of syncthing/syncthing, instead of cloning")

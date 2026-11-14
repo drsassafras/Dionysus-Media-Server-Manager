@@ -59,7 +59,9 @@ MAX_BODY = 48 * 1024 * 1024  # room for a large poster, base64
 
 
 class Service:
+    """The optimizer service: one file at a time, in the folders it may touch."""
     def __init__(self, roots: list[str], token: str | None = None, token_file: str | None = None):
+        """The service over ``roots``, with its token."""
         self.roots = [os.path.realpath(r) for r in roots]
         self.since = time.time()  # when it started: what it mounted is what was there then (no rslave)
         self._token = token or ""
@@ -97,10 +99,12 @@ class Service:
         return "empty"
 
     def allowed(self, path: str) -> str | None:
+        """A path's real path where it's in one of the roots, else None."""
         real = os.path.realpath(path)
         return real if any(real == r or real.startswith(r + os.sep) for r in self.roots) else None
 
     def status(self) -> dict:
+        """The service's status: its version, tools, and what it's doing."""
         with self.lock:
             return {"version": VERSION, "tools": self.versions, "paused": not self.copy_ctl.go.is_set(),
                     # whether a dataset made while this runs shows up here without a restart (rslave)
@@ -112,6 +116,7 @@ class Service:
 
     def start(self, path: str, images: str = "compress", force: bool = False, cover: bytes | None = None,
               action: str = "optimize", tags: str = "keep", name: str = "", original: str = "") -> dict:
+        """A file's job started (optimize, convert, rewrite and the rest), unless one is running."""
         with self.lock:
             if self.current:
                 return {"started": False, "error": "busy", "current": self.current["path"]}
@@ -257,6 +262,7 @@ def folder_action(svc: Service, body: dict) -> tuple[int, dict]:
 
 
 def make_handler(svc: Service):
+    """The HTTP handler for the service."""
     class Handler(BaseHTTPRequestHandler):
         server_version = "plexcache-optimizer"
 
@@ -282,7 +288,7 @@ def make_handler(svc: Service):
         def do_GET(self):
             if self.path == "/healthz":
                 # (open to anything on the app's network: ok and the version only. While there's no token there's nothing to
-                # protect yet and nothing it can do, so it says what's wrong with the token, for the app's setup page: F-2026-045)
+                # protect yet and nothing it can do, so it says what's wrong with the token, for the app's setup page: F-1-2026-045)
                 hz = {"ok": True, "service": "optimizer", "version": VERSION, "token": bool(svc.token)}
                 if not svc.token:
                     hz.update(token_problem=svc.token_problem(), token_file=svc.token_file, uid=os.getuid())
@@ -346,6 +352,7 @@ OLD_TOKEN_FILE = "/config/optimizer-token"  # noqa: S105 — beside the app's se
 
 
 def serve() -> int:
+    """The service run: its token read, its server started."""
     from .. import zfs
     token = os.environ.get("PLEXCACHE_OPTIMIZER_TOKEN", "")
     # the app's token folder where it's mounted; the old path only where it's the one there (an older deployment)

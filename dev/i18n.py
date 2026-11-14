@@ -3,7 +3,7 @@
 
     python3 dev/i18n.py check              # translations match their English (catalogs may lag the code)
     python3 dev/i18n.py --callboard           # callboard's Translations block: how far the catalogs are, overall; between
-                                           # releases it only tells; at release (callboard.toml: the release role) every text must be there
+                                           # releases it only tells; at release (callboard.toml: the release gate, and a pull request into main) every text must be there
     python3 dev/i18n.py check --release    # ...and catalogs in step with the code: nothing missing or unused
     python3 dev/i18n.py check --complete   # ...and every text translated
     python3 dev/i18n.py status             # how much of each language is translated
@@ -61,7 +61,7 @@ _PLACE = re.compile(r"\{(\w+)\}")
 _TAG = re.compile(r"</?([a-zA-Z][a-zA-Z0-9]*)")
 
 
-# The rules (callboard.toml's [i18n], read through callboard/policy.py): what the catalogs are held to for the code's role.
+# The rules (callboard.toml's [i18n], read through callboard/policy.py): what the catalogs are held to at the gate whose rules hold.
 SCHEMA = policy.Schema("i18n", "Translations", {
     "targets": policy.Setting("targets", "each language's share of the texts translated (a code, a group, or \"*\" for the rest)", unit="%"),
     "unused": policy.Setting("level", "catalog entries the code no longer uses, and texts the catalogs haven't got yet (what sync fixes)"),
@@ -71,7 +71,7 @@ GROUPS: dict[str, list[str]] = {}   # (named groups of languages a target may na
 
 
 def rules_now() -> policy.Rules | None:
-    """[i18n]'s rules for the code's role (CALLBOARD_ROLE, or this checkout's branch); None without a callboard.toml."""
+    """[i18n]'s rules at the gate whose rules hold (CALLBOARD_RULES, or by hand its nearest); None without a callboard.toml."""
     from callboard import checks
     return checks.levels("i18n")
 
@@ -91,8 +91,8 @@ def targets_now() -> dict[str, float]:
 
 def strict_now() -> bool:
     """Where the catalogs gate — complete, every text translated — decided once, for callboard's Translations block and
-    the suite's TranslationTests alike: every language's target is 100%, held as a failure (callboard.toml's [i18n] for
-    the code's role: main must ship complete, hot releases included). Everywhere else the catalogs may lag the code."""
+    the suite's TranslationTests alike: every language's target is 100%, held as a failure (callboard.toml's [i18n] at the
+    gate: main must ship complete, hot releases included). Everywhere else the catalogs may lag the code."""
     r = rules_now()
     if r is None:
         return False
@@ -276,6 +276,7 @@ class _HTMLTexts(HTMLParser):
 
 
 def from_html(path: str) -> dict:
+    """The texts a page has to translate."""
     p = _HTMLTexts()
     with open(path, encoding="utf-8") as fh:
         p.feed(fh.read())
@@ -285,6 +286,7 @@ def from_html(path: str) -> dict:
 
 # ---------------------------------------------------------------------- Python
 def from_py(path: str, problems: list | None = None) -> dict:
+    """The messages a Python file has to translate (``problems`` told of those it can't read)."""
     with open(path, encoding="utf-8") as fh:
         tree = ast.parse(fh.read(), path)
     keys: dict[str, str | None] = {}
@@ -301,6 +303,7 @@ def from_py(path: str, problems: list | None = None) -> dict:
 
 
 def all_keys(problems: list | None = None) -> dict:
+    """Every message the app has to translate, from its pages, scripts and Python."""
     keys: dict[str, str | None] = {}
 
     def add(found):
@@ -323,6 +326,7 @@ def all_keys(problems: list | None = None) -> dict:
 
 # --------------------------------------------------------------------- checks
 def load(code: str) -> dict:
+    """A language's catalogue."""
     try:
         with open(os.path.join(CATALOGS, code + ".json"), encoding="utf-8") as fh:
             return json.load(fh)
@@ -445,6 +449,7 @@ def present_check(keys: dict, base: str, level: str) -> list:
 
 
 def save(code: str, cat: dict) -> None:
+    """A language's catalogue saved."""
     with open(os.path.join(CATALOGS, code + ".json"), "w", encoding="utf-8") as fh:
         json.dump(cat, fh, ensure_ascii=False, indent=1, sort_keys=True)
         fh.write("\n")
@@ -469,13 +474,14 @@ def leftovers() -> list[str]:
 
 
 def main(argv: list[str]) -> int:
+    """``python3 dev/i18n.py``: the catalogues checked (or the other commands)."""
     cmd = argv[1] if len(argv) > 1 else "check"
     cmd = "--callboard" if cmd == "--tnsync" else cmd   # (the flag's old name still read)
     problems: list[str] = []
     keys = all_keys(problems)
     if cmd == "--callboard":
         # callboard's Translations block: the overall share translated, and each language against its target (callboard.toml's
-        # [i18n] targets for the code's role: 0 between releases, where the catalogs may lag — the block only tells, grey;
+        # [i18n] targets at the gate: 0 between releases, where the catalogs may lag — the block only tells, grey;
         # 100 on main, which must ship complete — a language short is a finding, held as the rule says). The same common
         # checks code and result line as the other check tools.
         from callboard import checks

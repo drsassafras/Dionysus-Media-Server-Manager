@@ -24,6 +24,7 @@ def _run(*cmd: str) -> str:
 
 
 def versions() -> dict[str, str]:
+    """The versions of what the image has: its OS and tools."""
     out: dict[str, str] = {}
     try:
         with open("/etc/os-release", encoding="utf-8") as fh:
@@ -48,6 +49,7 @@ def versions() -> dict[str, str]:
 
 
 def main() -> int:
+    """The image's versions printed (as JSON with --json)."""
     got = versions()
     if "--json" in sys.argv:
         print(json.dumps(got, indent=2))

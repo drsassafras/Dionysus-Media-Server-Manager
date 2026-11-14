@@ -52,6 +52,7 @@ class M(str):
     params: dict
 
     def __new__(cls, tmpl: str = "", one: str | None = None, **params):
+        """The message: its English text, with its template, singular and parameters kept to translate."""
         n = params.get("n")
         text = one if one is not None and plural_category("en", n) == "one" else tmpl
         self = super().__new__(cls, fill(text, params, "en"))
@@ -59,9 +60,11 @@ class M(str):
         return self
 
     def __reduce__(self):  # copy / pickle keep the template
+        """Copied or pickled as its template."""
         return (_rebuild, (self.tmpl, self.one, self.params))
 
     def json(self) -> dict:
+        """The message as JSON the page translates: its template and parameters."""
         out: dict = {"_t": self.tmpl}
         if self.params:
             out["_p"] = {k: jsonable(v) for k, v in self.params.items()}
@@ -80,11 +83,13 @@ class Fixed(float):
     places: int
 
     def __new__(cls, value: float, places: int = 1):
+        """``value`` rounded to ``places`` decimals, shown with that many."""
         self = super().__new__(cls, round(value, places))
         self.places = places
         return self
 
     def __reduce__(self):
+        """Copied or pickled with its places."""
         return (Fixed, (float(self), self.places))
 
 
@@ -176,6 +181,7 @@ _SEPARATORS = {
 
 
 def number(v, lang: str) -> str:
+    """A number in a language's style: its group and decimal separators."""
     group, dec = _SEPARATORS.get(lang.split("-")[0], (",", "."))
     if isinstance(v, Fixed):
         text = f"{v:,.{v.places}f}"
@@ -191,6 +197,7 @@ def number(v, lang: str) -> str:
 
 
 def fill(text: str, params: dict, lang: str) -> str:
+    """A template's {params} filled in, each in the language's style."""
     def sub(m):
         if m.group(1) not in params:
             return m.group(0)
@@ -199,6 +206,7 @@ def fill(text: str, params: dict, lang: str) -> str:
 
 
 def value(v, lang: str) -> str:
+    """A parameter's value as text in the language: a message translated, a number in its style."""
     if isinstance(v, M):
         return render(v, lang)
     if isinstance(v, bool) or v is None:
@@ -234,6 +242,7 @@ def chain(lang: str) -> list[dict]:
 
 
 def lookup(key: str, lang: str):
+    """A message's translation in the language, or its fallbacks', else None."""
     for cat in chain(lang):
         if key in cat:
             return cat[key]

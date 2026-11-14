@@ -62,6 +62,7 @@ class Integration:
     exceptions: dict = {}
 
     def __init__(self, app):
+        """The integration for ``app``."""
         self.app = app
 
     def standard_lights(self) -> dict:
@@ -80,9 +81,11 @@ class Integration:
         return state(self.name) if state else None
 
     def steps(self) -> list[str]:
+        """Its steps: the standard ones it hasn't excepted, then its own."""
         return [s for s in STEPS if s not in self.exceptions] + list(self.own)
 
     def lights(self) -> dict:
+        """Each step's light, in order: off where the service hasn't said."""
         got = self.standard_lights()
         out = {}
         for step in self.steps():
@@ -91,6 +94,7 @@ class Integration:
         return out
 
     def snapshot(self) -> dict:
+        """The integration as its card shows it: its steps, lights, exceptions, calls, identity and TLS."""
         return {"title": self.title, "steps": self.steps(), "lights": self.lights(), "labels": {s: LABELS.get(s) or s for s in STEPS},
                 "exceptions": dict(self.exceptions), "calls": len(self.calls), "identity": self.identity(), "tls": self.tls()}
 
@@ -105,53 +109,65 @@ def _worst(rows: list[dict], fallback: dict) -> dict:
 
 
 class PlexIntegration(Integration):
+    """Plex: this site's media server."""
     name, title = "plex", "Plex"
     own = ("lan", "urls")
     exceptions = {"found": "Plex is where your media is: its address is yours to give (or the sign-in's, which lists your servers), not looked for on the network."}
 
     @property
     def calls(self):  # type: ignore[override]
+        """The Plex calls the app makes."""
         from .plex import CALLS
         return CALLS
 
     def standard_lights(self) -> dict:
+        """Plex's lights, from the last connection test."""
         c = getattr(self.app, "connections", None) or {}
         return {"server": c.get("plex_server"), "key": c.get("plex_token"), "api": c.get("plex_api"), "lan": c.get("plex_lan"), "urls": c.get("plex_urls")}
 
     def identity(self) -> dict | None:
+        """The Plex server as the last connection test found it."""
         return (getattr(self.app, "connections", None) or {}).get("plex_identity")
 
 
 class TrueNASIntegration(Integration):
+    """TrueNAS: the host the app runs on."""
     name, title = "truenas", "TrueNAS"
     exceptions = {"found": "TrueNAS is the host this app runs on: the Platform light (platform.py) says whether it is, and the address is offered from the page’s own host."}
 
     @property
     def calls(self):  # type: ignore[override]
+        """The TrueNAS API methods the app calls."""
         from .truenas import METHODS
         return METHODS
 
     def standard_lights(self) -> dict:
+        """TrueNAS's lights, from the last connection test."""
         c = getattr(self.app, "connections", None) or {}
         return {"server": c.get("truenas_server"), "key": c.get("truenas_key"), "api": c.get("truenas_api")}
 
     def identity(self) -> dict | None:
+        """The TrueNAS host as the last connection test found it."""
         return (getattr(self.app, "connections", None) or {}).get("truenas_identity")
 
 
 class SyncthingIntegration(Integration):
+    """Syncthing: what keeps the two sites' files in step."""
     name, title = "syncthing", "Syncthing"
     own = ("folders", "devices", "reach", "throttle")
 
     @property
     def calls(self):  # type: ignore[override]
+        """The Syncthing calls the app makes."""
         from .syncthing import CALLS
         return CALLS
 
     def standard_lights(self) -> dict:
+        """Syncthing's lights."""
         return self.app.syncthing.lights()
 
     def identity(self) -> dict | None:
+        """The Syncthing as last asked."""
         return self.app.syncthing.identity()
 
 
@@ -167,13 +183,16 @@ class LinkIntegration(Integration):
 
     @property
     def calls(self):  # type: ignore[override]
+        """The commands the link carries."""
         from .peerlink import COMMANDS
         return COMMANDS
 
     def identity(self) -> dict | None:
+        """This Dionysus as the other side knows it."""
         return self.app.peerlinks.identity()
 
     def standard_lights(self) -> dict:
+        """The links' lights: the worst of each mirror's, or off with no mirror."""
         links = [lk for lk in self.app.peerlinks.used() if lk.wanted()]
         rows = [lk.lights() for lk in links]
         off = lambda text, detail="": {"status": "off", "text": text, "detail": detail}  # noqa: E731

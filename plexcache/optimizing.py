@@ -106,6 +106,7 @@ class OptimizerClient:
     the YAML by default), with the token the app made (PLEXCACHE_OPTIMIZER_TOKEN overrides it)."""
 
     def __init__(self, url: str | None = None, token: str | None = None):
+        """A client for the optimizer at ``url`` with ``token`` (the environment's where it says them)."""
         self.url = (url if url is not None else os.environ.get("PLEXCACHE_OPTIMIZER_URL") or DEFAULT_URL).rstrip("/")
         self.token = os.environ.get("PLEXCACHE_OPTIMIZER_TOKEN") or token or ""
         self._status: tuple[float, dict] | None = None
@@ -124,6 +125,7 @@ class OptimizerClient:
 
     @property
     def configured(self) -> bool:
+        """Whether it has an address and a token."""
         return bool(self.url and self.token)
 
     def ready(self) -> bool:
@@ -167,21 +169,26 @@ class OptimizerClient:
             return {"error": str(getattr(e, "reason", e))}
 
     def claim(self, folder: str, key: str, instance: str, release: bool = False, at: float | None = None) -> dict:
+        """A folder claimed for this system (or released), so another system sharing it waits."""
         return self._call("/api/claim", {"dir": folder, "key": key, "instance": instance, "release": release, **({"at": at} if at else {})})
 
     def conflict(self, copy: str, original: str) -> dict:
+        """A sync conflict's copy resolved against the original."""
         return self._call("/api/conflict", {"path": copy, "original": original})
 
     def rewrite(self, path: str) -> dict:
+        """A file's blocks rewritten."""
         return self._call("/api/rewrite", {"path": path}, timeout=60)
 
     def convert(self, path: str, images: str, cover: bytes | None = None, tags: str = "keep", name: str = "") -> dict:
+        """A file converted to MKV: its images, cover, tags and new name as given."""
         body = {"path": path, "images": images, "tags": tags, **({"name": name} if name else {})}
         if cover:
             body["cover"] = base64.b64encode(cover).decode()
         return self._call("/api/convert", body, timeout=60)
 
     def delete_original(self, path: str, new: str) -> dict:
+        """A converted file's original deleted, once the new one is in place."""
         return self._call("/api/folder", {"action": "delete_original", "path": path, "to": new}, timeout=60)
 
     def mark(self, folder: str, instance: str, info: dict, at: float | None = None) -> dict:
@@ -195,6 +202,7 @@ class OptimizerClient:
         return self._call("/api/folder", {"action": action, "path": path, "to": to, "root": root}, timeout=120)
 
     def optimize(self, path: str, images: str, force: bool, cover: bytes | None = None, tags: str = "keep") -> dict:
+        """A file optimized: its images and tags as given, again with ``force``."""
         body = {"path": path, "images": images, "force": force, "tags": tags}
         if cover:
             body["cover"] = base64.b64encode(cover).decode()
@@ -207,6 +215,7 @@ class Optimizing:
     IDLE_LIMIT = 30  # seconds the optimizer may show nothing running (and no result) before it counts as restarted
 
     def __init__(self, app, client: OptimizerClient | None = None):
+        """The optimizer's record for ``app``, read from where it's saved."""
         self.app = app
         self.client = client or OptimizerClient(token=self.token())
         self.lock = threading.Lock()
@@ -718,6 +727,7 @@ class Optimizing:
         self.save()
 
     def save(self) -> None:
+        """The record saved."""
         with self.lock:
             data = {"version": 2, "files": dict(self.record)}
         self.app._save_json(RECORD, data)
@@ -759,6 +769,7 @@ class Optimizing:
         return "started" if all(q["id"] != item["id"] for q in self.app.jobs.queued()) else "queued"
 
     def set_paused(self, paused: bool) -> bool:
+        """The file jobs paused or resumed; whether they changed."""
         return self.app.jobs.pause(paused)
 
     def resume_job(self, wait: float = 600) -> None:
@@ -1286,6 +1297,7 @@ class Optimizing:
         return got
 
     def snapshot(self) -> dict:
+        """The optimizer as the page shows it: its setup, each library's summary and the job."""
         ready = self.client.ready()  # may ask the service: not while holding the lock
         job = self.app.jobs.snapshot()
         with self.lock:
@@ -1324,6 +1336,7 @@ class OptimizeJob(Job):
     kind = "optimize"
 
     def __init__(self, op: Optimizing, library: str, mode: str = "optimize", resumed: dict | None = None, files: list | None = None):
+        """The job for ``library`` in ``mode`` (only ``files`` where given), or the one resumed after a restart."""
         self.op = op
         title = (op.app.library_info(str(library)) or {}).get("title") or (resumed or {}).get("title")
         super().__init__(op.app.jobs, resumed, library=str(library), mode=mode, title=title)
@@ -1331,15 +1344,18 @@ class OptimizeJob(Job):
             self.state["only"] = list(files)
 
     def args(self) -> dict:
+        """What the job is started again with after a restart."""
         out = {"library": self.state["library"], "mode": self.state["mode"]}
         if self.state.get("only") is not None:
             out["files"] = self.state["only"]
         return out
 
     def dataset(self) -> str | None:
+        """The library's dataset."""
         return (self.app.library_records().get(self.state["library"]) or {}).get("dataset")
 
     def run(self) -> None:
+        """The library optimized."""
         self.op._run(self)
 
 
@@ -1354,6 +1370,7 @@ class Claims:
     WAIT = 120   # seconds a claim must be old before it's acted on, when other systems share the folder and the link doesn't carry it
 
     def __init__(self, op: Optimizing, items: list):
+        """The claims for ``items`` ((path, Plex path) pairs), none made yet."""
         self.op, self.items = op, items  # [(path, plex path)]
         self.at: dict[str, float] = {}
         self.peers: dict[str, bool] = {}
@@ -1430,10 +1447,12 @@ class Claims:
         return True, ""
 
     def release(self, path: str) -> None:
+        """The claim on a file released."""
         if path in self.at:
             self._call(path, release=True)
             del self.at[path]
 
     def release_all(self) -> None:
+        """Every claim released."""
         for path in list(self.at):
             self.release(path)

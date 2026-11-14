@@ -73,8 +73,8 @@ WEB_TARGETS = ["-e", "PLEXCACHE_WEB_TARGETS=future"]
 # callboard's context, told to the suite in the container (tests/run.py's CONTEXT_KEYS): its exit code is what this
 # block's rules hold its failures, warnings and skipped tests as — the Future Tests' own, not a guess from a checkout
 # git can't read there (/src is the host's, owned by another user)
-CONTEXT_KEYS = ("CALLBOARD_ROLE", "CALLBOARD_PHASE", "CALLBOARD_TAG", "CALLBOARD_BRANCH", "CALLBOARD_DIFF", "CALLBOARD_GATE",
-                "CALLBOARD_BASE", "CALLBOARD_CODE")
+CONTEXT_KEYS = ("CALLBOARD_CONTEXT", "CALLBOARD_RULES", "CALLBOARD_CAP", "CALLBOARD_INTO", "CALLBOARD_GITHUB", "CALLBOARD_PHASE",
+                "CALLBOARD_TAG", "CALLBOARD_BRANCH", "CALLBOARD_DIFF", "CALLBOARD_GATE", "CALLBOARD_BASE", "CALLBOARD_CODE")
 
 
 def install_mount() -> list[str]:
@@ -85,7 +85,7 @@ def install_mount() -> list[str]:
 
 def suite_context() -> list[str]:
     """The docker run -e arguments that tell the suite inside whose rules it's held to: this block's integration (Future
-    Tests: ``future`` unless callboard named another), the project's file as the container sees it, the role and the rest."""
+    Tests: ``future`` unless callboard named another), the project's file as the container sees it, the gate and the rest."""
     env = {"CALLBOARD_INTEGRATION": os.environ.get("CALLBOARD_INTEGRATION") or "future", "CALLBOARD_CONFIG": "/src/callboard.toml",
            "CALLBOARD_REPO": "/src", **{k: os.environ[k] for k in CONTEXT_KEYS if k in os.environ}}
     return [a for k, v in env.items() for a in ("-e", f"{k}={v}")]
@@ -103,6 +103,7 @@ def combined(codes: list[int]) -> int:
 
 
 def verdict_line(tag: str, rc: int) -> str:
+    """The verdict on the image's Python ``tag``, from the suite's exit code."""
     return f"\nPython {tag}, inside the image: " + {
         policy.PASS: "clean.", policy.WARN: "passes, with warnings its rules hold as such.", policy.INFO: "passes, with notes (skipped tests or warnings told).",
     }.get(rc, "the suite fails — what it deprecates or removes needs a look before the image moves to it.")
@@ -342,6 +343,7 @@ def pick_node(nightly: list[dict], rc: list[dict], dist: list[dict], arch: str) 
 
 
 def github_releases(repo: str) -> list[dict]:
+    """A GitHub repo's latest releases."""
     return upkeep._json(f"https://api.github.com/repos/{repo}/releases?per_page=10")
 
 
@@ -603,11 +605,13 @@ class OneBar:
     Each part's own bar records (tests/run.py's) come here instead of to the board."""
 
     def __init__(self, tests: int):
+        """The one bar for ``tests`` tests: no part started yet."""
         self.bar = Progress(0, bar="tests", tests=True)
         self.tests, self.lock = tests, threading.Lock()
         self.parts: dict[str, dict] = {}   # name -> done, total, bad, warned, workers, running
 
     def update(self, name: str, label: str, ticking: bool = True, **got) -> None:
+        """A part's counts updated and the bar redrawn, labelled ``label``."""
         with self.lock:
             part = self.parts.setdefault(name, {"done": 0, "total": 0, "bad": 0, "warned": 0, "workers": 0, "running": True})
             part.update({k: v for k, v in got.items() if v is not None})
@@ -637,6 +641,7 @@ class Line:
     own."""
 
     def __init__(self, what: str):
+        """The line for ``what``, started now."""
         self.what, self.tty, self.started, self.last = what, sys.stdout.isatty(), time.time(), 0.0
         self.bar = Progress(0, bar="tests", tests=True) if feeding() and ONE[0] is None else None
         if self.bar is not None:
@@ -644,6 +649,7 @@ class Line:
         self.done = self.total = 0
 
     def show(self, text: str, done: int | None = None, total: int | None = None) -> None:
+        """The line (or the bar) showing ``text``, with how far it's got."""
         if ONE[0] is not None:   # (the build a part of the one bar: OneBar)
             self.done, self.total = done if done is not None else self.done, total or self.total
             ONE[0].update("build", f"build {text}", done=self.done, total=self.total)
@@ -670,6 +676,7 @@ class Line:
             print(f"    {self.what}{part}  {text}{timed(f'{elapsed} s')}", flush=True)
 
     def end(self, text: str, ok: bool = True) -> None:
+        """The line ended: ``text`` and how long it took."""
         elapsed = int(time.time() - self.started)
         if ONE[0] is not None:
             ONE[0].update("build", text, ticking=False, running=False)
@@ -689,10 +696,12 @@ FETCH_FAILED = re.compile(r"curl: \(\d+\)|TLS connect error|Connection reset by 
 
 
 class FetchFailed(Exception):
+    """A download the build needs failed: the run is said as not run, not as failing."""
     pass
 
 
 def fetch_failed(lines: list[str]) -> bool:
+    """Whether the build's output says a download failed."""
     return any(FETCH_FAILED.search(x) for x in lines)
 
 
@@ -708,6 +717,7 @@ DOCKER_FIX = ("so nothing can run in Docker till it's put right: restart Docker 
 
 
 class DockerBroken(Exception):
+    """Docker doesn't work here: the run is said as not run."""
     pass
 
 
@@ -832,12 +842,15 @@ class Detail:
     on); written out at the end with the channels' choices, the build and each part's result — nothing otherwise."""
 
     def __init__(self):
+        """The detail's folder, made where the board asks for one."""
         self.folder = tempfile.mkdtemp(prefix="plex-cache-future-detail-") if os.environ.get("CALLBOARD_DETAIL") else ""
 
     def mount(self, name: str) -> list[str]:
+        """The docker options that mount the folder into a container for part ``name``."""
         return ["-v", f"{self.folder}:/detail", "-e", f"CALLBOARD_DETAIL=/detail/{name}.json"] if self.folder else []
 
     def write(self, tag: str, picks: list[Pick], built: bool | None, results: dict[str, tuple[int, str]], note: str = "") -> None:
+        """The run's page written: the channels' choices, the build and each part's result."""
         if not self.folder:
             return
         parts = {}
@@ -1051,6 +1064,7 @@ SYNCTHING_RELEASES = "https://api.github.com/repos/syncthing/syncthing/releases?
 
 
 def free_port() -> int:
+    """A free port on localhost."""
     import socket
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -1145,6 +1159,7 @@ def syncthing_route(verbose: bool) -> int:
 
 
 def main() -> int:
+    """``python3 dev/future.py``: the suite run on the next Python, inside the image."""
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     major, minor = image_python()
     ap.add_argument("--python", default=f"{major}.{minor + 1}", help=f"the Python to try (default: the one after the image's, {major}.{minor + 1})")

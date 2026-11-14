@@ -218,7 +218,7 @@ app.start()
 app.syncthing.refresh()  # (its first answer in before the pages are: none of them shows a server without its identity)
 port = int(sys.argv[1]) if len(sys.argv) > 1 else 8642
 if os.environ.get("DEMO_INLINE_STYLES"):
-    # the style sample's Before (dev/style.py _demo): approved look files from before F-2026-058 wrote style="…", which
+    # the style sample's Before (dev/style.py _demo): approved look files from before F-1-2026-058 wrote style="…", which
     # the policy took then ('unsafe-inline') and today's refuses, so the Before would draw them without their styles —
     # not as they were approved. Its demo takes them again; the After's, today's policy as it is.
     import re as _re

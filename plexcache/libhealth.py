@@ -530,6 +530,7 @@ IGNORED = "health-ignored.json"  # {library key: {item key: [check ids ignored]}
 
 
 def ignored(app) -> dict:
+    """The findings ignored by hand, by library."""
     if getattr(app, "_lh_ignored", None) is None:
         app._lh_ignored = {k: v for k, v in (app._load_json(IGNORED) or {}).items() if isinstance(v, dict)}
     return app._lh_ignored

@@ -21,6 +21,7 @@ _PROGRESS_LINE = re.compile(r"^[a-z_0-9]+=")  # ffmpeg -progress: "out_time_us=â
 
 
 class ToolError(RuntimeError):
+    """A tool that failed."""
     pass
 
 
@@ -30,6 +31,7 @@ class VerifyError(ToolError):
 
 
 def find(name: str) -> str | None:
+    """A tool's path: on PLEXCACHE_TOOLS_PATH, else the PATH."""
     extra = [p for p in os.environ.get("PLEXCACHE_TOOLS_PATH", "").split(os.pathsep) if p]
     for folder in extra:
         cand = os.path.join(folder, name)
@@ -39,10 +41,12 @@ def find(name: str) -> str | None:
 
 
 def missing() -> list[str]:
+    """The tools that aren't here."""
     return [n for n in NAMES if not find(n)]
 
 
 def version(name: str) -> str | None:
+    """A tool's version, or None where it isn't here."""
     exe = find(name)
     if not exe:
         return None

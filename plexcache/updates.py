@@ -33,7 +33,7 @@ OWNER = REPO_URL.split("/")[3].lower()
 IMAGE = f"{OWNER}/plex-cache"
 IMAGE_TAG = {"stable": "latest", "dev": "dev"}
 REGISTRY = "https://ghcr.io"
-# Update Now's checked digest, kept until the restarted app compares it with the image TrueNAS holds for the tag (F-2026-050:
+# Update Now's checked digest, kept until the restarted app compares it with the image TrueNAS holds for the tag (F-1-2026-050:
 # TrueNAS pulls by tag, so the tag could have moved between the check and the pull)
 PULLED = "update-pulled.json"
 PULLED_FOR = 24 * 3600
@@ -57,6 +57,7 @@ def runs_source_for(channel: str) -> str:
 
 
 def parse_version(text: str) -> str | None:
+    """The ``__version__`` a source file sets, or None."""
     m = re.search(r'^__version__\s*=\s*["\']([0-9][0-9A-Za-z.+-]*)["\']', text, re.M)
     return m.group(1) if m else None
 
@@ -77,7 +78,9 @@ def newer(a: str, b: str) -> bool:
 
 
 class UpdateChecker:
+    """Checks for a newer release on the app's channel, and updates to it."""
     def __init__(self, app, source: str | None = None, channel: str | None = None, runs_source: str | None = None, commit: str | None = None):
+        """The checker for ``app`` on ``channel``."""
         self.app = app
         self.channel = channel or CHANNEL
         self.source = source or os.environ.get("PLEXCACHE_UPDATE_SOURCE") or source_for(self.channel)
@@ -96,6 +99,7 @@ class UpdateChecker:
         self.started = time.time()  # (pulled_check compares only in a process started after Update Now's ask)
 
     def start(self):
+        """The check's thread started."""
         threading.Thread(target=self._loop, name="updates", daemon=True).start()
 
     def _loop(self):
@@ -135,6 +139,7 @@ class UpdateChecker:
             raise
 
     def check(self) -> bool:
+        """The newest release asked for; whether it worked."""
         try:
             head, source = None, self.source
             if self.runs_source:  # the newest finished build: the version is read at that commit, so what's offered exists
@@ -208,7 +213,7 @@ class UpdateChecker:
 
     def verify_image(self) -> str:
         """Before Update Now has TrueNAS pull: the image this channel's tag points at now is one this project's GitHub build
-        made and attested (F-2026-043) — else NotOurBuild, and nothing is pulled. The digest checked."""
+        made and attested (F-1-2026-043) — else NotOurBuild, and nothing is pulled. The digest checked."""
         tag = IMAGE_TAG.get(self.channel, "latest")
         try:
             digest = self.image_digest(tag)
@@ -229,7 +234,7 @@ class UpdateChecker:
 
     def pulled_check(self) -> bool | None:
         """After the restart Update Now brought: whether the image TrueNAS holds for the tag (app.image.query's repo_digests)
-        is the one checked before the pull (F-2026-050). True, or False with a warning in the activity log, and the note
+        is the one checked before the pull (F-1-2026-050). True, or False with a warning in the activity log, and the note
         dropped; None when there's nothing to compare yet (no update asked, this process from before it, TrueNAS not
         reached), the note kept a day at most."""
         want = self.app._load_json(PULLED)
@@ -280,6 +285,7 @@ class UpdateChecker:
         return f"{REPO_URL}/releases/tag/v{__version__}"
 
     def status(self) -> dict:
+        """The check as the page shows it."""
         return {"latest": self.latest, "available": self.available(), "checked": self.checked, "error": self.error, "repo": REPO_URL, "url": self.build_url(),
                 "channel": self.channel, "branch": BRANCH.get(self.channel, "main"), "commit": (self.commit or "")[:7], "latest_commit": (self.latest_commit or "")[:7],
                 "checking": self.checking, "updating": self.updating, "version": self.app.version}

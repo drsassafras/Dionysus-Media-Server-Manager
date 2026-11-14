@@ -66,7 +66,7 @@ DEFAULTS: dict = {
     # none there); "auto_pair": paired by itself when it's safe; "port": the port the other side reaches this one on (0: worked
     # out); "remote_update": a paired Dionysus that's newer may start this one's update (the one its own check finds);
     # "servers": per mirrored server (its machine id) -> {"url": the Dionysus's address at its site ("": found by itself)}.
-    "peer": {"enabled": True, "auto_pair": True, "remote_update": False, "port": 0, "servers": {}},  # (remote_update off unless turned on: F-2026-021)
+    "peer": {"enabled": True, "auto_pair": True, "remote_update": False, "port": 0, "servers": {}},  # (remote_update off unless turned on: F-1-2026-021)
     "general": {
         "poll_seconds": 5,
         "update_check": True,  # ask GitHub every few hours whether there's a newer version
@@ -177,13 +177,13 @@ DEFAULTS: dict = {
         "password": "",
         "tls": False,
         "verify_tls": False,  # off: the broker's certificate pinned on first use instead (tlspin.py)
-        "allow_plain": False,  # the login sent without TLS all the same, by the user's own choice (F-2026-033: off, it's refused)
+        "allow_plain": False,  # the login sent without TLS all the same, by the user's own choice (F-1-2026-033: off, it's refused)
         "discovery": True,  # Home Assistant MQTT discovery messages
         "discovery_prefix": "homeassistant",
         "base_topic": "plexcache",
         "interval": 30,  # seconds between status updates
         "report_period": "week",  # what the "last N days" sensors cover: today | week | month
-        "allow_control": False,  # accept commands (switches, buttons, numbers and selects in Home Assistant): off until turned on, since anyone who can publish to the broker could send them (F-2026-044)
+        "allow_control": False,  # accept commands (switches, buttons, numbers and selects in Home Assistant): off until turned on, since anyone who can publish to the broker could send them (F-1-2026-044)
         "language": "en",  # names and text sent to Home Assistant (it doesn't say which language it uses)
     },
 }
@@ -257,6 +257,7 @@ def public_defaults() -> dict:
 
 
 def SECRET_KEY(key: str) -> bool:  # noqa: N802 (a predicate used like a constant)
+    """Whether a setting's key is a secret."""
     return any(w in key for w in ("token", "password", "api_key", "secret"))
 
 
@@ -268,6 +269,7 @@ _HOST = re.compile(r"[A-Za-z0-9._:\[\]-]{1,253}")
 
 
 class SettingsError(ValueError):
+    """A setting that isn't valid."""
     pass
 
 
@@ -340,13 +342,13 @@ def _url(section: str, value) -> str:
     value = normalize_url(section, _text(section, "url", value, 255, spaces=False))
     if not value:
         return ""
-    u = urllib.parse.urlsplit(value)
-    if u.scheme not in ("http", "https") or not u.hostname or "@" in u.netloc or u.query or u.fragment:
-        raise SettingsError(M("{setting} must be an address like 192.168.1.10 or http://nas.local:32400", setting=f"{section}.url"))
     try:
+        u = urllib.parse.urlsplit(value)  # (Python 3.16's checks the port itself)
         _ = u.port  # raises on a bad port
     except ValueError:
         raise SettingsError(M("{setting} has a bad port", setting=f"{section}.url")) from None
+    if u.scheme not in ("http", "https") or not u.hostname or "@" in u.netloc or u.query or u.fragment:
+        raise SettingsError(M("{setting} must be an address like 192.168.1.10 or http://nas.local:32400", setting=f"{section}.url"))
     return value
 
 
@@ -596,7 +598,7 @@ def _host_of(section: str, key: str, value: str) -> str:
 def _keep_secrets_home(old: dict, new: dict, patch: dict) -> list[str]:
     """A service moved to another host (its address's host changed, from blank too) loses its saved secret and its pin,
     unless the patch gives the secret itself (a sign-in, a key typed with the address, Plex's listing of a mirror: not
-    the page's mask): nothing saved is sent to a host the user hasn't given a secret for (F-2026-035, 036). The same
+    the page's mask): nothing saved is sent to a host the user hasn't given a secret for (F-1-2026-035, 036). The same
     host with another scheme or port keeps them. ``new`` is changed in place; the services moved are returned."""
     def given(sec: str, key: str, sid: str = "") -> bool:
         values = (patch.get(sec) or {})
@@ -630,6 +632,7 @@ class Settings:
     """Thread-safe settings store backed by ``<config_dir>/settings.json``."""
 
     def __init__(self, config_dir: str):
+        """The settings in ``config_dir``, read from settings.json."""
         self.dir = config_dir
         self.path = os.path.join(config_dir, "settings.json")
         self._lock = threading.RLock()
@@ -825,10 +828,12 @@ class Settings:
         os.replace(tmp, self.path)
 
     def get(self) -> dict:
+        """A copy of every setting."""
         with self._lock:
             return copy.deepcopy(self._data)
 
     def section(self, name: str) -> dict:
+        """A copy of one section's settings."""
         with self._lock:
             return copy.deepcopy(self._data[name])
 
@@ -845,7 +850,7 @@ class Settings:
 
     def update(self, patch: dict, *, api: bool = False) -> dict:
         """Apply a partial update like ``{"warmup": {"pacing_percent": 20}}``. ``api``: the request came from the web
-        API (the page, or anyone who can reach it with the login off): the pins can't be set that way (F-2026-035), and
+        API (the page, or anyone who can reach it with the login off): the pins can't be set that way (F-1-2026-035), and
         a service moved to another host loses its saved secret and pin (``moved``: see ``_keep_secrets_home``)."""
         if not isinstance(patch, dict):
             raise SettingsError(M("settings update must be an object"))
@@ -854,7 +859,7 @@ class Settings:
             for sec, values in patch.items():
                 if sec not in DEFAULTS or not isinstance(values, dict):
                     raise SettingsError(M("unknown settings section: {section}", section=str(sec)))
-                if sec == "tls" and api:  # (app-written: Trust New Certificate is the one way to change a pin, F-2026-035)
+                if sec == "tls" and api:  # (app-written: Trust New Certificate is the one way to change a pin, F-1-2026-035)
                     raise SettingsError(M("tls.pins can’t be set here: trust a service’s new certificate from its card"))
                 for key, value in values.items():
                     if key.endswith("_set") or key == "client_id":
@@ -877,6 +882,7 @@ class Settings:
             return copy.deepcopy(self._data)
 
     def export(self) -> dict:
+        """The settings to export, their secrets blanked."""
         data = self.get()
         for sec, key in SECRET_PATHS:
             data[sec][key] = ""

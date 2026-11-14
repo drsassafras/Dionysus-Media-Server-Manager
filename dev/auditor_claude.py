@@ -95,11 +95,13 @@ def reads(folders: list[str], refused: list[str]) -> tuple[list[str], list[str]]
 
 
 class ClaudeCode(Auditor):
+    """Claude Code as an auditor: an audit run by the claude command, its efforts max to low."""
     id = "claude-code"
     label = "Claude Code"
     efforts = {1: "max", 2: "xhigh", 3: "high", 4: "medium", 5: "low"}
 
     def __init__(self) -> None:
+        """The auditor, nothing looked for yet."""
         self._found: dict[str, list[str]] = {}
 
     def given(self, private: str | None = None) -> tuple[str, str]:
@@ -130,6 +132,7 @@ class ClaudeCode(Auditor):
         return self._found[given]
 
     def found(self, private: str | None = None) -> str:
+        """"" where the claude command is here, else why not."""
         if self.command(private):
             return ""
         wrong = self.given(private)[1]
@@ -139,10 +142,12 @@ class ClaudeCode(Auditor):
                 "private rules.toml, or PLEXCACHE_AUDIT_CLAUDE (`which claude` in a terminal says it)")
 
     def auditors(self, private: str | None = None) -> list[str]:
+        """The models it runs: the settings' list, else its own."""
         got = self.settings(private).get("models", MODELS)
         return [str(m) for m in got if AUDITOR.match(str(m))] if isinstance(got, list) else list(MODELS)
 
     def owns(self, auditor: str, private: str | None = None) -> bool:
+        """Whether ``auditor`` names a Claude model."""
         return bool(AUDITOR.match(auditor))
 
     def default(self, private: str | None = None) -> tuple[str, int]:
@@ -153,6 +158,7 @@ class ClaudeCode(Auditor):
         return model, 4
 
     def run(self, r, code: str, main: str, prompt: str, folder: str, started, pushed: str = "") -> tuple[int, str, bool]:
+        """One audit run by the claude command: its exit code, its answer and whether it was cut short."""
         cmd = self.command()
         if not cmd:
             raise ValueError(self.found())

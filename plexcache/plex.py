@@ -26,6 +26,7 @@ class PlexError(Exception):
     """``code``: the HTTP status when Plex answered with one (0 otherwise)."""
 
     def __init__(self, why, code: int = 0):
+        """The error ``why``, with Plex's HTTP status ``code``."""
         super().__init__(why)
         self.code = code
 
@@ -40,6 +41,7 @@ CALLS = {"the server itself": "/", "the server's identity": "/identity", "the li
 
 @dataclass
 class MediaFile:
+    """A media file as Plex lists it: its path, bitrate, size and kind."""
     path: str
     kbps: int
     size: int
@@ -61,6 +63,7 @@ class MediaFile:
 
 @dataclass
 class Library:
+    """A Plex library: its key, title, type and kind."""
     key: str
     title: str
     type: str
@@ -71,6 +74,7 @@ class Library:
 
 @dataclass
 class Session:
+    """Something playing on Plex: what, who's watching, where and how far in."""
     session_key: str
     rating_key: str
     type: str  # movie | episode | track | ...
@@ -94,10 +98,12 @@ class Session:
 
     @property
     def progress(self) -> float:
+        """How far in it is, from 0 to 1."""
         return (self.view_offset_ms / self.duration_ms) if self.duration_ms else 0.0
 
     @property
     def label(self) -> str:
+        """Its name as the page says it: the show and episode, the album and track, or the title."""
         if self.type == "episode" and self.season is not None and self.episode is not None:
             return f"{self.grandparent_title} · S{self.season:02d}E{self.episode:02d}"
         if self.grandparent_title:
@@ -160,6 +166,7 @@ def matched_of(item: ET.Element) -> bool | None:
 
 
 def poster_of(item: ET.Element) -> str:
+    """The poster for an item: an episode's season or show's, a track's album's, else its own."""
     if item.get("type") == "episode":
         return item.get("parentThumb") or item.get("grandparentThumb") or ""
     if item.get("type") == "track":
@@ -215,6 +222,7 @@ def stream_summary(st: ET.Element, file: str) -> dict:
 
 
 class PlexClient:
+    """A client for a Plex server's API."""
     # asked before each change to Plex's records, with (client, op, rating keys): the backup of them (plexbackup.guard;
     # set by App.plex() and Mirrors.client())
     before_change: Callable[..., None] | None = None
@@ -339,6 +347,7 @@ class PlexClient:
         self._request(f"/library/metadata/{rating_key}/match", {"guid": guid, "name": name}, method="PUT")
 
     def unmatch(self, rating_key: str) -> None:
+        """An item's match removed."""
         self._changing("unmatch", [rating_key])
         self._request(f"/library/metadata/{rating_key}/unmatch", method="PUT")
 
@@ -403,6 +412,7 @@ class PlexClient:
                              headers={"Accept": "image/*"})
 
     def get(self, path: str, params: dict | None = None, headers: dict | None = None) -> ET.Element:
+        """A GET of ``path``, its XML parsed."""
         body = self._request(path, params, headers)
         try:
             return ET.fromstring(body)
@@ -466,6 +476,7 @@ class PlexClient:
         return out
 
     def ping(self) -> dict:
+        """Plex's identity and how long it took to answer."""
         start = time.monotonic()
         root = self.get("/")
         ms = int((time.monotonic() - start) * 1000)
@@ -477,6 +488,7 @@ class PlexClient:
         }
 
     def libraries(self) -> list[Library]:
+        """Plex's libraries."""
         root = self.get("/library/sections")
         libs = []
         for d in root.findall("Directory"):
@@ -560,6 +572,7 @@ class PlexClient:
 
     # -------------------------------------------------------------- playback
     def sessions(self) -> list[Session]:
+        """What's playing on Plex now."""
         root = self.get("/status/sessions", {"includeMarkers": 1})
         out = []
         for item in root:
@@ -711,6 +724,7 @@ def _plextv(method: str, path: str, client_id: str, data: bytes | None = None, t
 
 
 def create_pin(client_id: str) -> dict:
+    """A Plex sign-in PIN made: its id, code and the address to sign in at."""
     pin = _plextv("POST", "/api/v2/pins?strong=true", client_id, data=b"")
     params = urllib.parse.urlencode(
         {"clientID": client_id, "code": pin["code"], "context[device][product]": PRODUCT}
@@ -719,6 +733,7 @@ def create_pin(client_id: str) -> dict:
 
 
 def check_pin(client_id: str, pin_id: int) -> str | None:
+    """The token a PIN was signed in with, or None while it waits."""
     pin = _plextv("GET", f"/api/v2/pins/{int(pin_id)}", client_id)
     return pin.get("authToken") or None
 

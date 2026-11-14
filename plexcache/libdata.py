@@ -103,6 +103,7 @@ class LibraryData:
     else what went wrong)}."""
 
     def __init__(self, key: str):
+        """A library's data, nothing read yet."""
         self.key = str(key)
         self.records: list[dict] = []
         self.records_at = 0.0
@@ -126,6 +127,7 @@ class LibraryData:
     # ------------------------------------------------------------ what's known
     @property
     def ready(self) -> bool:
+        """Whether its records and files are in."""
         return bool(self.records_at and self.files_at)
 
     def streams(self, rk: str, local: str = "") -> list[dict]:
@@ -163,6 +165,7 @@ class LibraryData:
         return out
 
     def listed(self) -> set[str]:
+        """The local paths of its files that are there."""
         return {f["local"] for f in self.files if not f.get("missing")}
 
     def names_in(self, local_dir: str) -> list[str]:
@@ -190,6 +193,7 @@ class LibraryData:
 
     # ------------------------------------------------------------ on disk
     def to_json(self) -> dict:
+        """Its data as JSON, to save."""
         return {"v": VERSION, "key": self.key, "records": self.records, "records_at": self.records_at, "plex_changed": self.plex_changed,
                 "files": self.files, "unlisted": self.unlisted, "tree": self.tree, "dirs": self.dirs, "roots": self.roots,
                 "files_at": self.files_at, "details": self.details, "details_at": self.details_at, "stamp": self.stamp,
@@ -197,6 +201,7 @@ class LibraryData:
 
     @classmethod
     def from_json(cls, d: dict) -> LibraryData | None:
+        """A library's data from saved JSON, or None where it's another version's."""
         if not isinstance(d, dict) or d.get("v") != VERSION or not d.get("key"):
             return None
         x = cls(d["key"])
@@ -215,6 +220,7 @@ class Gatherer:
     first; looks for changes now and then; tells the page what it's doing (snapshot)."""
 
     def __init__(self, app):
+        """The gatherer for ``app``: nothing read yet."""
         self.app = app
         self.lock = threading.Lock()
         self.libs: dict[str, LibraryData] = {}
@@ -242,6 +248,7 @@ class Gatherer:
             return d
 
     def fresh(self, key: str, what: tuple[str, ...] = ALL) -> bool:
+        """Whether a library's data of the kinds ``what`` is newer than each one's time to live."""
         d = self.data(key)
         now = time.time()
         age = {"records": (d.records_at, RECORDS_TTL), "files": (d.files_at, FILES_TTL), "details": (d.details_at, RECORDS_TTL), "mirror": (d.mirror_at, MIRROR_TTL)}
@@ -704,6 +711,7 @@ class Gatherer:
 
     # ------------------------------------------------------------ the page
     def snapshot(self) -> dict:
+        """What the gatherer is doing and each library's data, as the page shows them."""
         with self.lock:
             return {"current": self.current, "progress": dict(self.progress) if self.progress else None, "queue": [q[0] for q in self.queue],
                     "libraries": {k: {"records_at": d.records_at, "files_at": d.files_at, "details_at": d.details_at, "mirror_at": d.mirror_at, "ready": d.ready, "stamp": d.stamp, "errors": dict(d.errors),

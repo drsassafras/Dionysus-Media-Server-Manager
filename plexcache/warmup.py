@@ -84,6 +84,7 @@ class LibraryStats:
 
     @classmethod
     def from_files(cls, files, names: dict | None = None) -> LibraryStats:
+        """The stats of a library's files."""
         st = cls()
         totals = {k: 0 for k in KINDS}
         per: dict[str, dict] = {}
@@ -105,6 +106,7 @@ class LibraryStats:
         return st
 
     def to_dict(self) -> dict:
+        """The stats, to save."""
         return {"count": self.count, "avg_kbps": self.avg_kbps, "scanned_at": self.scanned_at, "libraries": self.libraries}
 
 
@@ -359,9 +361,11 @@ class WarmupRun:
 
     @property
     def total(self) -> int:
+        """How many files the run has."""
         return len(self.files)
 
     def progress(self) -> dict:
+        """How far the run has got."""
         return {"done": self.done, "total": self.total, "bytes": self.bytes, "started": self.started,
                 "paused": self.paused, "skipped": self.skipped}
 
@@ -400,6 +404,7 @@ class WarmupRun:
         return took
 
     def run(self) -> dict:
+        """The files read, and how the ARC moved."""
         before = self.arcstats() or {}
         try:
             for f in self.files:

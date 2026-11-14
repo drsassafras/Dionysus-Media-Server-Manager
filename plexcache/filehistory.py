@@ -51,6 +51,7 @@ def snapshot(m: dict | None, comp: str | None = None) -> dict | None:
 
 
 def same_mix(a: dict | None, b: dict | None) -> bool:
+    """Whether two records have the same mix of streams."""
     a, b = (a or {}).get("mix") or {}, (b or {}).get("mix") or {}
     return all(a.get(k) == b.get(k) for k in MIX_FIELDS)
 
@@ -86,7 +87,9 @@ def scaled(v: dict | None, n: int) -> dict | None:
 
 
 class FileHistory:
+    """Each file's history: its streams and changes as they were seen."""
     def __init__(self, config_dir: str, log=None):
+        """The history in ``config_dir``, read from where it's saved."""
         self.path = os.path.join(config_dir, STORE)
         self.lock = threading.Lock()
         self.dirty = False
@@ -204,6 +207,7 @@ class FileHistory:
 
     # ------------------------------------------------------------ reading it
     def known(self, paths) -> int:
+        """How many of the paths it knows."""
         with self.lock:
             return sum(1 for p in paths if p in self.files)
 
@@ -243,6 +247,7 @@ class FileHistory:
             self.save()
 
     def save(self) -> None:
+        """The history saved, where it's changed."""
         self._saved = time.time()
         with self.lock:
             if not self.dirty:

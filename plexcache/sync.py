@@ -259,6 +259,7 @@ class Sync:
     in the library folders (peers)."""
 
     def __init__(self, app):
+        """The mirror choice for ``app``, read from where it's saved."""
         self.app = app
         self.lock = threading.Lock()
         saved = app._load_json(STORE) or {}
@@ -272,11 +273,13 @@ class Sync:
         self.error: str | None = None
 
     def save(self) -> None:
+        """The candidates and comparisons saved."""
         with self.lock:
             data = {"candidates": self.candidates, "discovered_at": self.discovered_at, "compared": self.compared}
         self.app._save_json(STORE, data)
 
     def settings(self) -> dict:
+        """The sync settings."""
         return self.app.settings.section("sync")
 
     # ------------------------------------------------------------ mirrors
@@ -377,6 +380,7 @@ class Sync:
         return out
 
     def discover_async(self) -> None:
+        """The servers that may be a mirror looked for, in a thread of their own."""
         with self.lock:
             if self.running:
                 return
@@ -394,6 +398,7 @@ class Sync:
         threading.Thread(target=work, name="sync-discover", daemon=True).start()
 
     def snapshot(self) -> dict:
+        """The mirror choice as the page shows it."""
         with self.lock:
             return {"running": self.running, "error": self.error, "candidates": list(self.candidates), "discovered_at": self.discovered_at,
                     "compared": list(self.compared), "peers": self.peers(), "libraries": self.by_library()}

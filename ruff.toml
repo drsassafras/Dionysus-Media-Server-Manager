@@ -30,8 +30,9 @@ ignore = [
 
 [lint.per-file-ignores]
 # The suite and the dev tools: asserts are the point, the passwords and temp files are fakes, and tests name handlers
-# as unittest and http.server call them (startTest, do_GET).
-"tests/**" = ["S", "N802", "E731", "E741"]
+# as unittest and http.server call them (startTest, do_GET); a test says what it checks in its name, so it needs no
+# docstring.
+"tests/**" = ["S", "N802", "E731", "E741", "D1"]
 "dev/**" = ["S101"]
 
 [lint.isort]

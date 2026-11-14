@@ -8,6 +8,7 @@ import urllib.request
 
 
 def main() -> int:
+    """The container's health check: whether the app and the optimizer answer."""
     ports = (os.environ.get("PLEXCACHE_PORT") or "8642", os.environ.get("PLEXCACHE_OPTIMIZER_PORT") or "8643")
     for port in dict.fromkeys(ports):
         try:

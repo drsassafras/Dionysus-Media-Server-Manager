@@ -34,7 +34,9 @@ def _count_total(totals: dict, what: str, f: dict) -> None:
 
 
 class Activity:
+    """The activity log: events, counters, metrics and runs, saved in history.json."""
     def __init__(self, config_dir: str, max_events: int = 300, max_runs: int = 60):
+        """The log in ``config_dir``, keeping the last ``max_events`` events and ``max_runs`` runs."""
         self.path = os.path.join(config_dir, "history.json")
         self._lock = threading.Lock()
         self.events: collections.deque = collections.deque(maxlen=max_events)
@@ -83,6 +85,7 @@ class Activity:
             self.events.append({"t": time.time(), "kind": kind, "message": message, "level": level})
 
     def count(self, kind: str) -> None:
+        """An event of ``kind`` counted."""
         with self._lock:
             self.counters.append({"t": time.time(), "kind": kind})
             self._save()
@@ -95,6 +98,7 @@ class Activity:
             self._save()
 
     def since(self, seconds: float) -> list[dict]:
+        """The metrics of the last ``seconds``."""
         cutoff = time.time() - seconds
         with self._lock:
             return [m for m in self.metrics if m["t"] >= cutoff]
@@ -121,6 +125,7 @@ class Activity:
         self.daily = {d: v for d, v in self.daily.items() if d >= oldest}
 
     def add_run(self, run: dict) -> None:
+        """A run added, the oldest dropped past ``max_runs``."""
         with self._lock:
             self.runs.append(run)
             self.runs = self.runs[-self.max_runs:]
@@ -144,6 +149,7 @@ class Activity:
             self._save()
 
     def snapshot(self) -> dict:
+        """The log as the page shows it: the week's counts, the events and the runs."""
         with self._lock:
             week_ago = time.time() - 7 * 86400
             counts = collections.Counter(c["kind"] for c in self.counters if c["t"] >= week_ago)

@@ -36,7 +36,9 @@ KEEP_DONE = 30 * 86400  # how long a deleted original stays listed
 
 
 class Conversions:
+    """The files converted to MKV, on their way into Plex, and their originals."""
     def __init__(self, app):
+        """The conversions for ``app``, read from where they're saved."""
         self.app = app
         self.lock = threading.Lock()
         saved = app._load_json(STORE) or {}
@@ -44,6 +46,7 @@ class Conversions:
         self.busy = False
 
     def save(self) -> None:
+        """The conversions saved."""
         with self.lock:
             data = {"items": [dict(e) for e in self.items]}
         self.app._save_json(STORE, data)
@@ -212,6 +215,7 @@ class Conversions:
         self.save()
 
     def snapshot(self) -> dict:
+        """The conversions, newest first, as the page shows them."""
         with self.lock:
             items = [dict(e) for e in self.items]
         return {"items": sorted(items, key=lambda e: -e.get("converted", 0))}

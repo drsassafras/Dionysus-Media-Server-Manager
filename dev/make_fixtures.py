@@ -86,10 +86,12 @@ def pgs(path, events=4):
 
 # ------------------------------------------------------------------ the files
 def ff(*args):
+    """ffmpeg run quietly with ``args``."""
     tools.run("ffmpeg", "-v", "error", "-y", *args)
 
 
 def write(path, text):
+    """A text file written."""
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(text)
 
@@ -202,6 +204,7 @@ def summary(path: str) -> dict:
 
 
 def snapshot(names):
+    """What the optimizer makes of each fixture, for the tests to compare with."""
     from plexcache.optimize.optimizer import optimize_file
     out = {}
     with tempfile.TemporaryDirectory() as d:

@@ -183,6 +183,7 @@ def _container(app, add, path: str, library: str) -> None:
 
 
 def worst(checks: list[dict]) -> str | None:
+    """The worst status of the checks, or None."""
     return max((c["status"] for c in checks), key=ORDER.__getitem__) if checks else None
 
 

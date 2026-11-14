@@ -31,10 +31,12 @@ OPTION_NAMES = {"avi": M("AVI"), "ts": M("MPEG-TS / M2TS"), "ps": M("MPEG-PS (VO
 
 
 def kind_name(kind: str | None) -> str:
+    """A container's name, as the page says it."""
     return KIND_NAMES.get(kind or "", (kind or "?").upper())
 
 
 class ConvertToMkv(Tool):
+    """Convert to MKV: files in other containers made MKV, their originals gone once Plex has the MKV."""
     name = "convert"
     title = M("Convert to MKV")
     page = "/convert"
@@ -44,10 +46,12 @@ class ConvertToMkv(Tool):
     flag_help = M("A video file in another container than MKV (AVI, MPEG-TS, VOB…). Convert to MKV writes an MKV next to it — only when nothing in the file would be lost — sees it into Plex as a version of the same item, then removes the original; the item keeps its edits and watch history.")
 
     def flag_lines(self, rows):
+        """Each row's line for Library Health."""
         return [M("{name}: left as it is — {why}", name=r.get("name") or "", why=r["skipped"]) if r.get("skipped")
                 else M("{name}: {kind}, converts to MKV", name=r.get("name") or "", kind=kind_name(r.get("kind"))) for r in rows]
 
     def scan(self, data) -> dict:
+        """A library scanned for files that aren't MKV."""
         library = data.key
         lib = self.app.library_info(library)
         if not lib:
@@ -87,16 +91,20 @@ class ConvertToMkv(Tool):
     history = [("what", M("What was done")), ("written", M("Written")), ("original", M("Original"))]
 
     def history_row(self, row: dict, outcome: dict) -> dict:
+        """A row as its history shows it."""
         return {"what": M("{kind} → MKV", kind=kind_name(row.get("kind"))), "written": int(outcome.get("bytes") or 0),
                 "original": M("Stays until Plex has the MKV")}
 
     def needed_bytes(self, rows: list[dict]) -> int:
+        """The space Apply needs: an MKV about each original's size."""
         return sum(int(r.get("size") or 0) for r in rows)  # (an MKV about the original's size, written beside it)
 
     def retained_bytes(self, rows: list[dict]) -> int:
+        """The space the snapshot keeps: the originals."""
         return sum(int(r.get("size") or 0) for r in rows)  # (the originals, once they go: the snapshot holds them)
 
     def apply_row(self, row: dict, log) -> dict:
+        """A file converted by the optimizer."""
         if self._converted(row["local"], set()):
             return {"result": "failed", "reason": M("Converted already: its MKV is on its way into Plex")}
         r = self.app.optimizing.convert_one(row["local"], row["library"], row.get("poster") or "", log, name=row.get("new_name") or "")
@@ -115,6 +123,7 @@ class ConvertToMkv(Tool):
         return {"result": "failed", "reason": r.get("reason") or M("the optimizer service didn’t convert it")}
 
     def changed_paths(self, row: dict, outcome: dict) -> list[str]:
+        """The paths a row changes: the original."""
         return [row["local"]]  # (the original: put back from the snapshot where it has gone already)
 
     def revert_row(self, row: dict, outcome: dict, backup: dict, log) -> None:
@@ -131,6 +140,7 @@ class ConvertToMkv(Tool):
             pass
 
     def snapshot(self) -> dict:
+        """The tool as its page shows it, with the conversions on their way into Plex."""
         out = super().snapshot()
         out["conversions"] = self.app.conversions.snapshot()["items"]  # (the files on their way into Plex, and the originals gone)
         return out

@@ -18,12 +18,14 @@ class Stopped(Exception):
 
 @dataclass
 class ReadResult:
+    """What a read came to: its bytes, how long, and its error."""
     bytes: int
     seconds: float
     error: str | None = None
 
     @property
     def mb_per_sec(self) -> float:
+        """Its speed in MB/s."""
         return (self.bytes / MiB) / self.seconds if self.seconds > 0 else float("inf")
 
 
@@ -40,6 +42,7 @@ class Pacer:
     """
 
     def __init__(self, percent: float, stop: threading.Event | None = None, pause=None, rate: float | None = None):
+        """A pacer at ``percent`` of the disk's time (or at ``rate``), stopped by ``stop``, paused while ``pause()``."""
         self.percent = max(1.0, min(100.0, float(percent)))
         self.rate = rate if rate and rate > 0 else None
         self.disk_mb_s: float | None = None  # uncached disk speed, to tell cache hits apart
@@ -48,6 +51,7 @@ class Pacer:
         self.before_wait: Callable[[], None] | None = None  # an idle gap is about to start
 
     def check(self) -> None:
+        """Raises Stopped when asked to stop, and waits while paused."""
         if self.stop.is_set():
             raise Stopped()
         while self.pause and self.pause():
@@ -67,6 +71,7 @@ class Pacer:
         return 0.0
 
     def after(self, seconds: float, nbytes: int = 0) -> None:
+        """The wait after a read of ``nbytes`` that took ``seconds``."""
         wait = self.wait_for(seconds, nbytes)
         if wait > 0:
             if self.before_wait:
@@ -129,6 +134,7 @@ def read_range(path: str, offset: int, length: int, pacer: Pacer | None = None, 
 
 
 def read_head(path: str, nbytes: int) -> ReadResult:
+    """A file's first ``nbytes`` read."""
     return read_range(path, 0, nbytes)
 
 

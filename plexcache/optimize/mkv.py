@@ -30,8 +30,8 @@ TARGET_UIDS = (0x63C5, 0x63C9, 0x63C4, 0x63C6)  # a tag for a track, edition, ch
 OUR_TAG = "PLEXCACHE_"  # our global tags: PLEXCACHE_OPTIMIZER (version), PLEXCACHE_COVER (Plex's poster)
 MAX_TAGS = 4 * 1024 * 1024  # Tags this large aren't read for ours (they'd be at the start of a tags element anyway)
 MAX_PARTS = 512  # top-level elements read before the first Cluster at most (mkvmerge writes a handful), as filemap.MAX_PARTS
-MAX_ATTACHMENTS = 4096  # attachments (and an attachment's children) walked at most: a file past it isn't one we rewrite (F-2026-056)
-MAX_ELEMENT = 512 * 1024 * 1024  # no element outside the clusters is read into memory past this: not a layout mkvmerge writes (F-2026-047)
+MAX_ATTACHMENTS = 4096  # attachments (and an attachment's children) walked at most: a file past it isn't one we rewrite (F-1-2026-056)
+MAX_ELEMENT = 512 * 1024 * 1024  # no element outside the clusters is read into memory past this: not a layout mkvmerge writes (F-1-2026-047)
 
 
 def _capped(size: int, what: str = "element") -> int:
@@ -49,6 +49,7 @@ BIG_VOID = 1024 * 1024  # empty space before the video worth rewriting away (lef
 
 
 class NotMatroska(ValueError):
+    """A file that isn't Matroska."""
     pass
 
 
@@ -88,6 +89,7 @@ def _uint(b: bytes) -> int:
 
 
 def is_image(name: str, mime: str) -> bool:
+    """Whether an attachment is an image, by its MIME type or name."""
     return (mime or "").lower().startswith("image/") or (name or "").lower().endswith(IMAGE_EXT)
 
 
@@ -109,7 +111,7 @@ def read_layout(path: str) -> dict:
         data = p + n1 + n2
         out = {"segment_data": data, "segment_size": seg_size, "segment_size_at": p + n1, "segment_size_len": n2,
                "front": [], "first_cluster": None, "seek": {}, "tracks": [], "attachments": [], "file_size": os.fstat(fh.fileno()).st_size}
-        # Elements before the first Cluster, by seeking from one to the next: MAX_PARTS at most (F-2026-060)
+        # Elements before the first Cluster, by seeking from one to the next: MAX_PARTS at most (F-1-2026-060)
         p, parts = data, 0
         while p < out["file_size"]:
             parts += 1

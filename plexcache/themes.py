@@ -188,6 +188,7 @@ _FONT_STACK = {
 
 
 class ThemeError(ValueError):
+    """A theme that isn't valid."""
     pass
 
 

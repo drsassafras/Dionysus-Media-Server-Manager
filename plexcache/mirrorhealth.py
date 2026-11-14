@@ -78,10 +78,12 @@ def _rel_there(path: str, locations: list[str]) -> str:
 
 
 class MirrorHealth:
+    """Mirror Checks: each mirrored library compared with the other site's."""
     BLOCK_IDS = BLOCK_IDS
     TITLE = M("Mirror Checks")
 
     def __init__(self, app):
+        """Mirror Checks for ``app``, their last results read."""
         self.app = app
         self.lock = threading.Lock()
         saved = app._load_json("mirrorhealth.json") or {}
@@ -94,6 +96,7 @@ class MirrorHealth:
         self._snap: tuple | None = None  # the mirror's snapshot: (what it was for, when, what it said)
 
     def save(self) -> None:
+        """The results saved."""
         with self.lock:
             data = {"results": jsonable(self.results), "scanned": {k: v for k, v in self.scanned.items() if time.time() - v < 7 * 86400},
                     "checked_at": self.checked_at}

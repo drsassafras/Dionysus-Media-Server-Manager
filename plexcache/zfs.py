@@ -27,6 +27,7 @@ def arcstats() -> dict | None:
 
 
 def arc_summary(stats: dict | None) -> dict | None:
+    """The ARC's summary from its stats: size, hit rate and the rest, or None."""
     if not stats:
         return None
     hits, misses = stats.get("hits", 0), stats.get("misses", 0)
@@ -87,6 +88,7 @@ def disk_busy_ms() -> dict:
 
 
 def module_param(name: str) -> str | None:
+    """A ZFS module parameter, or None."""
     try:
         with open(os.path.join(SYS, "module/zfs/parameters", name), encoding="ascii") as fh:
             return fh.read().strip()
@@ -108,6 +110,7 @@ def _unescape(field: str) -> str:
 
 
 def mounts() -> list[dict]:
+    """The mounts, from mountinfo."""
     try:
         with open(os.path.join(PROC, "self/mountinfo"), encoding="utf-8", errors="replace") as fh:
             lines = fh.read().splitlines()

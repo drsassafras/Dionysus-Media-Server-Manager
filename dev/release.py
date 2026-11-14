@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """The release checks: what has to be true of dev before it's released (merged into main and tagged). callboard runs them
 in a block of their own, on the code it copies; what each is held as — told (info) between releases, a failure at
-release — is callboard.toml's [release] for the code's role (callboard/policy.py), so a dev run can't fail on what only a
+release — is callboard.toml's [release] at the gate whose rules hold (callboard/policy.py), so a dev run can't fail on what only a
 release needs.
 
     python3 dev/release.py           # each check, a line each; what to do for one that fails; the exit code callboard/policy.py's
     python3 dev/release.py --callboard  # callboard's Release block, every run: the same checks as an overall readiness —
                                      # "4 of 7 ready", what's still to go — grey between releases (exit 3), red (1)
-                                     # where the role holds them as failures
+                                     # where the gate holds them as failures
     python3 dev/release.py start     # tag the code a preview (v0.17.0-beta.1: callboard.toml's [tags]); push the tag to start it
     python3 dev/release.py candidate # tag a release candidate (v0.17.0-rc.1): the freeze, and the release pull request
     python3 dev/release.py hotfix <name>   # a hotfix/<name> branch off the release branch
@@ -57,7 +57,7 @@ SCHEMA = policy.Schema("release", "Release checks", {
     "translations": policy.Setting("level", "every text translated in every language"),
     "mqtt_settings": policy.Setting("level", "every setting a control over MQTT, or listed as kept off it"),
     "mqtt_docs": policy.Setting("level", "the README's MQTT topics and commands the ones the code has"),
-    "coverage": policy.Setting("level", "the coverage bars of the release role met", full_only=True),
+    "coverage": policy.Setting("level", "the coverage bars of the release gate met", full_only=True),
     "audits": policy.Setting("level", "the security audits' release rules met", full_only=True),
     "looks": policy.Setting("level", "every look approved into the style guide"),
     "change_notes": policy.Setting("level", "a change note (a file under notes_dir) written since the last release"),
@@ -71,6 +71,7 @@ TAG = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")   # a release tag (v0.16.0); a pre-
 
 @dataclass
 class Result:
+    """One release check's result: its name, whether it passed, and what came of it in a line."""
     name: str
     ok: bool
     line: str                                         # what came of it, in a line
@@ -96,11 +97,13 @@ def _git(*args: str) -> str | None:
 
 
 def version_of(text: str) -> str | None:
+    """The ``__version__`` a source file sets, or None."""
     m = re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']', text, re.M)
     return m.group(1) if m else None
 
 
 def parse(version: str) -> tuple[int, int, int] | None:
+    """A version's three numbers, or None where it isn't one."""
     m = TAG.match(version.strip())
     return (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
 
@@ -122,6 +125,7 @@ def released() -> tuple[tuple[int, int, int] | None, str]:
 
 
 def check_version(text: str | None = None) -> Result:
+    """The Version check: the app's version is a release version, newer than the last tag."""
     name = "Version"
     if text is None:
         try:
@@ -170,6 +174,7 @@ def check_translations() -> Result:
 
 
 def check_mqtt_settings() -> Result:
+    """The MQTT settings check: every setting Home Assistant reads is in the app's settings."""
     from plexcache import config
     from plexcache import homeassistant as ha
     name = "MQTT settings"
@@ -220,6 +225,7 @@ def mqtt_commands(source: str) -> set[str]:
 
 
 def check_mqtt_docs(readme: str | None = None, source: str | None = None) -> Result:
+    """The MQTT docs check: the README says every entity the app publishes."""
     name = "MQTT docs"
     try:
         if readme is None:
@@ -255,11 +261,11 @@ def check_coverage() -> Result:
     saved, why = coverage.load()
     if saved is None:
         return Result(name, False, "not measured", [why])
-    r = policy.rules("coverage", policy.context().__class__(**{**policy.context().__dict__, "role": "release", "diff": False}))
+    r = policy.rules("coverage", policy.context().__class__(**{**policy.context().__dict__, "rules": "release", "cap": "", "diff": False}))
     files, _ = coverage.measure(saved["hit"], fresh_days=r.value("fresh_days"))
     outcome = coverage.release_check(files, r.value("every_line"), r.value("each_file"))
     if r.value("every_line") is None and r.value("each_file") is None:
-        return Result(name, True, "no coverage bar set for the release role (callboard.toml [coverage.release])")
+        return Result(name, True, "no coverage bar set for the release gate (callboard.toml [coverage.release])")
     line = outcome.facts[0] if outcome.facts else ""
     if not outcome.findings:
         return Result(name, True, line)
@@ -274,7 +280,7 @@ def check_audits() -> Result:
     name = "Security audits"
     try:
         env = {k: v for k, v in os.environ.items() if k != "PLEXCACHE_PROGRESS"}   # (its words for a reader, not the board's feed)
-        env.update(policy.context().__class__(**{**policy.context().__dict__, "role": "release", "diff": False}).env())   # (as the release holds it)
+        env.update(policy.context().__class__(**{**policy.context().__dict__, "rules": "release", "cap": "", "diff": False}).env())   # (as the release holds it)
         env["CALLBOARD_INTEGRATION"] = "audit"
         got = subprocess.run([sys.executable, os.path.join(ROOT, "dev", "audit.py")],
                              capture_output=True, text=True, timeout=300, cwd=ROOT, env=env)
@@ -300,6 +306,7 @@ def check_looks() -> Result:
 
 
 def notes_dir() -> str:
+    """The folder the release notes are kept in."""
     r = checks.levels("release")
     return (r.text("notes_dir") if r else "") or "changes"
 
@@ -359,6 +366,7 @@ def check_change_notes() -> Result:
 
 
 def manual_file(version: str) -> str:
+    """The file that keeps the ticks of a version's manual release items."""
     return notes.manual_file(_repo(), notes_dir(), version)
 
 
@@ -403,6 +411,7 @@ def summary(results: list[Result]) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """``python3 dev/release.py``: the release checks, or the release notes with ``notes``."""
     args = ["--callboard" if a == "--tnsync" else a for a in (sys.argv[1:] if argv is None else argv)]   # (the flag's old name still read)
     if args[:1] == ["notes"]:
         sys.stdout.write(release_notes())
@@ -427,7 +436,7 @@ def main(argv: list[str] | None = None) -> int:
     results: list[Result] = []
     for check in CHECKS:
         key = KEYS.get(check) or check.__name__.removeprefix("check_")
-        levels.setdefault(key, (rules.default_level if rules else "fail"))   # (a check without a rule of its own: the integration's level)
+        levels.setdefault(key, ("off" if rules else "fail"))   # (a check without a rule of its own: off, as a rule not set is)
         if levels[key] == "off":
             continue
         try:
@@ -470,6 +479,7 @@ def _name(check: Callable[[], Result]) -> str:
 
 # ---------------------------------------------------------------- the release's steps
 def tag_named(cfg: policy.Config, phase: str, version: str, n: int) -> str:
+    """The tag for a release phase of ``version`` (its ``n``th), from callboard.toml's [tags]."""
     pat = cfg.table("tags").get(phase)
     if not isinstance(pat, str) or not pat:
         raise policy.ConfigError(f"[tags] has no {phase} pattern")
@@ -499,8 +509,8 @@ def step(cmd: str, args: list[str]) -> int:
             print(f"__version__ is {version!r}: a release is a new X.Y.0 (set it in plexcache/__init__.py first)")
             return 1
         phase = "preview" if cmd == "start" else "freeze"
-        if not cfg.phase_role(phase):
-            print(f"[phases.{phase}] has no role in callboard.toml: a {phase} tag would change nothing")
+        if not cfg.tag_pattern(phase):
+            print(f"[tags] has no {phase} tag in callboard.toml: a {phase} tag can't be made")
             return 1
         tag = next_tag(cfg, phase, version)
         msg = f"{version} {'preview' if phase == 'preview' else 'release candidate'}"
@@ -508,14 +518,14 @@ def step(cmd: str, args: list[str]) -> int:
         if got.returncode != 0:
             print(got.stderr.strip() or f"git tag {tag} failed")
             return 1
-        print(f"tagged {tag} ({msg}): the code is in its {phase} phase from here — the {cfg.phase_role(phase)} role's rules hold.")
+        print(f"tagged {tag} ({msg}): the code is in its {phase} phase from here — the release gate's rules hold{' (as warnings)' if phase == 'preview' else ''}.")
         print(f"To start it on GitHub: git push origin {tag}")
         return 0
     if cmd == "hotfix":
         if not args:
             print("usage: python3 dev/release.py hotfix <name>")
             return 2
-        base = next((n for n, spec in cfg.table("branches").items() if isinstance(spec, dict) and spec.get("role") == "release" and "*" not in n), "main")
+        base = cfg.release_branch() or "main"
         name = f"hotfix/{args[0]}"
         got = subprocess.run(["git", "-C", ROOT, "checkout", "-b", name, f"origin/{base}" if _git("rev-parse", "--verify", f"origin/{base}") else base],
                              capture_output=True, text=True)

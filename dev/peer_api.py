@@ -24,6 +24,7 @@ def record() -> dict:
 
 
 def main() -> None:
+    """tests/peer_api.json written: the link's commands and their shapes, as the code has them now."""
     with open(PATH, "w", encoding="utf-8") as fh:
         json.dump(record(), fh, indent=2, sort_keys=True)
         fh.write("\n")

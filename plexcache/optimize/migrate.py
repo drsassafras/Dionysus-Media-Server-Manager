@@ -29,6 +29,7 @@ class Paused:
     """Pause/stop controls for a running copy (set from the service's endpoints)."""
 
     def __init__(self):
+        """The controls: going, not stopped."""
         self.go = threading.Event()
         self.go.set()
         self.stop = threading.Event()

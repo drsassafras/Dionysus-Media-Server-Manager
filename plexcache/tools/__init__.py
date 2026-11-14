@@ -48,6 +48,7 @@ MAX_ROWS = 400
 
 
 class Tool:
+    """A tool of the Tools page: its scan of a library, its rows, and Apply and Revert."""
     name = ""
     title = M("Tool")                      # as the Tools page and Library Health name it
     page = ""                               # its page ("/merge")
@@ -85,6 +86,7 @@ class Tool:
         return tuple(out)
 
     def __init__(self, app):
+        """The tool for ``app``: its last scan and results read from where they're saved."""
         self.app = app
         self.lock = threading.Lock()
         saved = app._load_json(f"tools-{self.name}.json") or {}
@@ -98,6 +100,7 @@ class Tool:
         self._analysis: dict[str, tuple[tuple, dict]] = {}  # library -> (the state it's of: _akey, the scan over that data)
 
     def save(self) -> None:
+        """Its scan, results and extra state saved."""
         with self.lock:
             data = {"scan": self.scan_result, "results": self.results[-KEEP_RESULTS:], "extra": self.extra}
         self.app._save_json(f"tools-{self.name}.json", data)
@@ -294,6 +297,7 @@ class Tool:
         return n
 
     def works_on(self, library: str) -> bool:
+        """Whether it works on the library's kind."""
         lib = self.app.library_info(library) or {}
         return bool(lib.get("kind")) and lib.get("kind") in self.applies
 
@@ -554,6 +558,7 @@ class Tool:
         self.scan_async(key, refresh=True)
 
     def snapshot(self) -> dict:
+        """The tool as its page shows it."""
         self.follow()
         self.mark_blocks()
         libs = [str(lib["key"]) for lib in getattr(self.app, "libraries", None) or [] if self.works_on(str(lib["key"]))]
@@ -572,9 +577,11 @@ class Tool:
         return mirror(self.app, library)
 
     def mirrored(self, library: str) -> dict | None:
+        """The library's mirror, or None."""
         return mirrored(self.app, library)
 
     def mirror_name(self, library: str) -> str:
+        """The name of the library's mirror."""
         return mirror_name(self.app, library)
 
     def file_action(self, action: str, path: str, to: str = "", root: str = "") -> dict:
@@ -650,15 +657,18 @@ class ToolJob(Job):
     kind = "tool"
 
     def __init__(self, app, args: dict, saved: dict | None = None):
+        """The job for a tool's Apply with ``args``, or the one resumed after a restart."""
         super().__init__(app.jobs, resumed=saved, library=str(args.get("library") or ""), tool=str(args.get("tool") or ""),
                          title=(app.library_info(str(args.get("library") or "")) or {}).get("title") or str(args.get("library") or ""))
         self._args = dict(args)
         self.tool = app.tools.get(str(args.get("tool") or ""))
 
     def args(self) -> dict:
+        """What the job is started again with after a restart."""
         return self._args
 
     def run(self) -> None:
+        """The backup made, then each row applied and logged."""
         from .. import peers, plexbackup, safety
         app, tool, key = self.app, self.tool, str(self._args.get("library") or "")
         if tool is None:
@@ -704,6 +714,7 @@ class ToolJob(Job):
             tool.run_rows(rows, self)
 
     def ended(self) -> None:
+        """The tool freed once the run's end is in the job log."""
         # (not in finished(): the tool is free only once the run's end is in the job log, so nothing that sees the tool
         # free still finds its run going)
         if self.tool is not None:

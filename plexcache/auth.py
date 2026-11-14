@@ -51,7 +51,9 @@ LOCKOUT_FAILS, LOCKOUT_SECONDS = 10, 15 * 60  # wrong in a row from one address,
 
 
 class Auth:
+    """The web UI's login: one username and password, and signed session cookies."""
     def __init__(self, username: str = "", password: str = "", config_dir: str | None = None):
+        """The login for ``username`` and ``password`` (off where either is empty)."""
         self.username = username or ""
         self._password = password or ""
         self.enabled = bool(self.username and self._password)
@@ -64,6 +66,7 @@ class Auth:
 
     @classmethod
     def from_env(cls, config_dir: str | None = None) -> Auth:
+        """The login the environment sets (PLEXCACHE_USERNAME and PLEXCACHE_PASSWORD)."""
         return cls(os.environ.get("PLEXCACHE_USERNAME", ""), os.environ.get("PLEXCACHE_PASSWORD", ""), config_dir)
 
     @staticmethod
@@ -89,6 +92,7 @@ class Auth:
 
     # ------------------------------------------------------------ checking
     def check_password(self, username: str, password: str) -> bool:
+        """Whether the username and password are right (compared in constant time)."""
         ok = (hmac.compare_digest(str(username).encode(), self.username.encode())
               & hmac.compare_digest(str(password).encode(), self._password.encode()))
         if not ok:
@@ -119,11 +123,12 @@ class Auth:
 
     def _sign(self, expires: int, sid: str, address: str = "") -> str:
         # The password is part of what's signed, so changing it ends every session; and the address the session was
-        # issued to (``client``), so a cookie read off the network works from nowhere else (F-2026-042).
+        # issued to (``client``), so a cookie read off the network works from nowhere else (F-1-2026-042).
         msg = f"{expires}:{sid}:{self.username}:{hashlib.sha256(self._password.encode()).hexdigest()}:{address}".encode()
         return hmac.new(self._key, msg, hashlib.sha256).hexdigest()
 
     def new_session(self, address: str = "") -> str:
+        """A new session token for ``address``: when it expires, its id and its signature."""
         expires = int(time.time()) + SESSION_DAYS * 86400
         sid = secrets.token_hex(8)
         return f"{expires}.{sid}.{self._sign(expires, sid, address)}"
@@ -139,6 +144,7 @@ class Auth:
         return expires, sid
 
     def session_ok(self, token: str | None, address: str = "") -> bool:
+        """Whether a session token is valid for ``address`` and not expired."""
         if self.default_password:
             return False
         p = self._parse(token, address)
@@ -175,6 +181,7 @@ class Auth:
             pass  # still revoked until the app restarts
 
     def cookie_value(self, headers) -> str | None:
+        """The session cookie's value from the request's headers, or None."""
         for part in (headers.get("Cookie") or "").split(";"):
             name, _, value = part.strip().partition("=")
             if name == COOKIE:
@@ -207,8 +214,8 @@ class Auth:
         """What a sign-in attempt is counted against (locked_out, note_attempt), and the address a session is bound to:
         for a connection from a reverse proxy named in PLEXCACHE_TRUSTED_PROXY, the client the proxy names in
         X-Forwarded-For (its last hop: what the proxy itself appended), else the connection's own address. A client
-        reaching the app directly can't name an address of its own choosing (F-2026-051), and check_password's
-        one-at-a-time delay caps guessing overall either way (F-2026-049)."""
+        reaching the app directly can't name an address of its own choosing (F-1-2026-051), and check_password's
+        one-at-a-time delay caps guessing overall either way (F-1-2026-049)."""
         if trusted_proxy(address):
             forwarded = (headers.get("X-Forwarded-For") or "").split(",")[-1].strip()
             if forwarded:

@@ -139,14 +139,14 @@ LOCAL_SUFFIXES = (".local", ".lan", ".home", ".home.arpa", ".internal", ".locald
 
 def _https_only(url) -> str:
     """A link from outside data as the page may be handed it: only an https:// address (a javascript: or other scheme
-    the metadata named would run on the page when followed: F-2026-037), else ""."""
+    the metadata named would run on the page when followed: F-1-2026-037), else ""."""
     return url if isinstance(url, str) and url.lower().startswith("https://") else ""
 
 
 def _this_machines_address(host: str) -> bool:
     """Whether ``host`` is this machine itself: loopback, or an address one of its own network interfaces has. A Host
     header is the browser's (anyone's, with no sign-in), so autodetect looks only here, never at an address a client
-    chose to name: a secret entered later would go to whatever was filled in (F-2026-036)."""
+    chose to name: a secret entered later would go to whatever was filled in (F-1-2026-036)."""
     if tlspin.host_on_this_machine(host):
         return True
     try:
@@ -239,7 +239,10 @@ def _sentences(parts: list) -> M | str:
 
 
 class App:
+    """The app: its settings, its clients for Plex, TrueNAS and the rest, and every part that keeps the cache, the
+    checks and the jobs."""
     def __init__(self, config_dir: str):
+        """The app over the config folder ``config_dir``: its settings and saved state read, its parts made."""
         self.config_dir = config_dir
         self.settings = Settings(config_dir)
         # Optional web UI login, from PLEXCACHE_USERNAME / PLEXCACHE_PASSWORD in the app's YAML.
@@ -357,7 +360,7 @@ class App:
     def tls_context(self, name: str, section: dict) -> tlspin.Context:
         """The context a keyed service's connection is verified with: full verification when its verify_tls is on, else
         its pinned certificate — none until a person confirms one, and until then every connection is refused before
-        anything is sent (tlspin.CertUnconfirmed, F-2026-053)."""
+        anything is sent (tlspin.CertUnconfirmed, F-1-2026-053)."""
         if section.get("verify_tls"):
             return tlspin.context(True)
         return tlspin.context(False, self.settings.section("tls")["pins"].get(name, ""))
@@ -413,6 +416,7 @@ class App:
         return {"verify": verify, "pin": pin, "changed": self.tls_changed.get(name)}
 
     def plex(self, timeout: float = 30) -> PlexClient:
+        """A client for this site's Plex, each change to its records backed up first."""
         p = self.settings.section("plex")
         ctx = self.tls_context("plex", p)
         client = PlexClient(p["url"], p["token"], timeout=timeout, tls=ctx)
@@ -421,6 +425,7 @@ class App:
         return client
 
     def truenas(self) -> TrueNASClient:
+        """A client for TrueNAS, with its TLS settings."""
         t = self.settings.section("truenas")
         ctx = self.tls_context("truenas", t)
         try:
@@ -432,6 +437,7 @@ class App:
         return client
 
     def job_slots(self, feature: str, n: int) -> threading.BoundedSemaphore:
+        """The semaphore that holds ``feature`` to ``n`` jobs at once (one for each feature and count)."""
         with self._slots_lock:
             key = (feature, n)
             if key not in self._slots:
@@ -444,6 +450,7 @@ class App:
         return sum(p["l2_total"] for p in pools) if pools else None
 
     def start(self):
+        """The app's threads started: the monitor, Home Assistant, the update check and the scheduler."""
         self.monitor.start()
         self.ha.start()
         self.updates.start()
@@ -539,6 +546,7 @@ class App:
             self.stats = LibraryStats.from_files(self.files, {i["key"]: i["title"] for i in self.libraries})
 
     def scan_library(self) -> None:
+        """Plex's libraries scanned for their media, unless a scan is running already."""
         with self.lock:
             if self.scanning:
                 return
@@ -965,6 +973,8 @@ class App:
         return api_light([f"{what} ({', '.join(names)})" for what, names in gone.items()], [], total, version, "names")
 
     def test_connections_async(self, then_checks: bool = True, rescan: bool = False):
+        """The connections tested in a thread of their own, then the checks run (``then_checks``), after a library scan
+        with ``rescan``."""
         with self.lock:
             self.testing = True
 
@@ -1015,12 +1025,12 @@ class App:
 
     def _autodetect_inner(self, host: str):
         if not _this_machines_address(host):
-            return  # (another machine named by a request's Host header: never an address to fill in, F-2026-036)
+            return  # (another machine named by a request's Host header: never an address to fill in, F-1-2026-036)
         s = self.settings.get()
         changed = []
         h = f"[{host}]" if ":" in host else host
         # (a service with a secret saved gets no address from a request's Host header: the secret would go there, and anyone on
-        # the network can send a Host header. A blank address with no secret is filled; its secret comes from the user after: F-2026-036)
+        # the network can send a Host header. A blank address with no secret is filled; its secret comes from the user after: F-1-2026-036)
         if not s["plex"]["url"] and not s["plex"]["token"]:
             # (https: the token goes nowhere else across the network. Plain http only to this machine, where it may)
             for url in [f"https://{h}:{PLEX_DEFAULT_PORT}"] + ([f"http://{h}:{PLEX_DEFAULT_PORT}"] if tlspin.host_on_this_machine(host) else []):
@@ -1412,11 +1422,13 @@ class App:
 
     # Uncached disk speed: measured per dataset by the benchmark, else the general guess.
     def disk_speed(self, dataset: str | None) -> int:
+        """A dataset's disk speed in MB/s: its own where it's set, else the general one."""
         g = self.settings.section("general")
         row = g["disk_speeds"].get(dataset or "")
         return row["mb_s"] if row else g["hdd_mb_per_sec"]
 
     def disk_speed_for_library(self, key: str) -> int:
+        """A library's disk speed: the slowest of its datasets'."""
         ds = self.library_datasets(key)
         if not ds:
             return self.settings.section("general")["hdd_mb_per_sec"]
@@ -1430,6 +1442,7 @@ class App:
         return max(self.disk_speed(d["dataset"] or d["mountpoint"]) for d in ds)
 
     def probe_zfs(self) -> dict:
+        """ZFS as it stands: the ARC's summary, the media datasets and their pools."""
         info: dict = {"arc": zfs.arc_summary(zfs.arcstats())}
         datasets = self.media_datasets()
         info["datasets"] = datasets
@@ -1481,6 +1494,7 @@ class App:
 
     # ---------------------------------------------------------------- checks
     def run_checks(self) -> dict:
+        """The checks run and their result kept, unless they're running already (the last result then)."""
         with self.lock:
             if self.checking:
                 return self.health or {}
@@ -1504,6 +1518,7 @@ class App:
                 self.checking = False
 
     def publish_peers(self) -> None:
+        """This system's marker published to the other systems, and what they say summed up."""
         peers.publish(self)
         self.peers_summary = peers.summary(self)
 
@@ -1524,7 +1539,7 @@ class App:
             name = None
         if not name:
             raise ValueError(M("Dionysus can’t update itself without the TrueNAS API ([System → TrueNAS](/system#truenas), with a key allowed to manage apps). Update it in TrueNAS: Apps → plex-cache → Update."))
-        digest = self.updates.verify_image()  # (the image the tag points at is GitHub's own build, attested, or nothing is pulled: F-2026-043)
+        digest = self.updates.verify_image()  # (the image the tag points at is GitHub's own build, attested, or nothing is pulled: F-1-2026-043)
         try:
             with self.truenas() as tn:
                 try:
@@ -1534,12 +1549,13 @@ class App:
         except TrueNASError as e:
             raise ValueError(M("TrueNAS didn’t update {app}: {why}", app=name, why=str(e))) from None
         self.updates.updating = time.time()
-        self.updates.pulled(digest)  # (compared with what TrueNAS pulled once restarted: F-2026-050)
+        self.updates.pulled(digest)  # (compared with what TrueNAS pulled once restarted: F-1-2026-050)
         self.activity.event("update", M("Update asked of TrueNAS: {app} is pulling the newer image ({digest}, checked against GitHub’s build) and restarting",
                                         app=name, digest=digest[:19]))
         return {"updating": True, "app": name, "digest": digest}
 
     def run_checks_async(self, rescan: bool = False):
+        """The checks run in a thread of their own, after a library scan with ``rescan``."""
         def work():
             if rescan:
                 self.scan_library()
@@ -1623,6 +1639,7 @@ class App:
         return self.cooldown_seconds(False) / 3600, self.cooldown_seconds(True) / 3600
 
     def recently_cached(self, path: str, whole: bool) -> bool:
+        """Whether the file (or the whole of it, ``whole``) was cached within its library's cooldown."""
         return self.cachelog.recent(path, whole, self.cooldown_seconds(whole, self.cachelog.library_of(path)) / 3600)
 
     def record_coverage(self, force: bool = False) -> None:
@@ -1720,6 +1737,7 @@ class App:
         return True
 
     def stop_warmup(self):
+        """The running warm-up asked to stop."""
         self.warmup_stop.set()
 
     def _warmup_worker(self, manual: bool, libs: set | None = None, why=None):
@@ -2213,6 +2231,7 @@ class App:
         return snap
 
     def state(self) -> dict:
+        """The app's state, as the page reads it."""
         s = self.settings.get()
         now = dt.datetime.now()
         nxt = self.next_warmup(now)

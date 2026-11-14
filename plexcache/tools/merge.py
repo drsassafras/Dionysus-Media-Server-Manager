@@ -107,6 +107,7 @@ def duplicates(a: dict, b: dict) -> bool:
 
 
 def keep_rank(rec: dict) -> tuple:
+    """How a record ranks to be kept: the most locked fields, then the most files, then the oldest."""
     key = rec.get("key") or "0"
     return (len(rec.get("locked") or []), len(rec.get("files") or []), -int(key) if str(key).isdigit() else 0)
 
@@ -167,6 +168,7 @@ def clusters(recs: list[dict]) -> list[tuple[str, list[dict]]]:
 
 
 class MergeDuplicates(Tool):
+    """Merge Duplicates: records of the same title made one."""
     name = "merge"
     choice_keys = ("keep_key",)  # the arrow on the page: which record is kept
     scan_version = 3  # (rows hold whole records now, as Sync Libraries shows them; the scan says the mirror, for the box before Apply)
@@ -183,9 +185,11 @@ class MergeDuplicates(Tool):
     flag_help = M("The same film or show on several Plex records (the same match, or files named for the same title and year): twice in every list, two posters, watched on one but not the other. Merge Duplicates makes them one record with versions, keeping its edits, poster and watched state.")
 
     def flag_lines(self, rows):
+        """Each row's line for Library Health."""
         return [M("{n} records of {title}: {why}", n=len(r.get("others") or []) + 1, title=r.get("title") or "", why={"identical": M("the very same file"), "matched": M("the same match"), "named": M("named for the same title and year")}.get(r.get("why") or "", r.get("why") or "")) for r in rows]
 
     def scan(self, data) -> dict:
+        """A library scanned for records of the same file, match, or title and year."""
         library = data.key
         lib = self.app.library_info(library)
         if not lib or lib.get("type") not in TOP_TYPE:
@@ -217,12 +221,14 @@ class MergeDuplicates(Tool):
     history = [("merged", M("Records merged")), ("kept", M("Record kept")), ("why", M("Why"))]
 
     def history_row(self, row: dict, outcome: dict) -> dict:
+        """A row as its history shows it."""
         chosen = str(row.get("keep_key") or (row.get("keep") or {}).get("key") or "")
         kept = next((r for r in [row.get("keep")] + list(row.get("others") or []) if r and str(r.get("key")) == chosen), row.get("keep") or {})
         return {"merged": int(outcome.get("merged") or 0) + 1, "kept": kept.get("label") or kept.get("title") or chosen,
                 "why": {"identical": M("the very same file"), "matched": M("the same match"), "named": M("named for the same title and year")}.get(row.get("why") or "", row.get("why") or "")}
 
     def plex_keys(self, rows: list[dict]) -> list[str]:
+        """The Plex records the rows change, to back up first."""
         return [str(k) for r in rows for k in r.get("rks") or []]
 
     def revert_row(self, row: dict, outcome: dict, backup: dict, log) -> None:
@@ -243,6 +249,7 @@ class MergeDuplicates(Tool):
         log(M("{title} split into records of its own again (the folded records’ edits aren’t back: Plex matches them afresh)", title=row.get("title") or chosen))
 
     def apply_row(self, row: dict, log) -> dict:
+        """A row applied: the others merged into the record chosen to keep."""
         records = [row["keep"]] + list(row.get("others") or [])
         chosen = str(row.get("keep_key") or row["keep"]["key"])  # (the arrow on the page: another record kept instead)
         keep = next((r for r in records if str(r["key"]) == chosen), row["keep"])

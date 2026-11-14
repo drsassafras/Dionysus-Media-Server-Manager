@@ -28,6 +28,7 @@ ENTRY = re.compile(r'emplace_back\(\s*"((?:[^"\\]|\\.)*)"\s*,\s*type_e::\w+\s*,\
 
 
 def unescape(c: str) -> str:
+    """A C string's escapes undone."""
     return re.sub(r"\\(.)", r"\1", c)  # a C string's \\ is one \ in the pattern
 
 
@@ -45,6 +46,7 @@ def parse(text: str, header: str = "") -> list[tuple[str, str]]:
 
 
 def main(argv: list[str]) -> int:
+    """``python3 dev/codecs.py``: plexcache/codec_names.py written from a MKVToolNix release's list (the one installed, with --installed)."""
     args = argv[1:]
     if args and args[0] == "--installed":
         import subprocess

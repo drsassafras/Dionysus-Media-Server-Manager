@@ -70,11 +70,11 @@
     "axe-core": "4.14.0",
     "caniuse-lite": "1.0.30001826",
     "cssnano": "9.9.0",
-    "eslint": "10.14.0",
+    "eslint": "10.15.0",
     "eslint-plugin-compat": "7.0.2",
     "globals": "17.14.0",
-    "playwright": "1.65.0",
-    "postcss": "8.5.32",
+    "playwright": "1.65.1",
+    "postcss": "8.5.33",
     "postcss-preset-env": "11.6.2",
     "stylelint": "18.0.0",
     "stylelint-config-recommended": "19.0.0",
@@ -82,10 +82,10 @@
     "typescript": "7.0.2"
   },
   "dependencies": {
-    "@mdn/browser-compat-data": "8.1.8",
+    "@mdn/browser-compat-data": "8.1.9",
     "browserslist": "4.29.5",
     "html-minifier-terser": "7.2.0",
-    "html-validate": "11.21.0",
+    "html-validate": "11.21.1",
     "stylelint-no-unsupported-browser-features": "8.1.2"
   }
 }

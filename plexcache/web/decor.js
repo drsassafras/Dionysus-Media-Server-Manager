@@ -89,7 +89,7 @@
   }
   let drawn = {};  // vines already worked out, by size and seed: a page draws again every few seconds, the same each time
   function cached(key, make) { if (!drawn[key]) { if (Object.keys(drawn).length > 400) drawn = {}; drawn[key] = make(); } return drawn[key]; }
-  // No page's policy takes a data-style="…" from markup (F-2026-058), so a drawing writes its own styles as data-style="…", and
+  // No page's policy takes a data-style="…" from markup (F-1-2026-058), so a drawing writes its own styles as data-style="…", and
   // they're set here by script, which the policy allows: only in the drawing just made (el, decor's own element), never
   // on anything else in the page.
   function styled(el) {

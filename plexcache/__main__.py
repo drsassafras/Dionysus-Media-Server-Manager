@@ -81,6 +81,7 @@ def wait_for_config(config_dir: str, host: str, port: int, stop: threading.Event
 
 
 def main() -> int:
+    """The app run: its settings from the environment, its server started."""
     config_dir = os.environ.get("PLEXCACHE_CONFIG", "/config")
     port = int(os.environ.get("PLEXCACHE_PORT", "8642"))
     host = os.environ.get("PLEXCACHE_HOST", "0.0.0.0")
@@ -98,7 +99,7 @@ def main() -> int:
     elif app.auth.default_password:
         log.warning("PLEXCACHE_PASSWORD is still the default; sign-in is refused until it's changed")
     if os.environ.get("PLEXCACHE_URL") and not os.environ.get("PLEXCACHE_TRUSTED_PROXY"):
-        # (F-2026-051: without it, X-Forwarded-For is anyone's, so every client behind the proxy counts as the proxy)
+        # (F-1-2026-051: without it, X-Forwarded-For is anyone's, so every client behind the proxy counts as the proxy)
         log.warning("PLEXCACHE_URL is set but PLEXCACHE_TRUSTED_PROXY isn't: every client behind the proxy counts as the proxy's address")
         app.activity.event("settings", M("PLEXCACHE_URL is set without PLEXCACHE_TRUSTED_PROXY: every browser behind the proxy counts as one, "
                                           "so a few wrong passwords from one of them lock out all of them. Set PLEXCACHE_TRUSTED_PROXY to the proxy’s address in the app’s YAML."), "warn")

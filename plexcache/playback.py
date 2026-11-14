@@ -79,6 +79,7 @@ def plan_ranges(size: int, offset: int, want: int, budget: int, wrap: bool) -> l
 
 @dataclass
 class Job:
+    """A read of part of a file into the cache, for something playing: what, where, and how far it's got."""
     feature: str  # "nowplaying" | "nextepisode"
     target: str  # human label
     path: str
@@ -123,16 +124,20 @@ class Job:
 
     @property
     def offset(self) -> int:
+        """Where its first range starts."""
         return self.ranges[0][0] if self.ranges else 0
 
     @property
     def length(self) -> int:
+        """How many bytes its ranges cover."""
         return sum(n for _, n in self.ranges)
 
     def covers(self, pos: int) -> bool:
+        """Whether one of its ranges covers ``pos``."""
         return any(o <= pos < o + n for o, n in self.ranges)
 
     def to_dict(self) -> dict:
+        """The job as the page shows it."""
         d = {k: getattr(self, k) for k in ("feature", "target", "state", "read", "length", "size", "started",
                                            "finished", "message", "delay", "background", "paused")}
         d["whole"] = bool(self.size) and self.length >= self.size
@@ -216,7 +221,9 @@ def needs_restart(job: Job, pos: int) -> bool:
 
 
 class PlaybackMonitor:
+    """What plays on Plex, watched: each stream's file read ahead into the cache."""
     def __init__(self, app):
+        """The monitor for ``app``: nothing playing yet, its thread made."""
         self.app = app
         self.stop = threading.Event()
         self.sessions: dict[str, dict] = {}  # session_key -> info for the UI
@@ -248,10 +255,12 @@ class PlaybackMonitor:
         self.thread = threading.Thread(target=self._loop, name="playback", daemon=True)
 
     def start(self):
+        """The monitor's thread started."""
         self.thread.start()
 
     # -------------------------------------------------------------- polling
     def active_streams(self) -> int:
+        """How many streams are playing."""
         with self._lock:
             return len(self.sessions)
 
@@ -308,6 +317,7 @@ class PlaybackMonitor:
             return {p for s in self.sessions.values() for p in s.get("paths", [])}
 
     def snapshot(self) -> list[dict]:
+        """What's playing and its jobs, as the page shows them."""
         with self._lock:
             return [dict(s, jobs=[j.to_dict() for j in s["jobs"]]) for s in self.sessions.values()]
 
@@ -327,6 +337,7 @@ class PlaybackMonitor:
             self.stop.wait(settings["general"]["poll_seconds"])
 
     def poll(self, settings: dict):
+        """Plex asked what's playing, and the jobs for it started or stopped."""
         plex_cfg = settings["plex"]
         if not plex_cfg["url"] or not plex_cfg["token"]:
             return

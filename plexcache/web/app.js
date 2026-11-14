@@ -132,7 +132,7 @@ PCI18N.ready.then(function () {
     return "<h2>" + title + (long ? info(hint, title.replace(/<[^>]*>/g, "").replace(/&amp;/g, "&")) : "") + "</h2>" + (extra || "") + (hint && !long ? '<p class="hint">' + hint + "</p>" : "");
   }
 
-  // The page takes no style="…" (the CSP has no 'unsafe-inline', F-2026-058): fixed looks are app.css classes, and what's
+  // The page takes no style="…" (the CSP has no 'unsafe-inline', F-1-2026-058): fixed looks are app.css classes, and what's
   // worked out as the page is drawn (a bar's width, a chart's colour, a drawing's lengths) is written data-css="…" and set
   // here through the CSSOM — only these properties, and only numbers (with a unit), colours (#hex) or var(--name), so no
   // markup can bring a style of its own. Every bit of HTML the page puts in goes through setHtml, which sets them.
@@ -4528,7 +4528,7 @@ PCI18N.ready.then(function () {
   }
   function fpShort(fp) { fp = String(fp || "").toUpperCase(); return fp ? fp.slice(0, 4) + "-" + fp.slice(4, 8) + "-" + fp.slice(8, 12) : ""; }
   // the pinned certificate and the one answering now, each its identicon and code, with the one act that changes anything
-  // (none pinned yet: the one answering, alone, to be confirmed before anything is sent — F-2026-053)
+  // (none pinned yet: the one answering, alone, to be confirmed before anything is sent — F-1-2026-053)
   function certChanged(service, title, ch, testing) {
     if (!ch.pinned) {
       const first = '<button class="btn" type="button" data-act="tls-trust" data-service="' + esc(service) + '" data-fp="' + esc(ch.seen) + '" title="' + H("Pins this certificate, if the service still answers with it: from then on it must answer with this very one.") + '">' + H("Trust This Certificate") + "</button>";

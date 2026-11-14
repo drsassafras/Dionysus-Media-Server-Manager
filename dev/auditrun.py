@@ -47,6 +47,7 @@ ENDED = ("done", "failed", "cancelled", "interrupted")
 
 
 def runs_root(private: str | None = None) -> str:
+    """The folder the runs are kept in, in the private repo."""
     return os.path.join(audit.private_root() if private is None else private, "runs")
 
 
@@ -69,12 +70,15 @@ class Auditor:
     efforts: dict[int, str] = {}
 
     def found(self, private: str | None = None) -> str:
+        """Whether it's installed here, or why not."""
         return "not installed"
 
     def auditors(self, private: str | None = None) -> list[str]:
+        """The auditor ids it runs."""
         return []
 
     def owns(self, auditor: str, private: str | None = None) -> bool:
+        """Whether ``auditor`` is one of its."""
         return auditor in self.auditors(private)
 
     def default(self, private: str | None = None) -> tuple[str, int]:
@@ -83,9 +87,11 @@ class Auditor:
         return (got[0] if got else "", next((k for k, v in self.efforts.items() if v == "medium"), min(self.efforts, default=0)))
 
     def run(self, r: Run, code: str, main: str, prompt: str, folder: str, started, pushed: str = "") -> tuple[int, str, bool]:
+        """One audit run: its exit code, its answer and whether it was cut short."""
         raise NotImplementedError
 
     def events(self, folder: str, start: int) -> tuple[list[dict], int]:
+        """Its events from ``start`` on, and where the next read starts."""
         return [], start
 
     def settings(self, private: str | None = None) -> dict:
@@ -107,11 +113,13 @@ def plugins() -> list[Auditor]:
 
 
 def plugin_for(auditor: str, private: str | None = None) -> Auditor | None:
+    """The plugin that runs ``auditor``, or None."""
     return next((p for p in plugins() if p.owns(auditor, private)), None)
 
 
 @dataclass
 class Run:
+    """One audit run: its target, scope, auditor and state, saved as run.json in its folder."""
     id: str
     target: str
     kind: str
@@ -138,9 +146,11 @@ class Run:
     prompt: str = ""   # (the standard prompt's version when it started: PROMPT.md#<hash>, " + re-check" for one)
 
     def folder(self, private: str | None = None) -> str:
+        """The run's folder."""
         return os.path.join(runs_root(private), self.id)
 
     def write(self, private: str | None = None) -> None:
+        """The run saved (run.json, written whole)."""
         os.makedirs(self.folder(private), exist_ok=True)
         tmp = os.path.join(self.folder(private), "run.json.tmp")
         with open(tmp, "w", encoding="utf-8") as fh:
@@ -158,6 +168,7 @@ def _alive(pid: int) -> bool:
 
 
 def load_run(rid: str, private: str | None = None) -> Run | None:
+    """A run read from its folder, or None."""
     try:
         with open(os.path.join(runs_root(private), os.path.basename(rid), "run.json"), encoding="utf-8") as fh:
             got = json.load(fh)
@@ -310,12 +321,14 @@ class Runner:
     """The audits going now (the page's, or the command's one), so they can be watched, finished and cancelled."""
 
     def __init__(self, private: str | None = None):
+        """The runner over the private repo ``private``: nothing running."""
         self.private = private
         self.live: dict[str, subprocess.Popen] = {}
         self.cancelled: set[str] = set()
         self.lock = threading.Lock()
 
     def root(self) -> str:
+        """The private repo's checkout."""
         return audit.private_root() if self.private is None else self.private
 
     def plan(self, target: str, paths: list[str]) -> tuple[str, list[str], int, str]:
@@ -428,6 +441,7 @@ class Runner:
             return r
 
     def cancel(self, rid: str) -> bool:
+        """A run done by hand cancelled while it's open; whether it was."""
         r = load_run(rid, self.private)
         if r is not None and not r.plugin and r.state == "open":
             with self.lock:
@@ -580,6 +594,7 @@ class Runner:
 
 # ---------------------------------------------------------------- the command
 def main(args: list[str]) -> int:
+    """``python3 dev/audit.py run``: one audit run from the command line."""
     opts: dict[str, str] = {}
     paths: list[str] = []
     it = iter(args)

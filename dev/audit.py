@@ -3,7 +3,7 @@
 audited, and the release rules.
 
     python3 dev/audit.py                 # the checks (callboard's Security Audit block: callboard.toml's audit integration)
-    python3 dev/audit.py                 # the rules callboard.toml sets for this code's role (CALLBOARD_ROLE), the release's among them
+    python3 dev/audit.py                 # the rules callboard.toml sets at the gate whose rules hold (CALLBOARD_RULES), the release's among them
     python3 dev/audit.py next            # what most needs an audit, grouped into batches by file
     python3 dev/audit.py start [PATH…]   # the standard prompt, filled in (no paths: a full audit; paths: a partial)
     python3 dev/audit.py record FILE     # a filled-in templates/audit.toml, checked, split and saved
@@ -152,6 +152,7 @@ def scored(f: dict) -> dict:
 
 
 def config() -> dict:
+    """dev/audit.toml, read."""
     with open(CONFIG, "rb") as fh:
         return tomllib.load(fh)
 
@@ -175,6 +176,8 @@ def private_root() -> str:
 # ---------------------------------------------------------------- the records
 @dataclass
 class Audit:
+    """One audit's record: when, of which commit, what it covered, and its private part (who, how thorough, its
+    findings)."""
     id: str
     date: datetime.date
     commit: str
@@ -186,14 +189,17 @@ class Audit:
 
     @property
     def auditor(self) -> str:
+        """Who did the audit (its private record's)."""
         return str((self.private or {}).get("auditor", ""))
 
     @property
     def thoroughness(self) -> int:
+        """How thorough it was, 1 to 5 (5 where its private record doesn't say)."""
         return int((self.private or {}).get("thoroughness", 5))
 
     @property
     def findings(self) -> list[dict]:
+        """Its findings (its private record's)."""
         return list((self.private or {}).get("finding", []))
 
     @property
@@ -327,6 +333,7 @@ def load(private: str | None = None) -> tuple[list[Audit], bool, list[str]]:
 
 
 def rules(private: str | None = None) -> dict:
+    """The private repo's rules.toml, read."""
     root = private_root() if private is None else private
     try:
         with open(os.path.join(root, "rules.toml"), "rb") as fh:
@@ -480,6 +487,7 @@ def scope_lines(a: Audit, files: dict[str, set[int]], base: str | None = None) -
 
 @dataclass
 class Line:
+    """One line of app code: the commit it's from and when, the audits that saw it, and whether it's pushed."""
     sha: str | None   # (None: not committed yet)
     when: float | None
     seen: list[Audit] = field(default_factory=list)
@@ -494,12 +502,14 @@ class Map:
     notes: list[str] = field(default_factory=list)
 
     def all(self):
+        """Each line of every file: (file, line number, Line)."""
         for rel, lines in self.lines.items():
             for n, ln in lines.items():
                 yield rel, n, ln
 
 
 def measure(audits: list[Audit]) -> Map:
+    """The map of every app code line and the audits that saw it, from git blame and the audits' scopes."""
     where = _repo()
     files = {rel: _lines(rel) for rel in code_files()}
     blamed: dict[str, dict[int, tuple[str | None, float | None]]] = {}
@@ -691,6 +701,7 @@ def _rc(where: tuple[str, str] | None) -> tuple[str, float | None]:
 
 
 def valid_accept(entry: str) -> bool:
+    """Whether an accept entry is a rule id followed only by thoroughness<=N words."""
     words = entry.split()
     if not words or not all(re.match(r"^thoroughness<=[1-5]$", w) for w in words[1:]):
         return False
@@ -770,6 +781,7 @@ def _git(*args: str) -> str:
 
 
 def main_commit() -> str:
+    """The main branch's commit: origin's, else the local one."""
     return _git("rev-parse", "origin/main") or _git("rev-parse", "main")
 
 
@@ -807,6 +819,7 @@ def prompt_labels(audits: list[Audit]) -> dict[str, str]:
 
 
 def prompt_label(a: Audit, labels: dict[str, str]) -> str:
+    """An audit's prompt, as its label names it (or as the record says it, where it names no prompt)."""
     p = str((a.private or {}).get("prompt", ""))
     m = PROMPT_ID.match(p)
     if not m:
@@ -1005,6 +1018,7 @@ def _toml_list(k: str, v: list, per: int = 6) -> str:
 
 
 def dump(rec: dict, keys: list[str], tables: str = "") -> str:
+    """A record as TOML: its keys that have something, then its tables of ``tables``."""
     out = [_toml_list(k, rec[k]) if isinstance(rec.get(k), list) and len(rec[k]) > 6 else f"{k} = {_toml_value(rec[k])}"
            for k in keys if k in rec and rec[k] not in ("", None, [], False)]
     for t in rec.get(tables, []) if tables else []:
@@ -1420,6 +1434,7 @@ def save(rec: dict, private: str | None = None, force: bool = False, snapshot: s
 
 # ---------------------------------------------------------------- the commands
 def main(argv: list[str] | None = None) -> int:
+    """``python3 dev/audit.py``: the command's subcommands (record, gui and the rest)."""
     args = sys.argv[1:] if argv is None else argv
     now = time.time()
     if args[:1] == ["record"]:
@@ -1474,7 +1489,7 @@ def main(argv: list[str] | None = None) -> int:
     if have_private:   # (first: how many are open leads the block's line, never the fact left off when it's too long)
         outcomes.insert(0, findings_check(audits, r.level("findings")))
         if r.level("release_rules") != "off":
-            outcomes.append(release_check(m, audits, have_private, rule.get("release", {}), now, r.level("release_rules"), freeze=r.ctx.phase == "freeze" or r.ctx.role == "release"))
+            outcomes.append(release_check(m, audits, have_private, rule.get("release", {}), now, r.level("release_rules"), freeze=r.ctx.phase == "freeze" or r.gate == "release"))
     elif r.level("release_rules") != "off":   # (the release rules need the private repo: without it, that's all that can be said)
         outcomes.append(Outcome("Release rules", "", [Finding("Audit", "app code", 0, 0, "warning",
                                 f"the release rules can't be checked without the private audits repo ({private_root()})", "unknown", level=r.level("unknown"))],

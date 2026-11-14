@@ -34,6 +34,7 @@ STATUS_MAP = {"ok": "pass", "warn": "warn", "fail": "fail"}
 
 
 def check_plex(app) -> dict:
+    """The Plex group of checks: the server and its token."""
     c = app.connections or {}
     items = []
     for key in ("plex_server", "plex_token"):
@@ -64,6 +65,7 @@ LOC_STATUS = {"ok": "pass", "missing": "fail", "empty": "fail", "unreadable": "f
 
 
 def check_media(app) -> dict:
+    """The Libraries group: each library's folders found."""
     by_lib: dict[str, dict] = {}
     for loc in app.locations:
         if loc.get("excluded"):
@@ -271,6 +273,7 @@ def _dataset_row(app, d: dict, pools: dict, tn_ok: bool) -> dict:
 
 
 def check_datasets(app) -> dict:
+    """The Media Datasets group: each media dataset and its settings."""
     z = app.zfs or {}
     s = app.settings.get()
     t = s["truenas"]
@@ -296,6 +299,7 @@ def check_datasets(app) -> dict:
 
 
 def check_zfs(app) -> dict:
+    """The ZFS group: the ARC, the L2ARC and the pools."""
     z = app.zfs or {}
     s = app.settings.get()
     items: list[dict] = []
@@ -912,6 +916,7 @@ def _optimizer_check(app) -> dict:
 
 
 def check_effectiveness(app) -> dict | None:
+    """How well the cache works, from the last runs (None with fewer than two)."""
     runs = [r for r in app.activity.snapshot()["runs"] if r.get("result") == "ok"]
     if len(runs) < 2:
         return None
@@ -935,6 +940,7 @@ def check_effectiveness(app) -> dict | None:
 
 
 def recommendations(app) -> list[dict]:
+    """The settings recommended for the datasets and pools."""
     z = app.zfs or {}
     pools = z.get("pools") or {}
     zds = [d for d in z.get("datasets") or [] if d["dataset"]]
@@ -995,6 +1001,7 @@ def recommendations(app) -> list[dict]:
 
 
 def run_all(app) -> dict:
+    """Every group of checks run, and the recommendations."""
     groups = [check_plex(app), check_media(app), check_datasets(app), check_cache_mode(app), check_zfs(app)]
     eff = check_effectiveness(app)
     if eff:

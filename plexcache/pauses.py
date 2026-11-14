@@ -38,7 +38,9 @@ def busy_percent(before: dict, after: dict, elapsed_ms: float, disks) -> float |
 
 
 class L2arcPauses:
+    """When warm-up pauses for the L2ARC: while the pool's disks are busy, unless it was started by hand."""
     def __init__(self, app, manual: bool):
+        """The pauses for ``app`` (``manual``: Run now, which doesn't wait for busy disks)."""
         self.app = app
         self.manual = manual  # "Run now": ignores busy disks
         self._mark: tuple[float, dict] | None = None
@@ -48,6 +50,7 @@ class L2arcPauses:
 
     # Called by the pacer just before an idle gap, so the next reading covers only others' work.
     def mark_idle(self):
+        """The disks' busy time marked, to measure against."""
         self._mark = (time.monotonic(), zfs.disk_busy_ms())
 
     def _pool_disks(self) -> list[str]:

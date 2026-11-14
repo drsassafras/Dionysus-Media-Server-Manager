@@ -17,10 +17,12 @@ GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 
 class WebSocketError(Exception):
+    """A WebSocket that failed."""
     pass
 
 
 def encode_frame(opcode: int, payload: bytes, mask: bool = True) -> bytes:
+    """A WebSocket frame: its opcode, length and payload, masked as a client's are."""
     head = bytes([0x80 | opcode])
     n = len(payload)
     mbit = 0x80 if mask else 0
@@ -37,7 +39,9 @@ def encode_frame(opcode: int, payload: bytes, mask: bool = True) -> bytes:
 
 
 class WebSocket:
+    """A WebSocket client, enough for TrueNAS's API: text frames, over TLS."""
     def __init__(self, url: str, verify_tls: bool = True, timeout: float = 15, context: ssl.SSLContext | None = None):
+        """A WebSocket connected to ``url``, its handshake done."""
         u = urllib.parse.urlparse(url)
         if u.scheme not in ("ws", "wss"):
             raise WebSocketError("URL must start with ws:// or wss://")
@@ -107,9 +111,11 @@ class WebSocket:
         return out
 
     def send_text(self, text: str) -> None:
+        """A text message sent."""
         self.sock.sendall(encode_frame(0x1, text.encode()))
 
     def recv_text(self) -> str:
+        """The next text message, answering pings on the way."""
         message = b""
         while True:
             b1, b2 = self._recv(2)
@@ -137,6 +143,7 @@ class WebSocket:
                 return message.decode("utf-8")
 
     def close(self) -> None:
+        """The connection closed."""
         try:
             self.sock.sendall(encode_frame(0x8, b""))
         except OSError:

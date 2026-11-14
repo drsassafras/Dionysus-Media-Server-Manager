@@ -35,6 +35,7 @@ def clean(s: str) -> str:
 
 
 def folder_name(rec: dict) -> str:
+    """A film's folder name: its title, (year) and edition."""
     title = clean(rec.get("title") or "")
     name = f"{title} ({rec['year']})" if rec.get("year") else title
     if rec.get("edition"):
@@ -43,6 +44,7 @@ def folder_name(rec: dict) -> str:
 
 
 def id_tag(rec: dict) -> str:
+    """A film's id tag for its folder name ({tmdb-…}, {imdb-…} or {tvdb-…}), or ""."""
     for g in rec.get("guids") or []:
         site, _, ident = g.partition("://")
         if site in ("tmdb", "imdb", "tvdb") and ident:
@@ -58,6 +60,7 @@ def _named_for(folder: str, rec: dict) -> bool:
 
 
 class OrganizeFolders(Tool):
+    """Organize Folders: each film in a folder of its own, named for it."""
     name = "folders"
     title = M("Organize Folders")
     page = "/folders"
@@ -67,11 +70,13 @@ class OrganizeFolders(Tool):
     flag_help = M("A film loose in the library folder rather than in a folder of its own, or (with Clean up folder names) a folder not named for its film: Plex matches a film by its folder as much as by its file name, and a folder of its own is where subtitles, artwork and a second version belong. Organize Folders moves and renames without Plex losing anything.")
 
     def flag_lines(self, rows):
+        """Each row's line for Library Health."""
         return [M("{file} is loose in the library folder: to {folder}", file=os.path.basename((r.get("moves") or [{}])[0].get("from") or ""), folder=r.get("folder") or "") if r.get("kind") == "loose"
                 else M("Folder {old} isn’t named for its film: to {folder}", old=r.get("from_folder") or "", folder=r.get("folder") or "") for r in rows]
 
     # ------------------------------------------------------------ the plan
     def scan(self, data) -> dict:
+        """A film library scanned: its loose files and the folders not named for their film."""
         library = data.key
         lib = self.app.library_info(library)
         if not lib or lib.get("type") != "movie":
@@ -138,15 +143,18 @@ class OrganizeFolders(Tool):
         return data.listing(self.app.map_path(folder))
 
     def needed_bytes(self, rows: list[dict]) -> int:
+        """The space Apply needs: none (the files are hard links)."""
         return 0  # (hard links: nothing written; a file system without them copies, said when it happens)
 
     history = [("what", M("What was done")), ("folder", M("Folder")), ("files", M("Files"))]
 
     def history_row(self, row: dict, outcome: dict) -> dict:
+        """A row as its history shows it."""
         return {"what": M("Loose file moved") if row.get("kind") == "loose" else M("Folder renamed"), "folder": row.get("folder") or "",
                 "files": len(row.get("moves") or [])}
 
     def plex_keys(self, rows: list[dict]) -> list[str]:
+        """The Plex records the rows change, to back up first."""
         return [str(r["rk"]) for r in rows if r.get("rk")]  # (the record the new one is merged into)
 
     def revert_row(self, row: dict, outcome: dict, backup: dict, log) -> None:
@@ -165,6 +173,7 @@ class OrganizeFolders(Tool):
 
     # ------------------------------------------------------------ doing it
     def apply_row(self, row: dict, log) -> dict:
+        """A row applied: each file linked at its new path, the old one removed, Plex asked to scan."""
         library, rk, moves = row["library"], row["rk"], row["moves"]
         plex = self.app.plex()
         for mv in moves:
@@ -223,9 +232,11 @@ class OrganizeFolders(Tool):
 
     # ------------------------------------------------------------ the mirror, followed
     def waiting(self) -> bool:
+        """Whether moves wait for the mirror to follow."""
         return bool(self.extra.get("pending"))
 
     def tick(self) -> None:
+        """The mirror's moves followed up: each one waiting checked again."""
         other, now, changed = self.app.mirrors, time.time(), False
         for e in list(self.extra.get("pending") or []):
             there = self.mirror(e["library"])
@@ -266,4 +277,5 @@ class OrganizeFolders(Tool):
             self.results.append({"result": "done", "id": "mirror:" + e["folder"], "title": e["title"], "at": time.time(), "steps": [how], "mirror": True})
 
     def stuck(self) -> list[dict]:
+        """The moves the mirror hasn't followed in time."""
         return [dict(e) for e in self.extra.get("pending") or [] if e.get("stuck")]

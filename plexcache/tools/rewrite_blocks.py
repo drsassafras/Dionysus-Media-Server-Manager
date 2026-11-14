@@ -46,6 +46,7 @@ MOUNTINFO = "/proc/self/mountinfo"
 
 
 def human(n: float) -> str:
+    """A size in bytes, as people read it."""
     for unit, size in (("TB", 1e12), ("GB", 1e9), ("MB", 1e6), ("KB", 1e3)):
         if n >= size:
             return f"{n / size:.1f} {unit}"
@@ -53,10 +54,12 @@ def human(n: float) -> str:
 
 
 def bs_label(n: int) -> str:
+    """A record size, as ZFS names it (128K, 1M)."""
     return f"{n // (1024 * 1024)}M" if n >= 1024 * 1024 and n % (1024 * 1024) == 0 else f"{n // 1024}K"
 
 
 def zfs(*args: str) -> str:
+    """``zfs`` run with ``args``: its output."""
     return subprocess.run(["zfs", *args], check=True, capture_output=True, text=True).stdout.strip()
 
 
@@ -107,12 +110,15 @@ def open_files() -> set[tuple[int, int]]:
 
 
 class Pacer:
+    """Holds the copying to a rate."""
     def __init__(self, mb_per_sec: float):
+        """A pacer at ``mb_per_sec`` (no limit at 0)."""
         self.rate = mb_per_sec * 1e6
         self.start = time.monotonic()
         self.done = 0
 
     def add(self, n: int) -> None:
+        """``n`` more bytes done: it sleeps while they're ahead of the rate."""
         self.done += n
         if self.rate > 0:
             ahead = self.done / self.rate - (time.monotonic() - self.start)
@@ -121,6 +127,7 @@ class Pacer:
 
 
 def copy_meta(src_st: os.stat_result, src_fd: int, dst_fd: int) -> None:
+    """A file's owner, mode and extended attributes copied to another."""
     os.fchown(dst_fd, src_st.st_uid, src_st.st_gid)
     os.fchmod(dst_fd, src_st.st_mode & 0o7777)
     for name in (os.listxattr(src_fd) if hasattr(os, "listxattr") else []):
@@ -129,6 +136,7 @@ def copy_meta(src_st: os.stat_result, src_fd: int, dst_fd: int) -> None:
 
 
 def same_content(fa: int, fb: int, pacer: Pacer) -> bool:
+    """Whether two open files hold the same bytes, read at the pacer's rate."""
     ha, hb = hashlib.sha256(), hashlib.sha256()
     os.lseek(fa, 0, os.SEEK_SET)
     os.lseek(fb, 0, os.SEEK_SET)
@@ -144,6 +152,7 @@ def same_content(fa: int, fb: int, pacer: Pacer) -> bool:
 
 
 def same_file(a: os.stat_result, b: os.stat_result) -> bool:
+    """Whether two stats are of the same file."""
     return (a.st_dev, a.st_ino) == (b.st_dev, b.st_ino)
 
 
@@ -214,6 +223,7 @@ def rewrite(path: str, st: os.stat_result, dir_st: os.stat_result, pacer: Pacer,
 
 
 def main() -> int:
+    """The command: a dataset's or folder's files reported, or rewritten with --apply."""
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     ap.add_argument("target", help="dataset name (tank/plexfiles) or folder (/mnt/tank/plexfiles/Movies)")
     ap.add_argument("--apply", action="store_true", help="rewrite the files (without it, only reports)")

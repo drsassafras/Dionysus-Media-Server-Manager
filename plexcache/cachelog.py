@@ -87,7 +87,9 @@ def _bucket(edges: tuple, age: float) -> int:
 
 
 class CacheLog:
+    """When each file was last cached, and how: its lead and the whole of it."""
     def __init__(self, path: str | None = None):
+        """The log saved at ``path`` (kept in memory only without one)."""
         self.path = path
         self._lock = threading.Lock()
         # path -> {"lead": t, "lead_route": r, "lead_fresh": b, "whole": t, "whole_route": r, "whole_fresh": b}
@@ -227,6 +229,7 @@ class CacheLog:
             return {p: max(e.get("lead") or 0, e.get("whole") or 0) for p, e in self._files.items()}
 
     def library_of(self, path: str) -> str:
+        """The library a file was cached for."""
         with self._lock:
             return (self._files.get(path) or {}).get("lib", "")
 

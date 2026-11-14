@@ -5,7 +5,7 @@
 #
 #   get = "npx"      run through npx at the version (``package``: its npm name)
 #   get = "pip"      installed by pip into a venv of its own in the cache (``package``: its PyPI name; ``binary``: the
-#                    command, if not the package's name)
+#                    command, if not the package's name; ``module``: a tool written in Python, run as python -m <module>)
 #   ``config`` names the project file the tool reads its own settings from (shown by the UI).
 #   get = "release"  a release binary for this computer: ``url`` with {version} and {asset} (this platform's entry of
 #                    ``assets``), checked against this platform's ``sha256`` (moved with the version by dev/upkeep.py);
@@ -25,11 +25,20 @@ upstream = "npm"
 [ruff]
 name = "Ruff"
 config = "ruff.toml"
-version = "0.17.4"
+version = "0.17.5"
 get = "pip"
 package = "ruff"
 upstream = "pypi"
 major = 2
+
+# (an option of Python Validation's, a project's to tick: [types] mypy = true. Its majors are its breaking releases)
+[mypy]
+name = "mypy"
+version = "2.4.1"
+get = "pip"
+package = "mypy"
+module = "mypy"
+upstream = "pypi"
 
 # Build Validation (callboard/buildcheck.py): the shell script, the workflows and the Dockerfile.
 [shellcheck]

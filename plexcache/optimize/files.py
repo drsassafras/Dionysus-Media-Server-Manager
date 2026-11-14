@@ -100,7 +100,7 @@ def copy_keeping_dates(src: str, dst: str) -> None:
 
 def _copy_beside(src: str, path: str) -> str:
     """``src`` copied to a new file beside ``path`` (a random name the kernel made for us alone, so nothing planted at a
-    guessable name — a symlink — is ever written through: F-2026-046), the dates kept. Its path, for an os.replace."""
+    guessable name — a symlink — is ever written through: F-1-2026-046), the dates kept. Its path, for an os.replace."""
     fd, tmp = tempfile.mkstemp(prefix=".plexcache-copy-", dir=os.path.dirname(path))
     try:
         with os.fdopen(fd, "wb") as out, open(src, "rb") as inp:

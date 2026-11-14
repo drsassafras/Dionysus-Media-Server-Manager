@@ -1,4 +1,4 @@
-"""Every TLS connection that carries a secret is verified (F-2026-022/023/024): TrueNAS (the API key), Syncthing (the
+"""Every TLS connection that carries a secret is verified (F-1-2026-022/023/024): TrueNAS (the API key), Syncthing (the
 API key) and Plex (the token) all answer, as people run them, with certificates no CA signed — TrueNAS generates its
 own, Syncthing's is self-signed by design, and Plex's plex.direct certificate doesn't name a bare LAN IP — so "verify
 normally" would refuse almost every real setup, and the app used to send the secrets with verification off instead.
@@ -10,7 +10,7 @@ What's here is the way out: each service's connection is verified one of two way
   before anything is sent (CertUnconfirmed); the System page shows its fingerprint, and once a person confirms it
   (Trust This Certificate) it's remembered — its SHA-256, in the ``tls`` settings section, by service — and every
   connection must answer with that very certificate. Nothing goes to whatever answers first, and an attacker on the
-  network can't stand in for the server after the confirmation (F-2026-053). A changed certificate (TrueNAS regenerates its own now and then) is refused, the lights say so, and the
+  network can't stand in for the server after the confirmation (F-1-2026-053). A changed certificate (TrueNAS regenerates its own now and then) is refused, the lights say so, and the
   System page's card offers **Trust New Certificate**, with the old and new fingerprints drawn as identicons
   (integrationLights), so what's being trusted can be seen before it is.
 
@@ -36,7 +36,7 @@ class CertChanged(ssl.SSLCertVerificationError):
 
 class CertUnconfirmed(CertChanged):
     """The service answered, but no certificate is pinned for it yet: refused before anything is sent, until a person
-    confirms the one it answered with (the System page's Trust This Certificate, F-2026-053)."""
+    confirms the one it answered with (the System page's Trust This Certificate, F-1-2026-053)."""
 
 
 class Context(ssl.SSLContext):
@@ -51,6 +51,7 @@ class Context(ssl.SSLContext):
     name: str | None = None
 
     def wrap_socket(self, sock, *args, server_hostname=None, **kw):
+        """A socket wrapped, its certificate checked for ``name`` where it's set."""
         if self.name:
             server_hostname = self.name
         s = super().wrap_socket(sock, *args, server_hostname=server_hostname, **kw)
