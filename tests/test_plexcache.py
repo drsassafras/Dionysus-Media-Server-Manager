@@ -4848,7 +4848,7 @@ class TestRunnerTests(unittest.TestCase):
 
     def test_run_py_sends_its_bar_to_the_board_and_can_leave_a_class_out(self):
         """tests/run.py on the board (PLEXCACHE_PROGRESS=feed): its bar as records (bar "tests"), its summary as text;
-        --exclude <Class> leaves that class out (callboard runs WebBuildTests in a section of its own), in this process or
+        --exclude <Class> leaves that class out (callboard runs WebCheckTests' checks in a section of its own: DHTML), in this process or
         shared out among workers."""
         import subprocess
         import textwrap
@@ -5053,21 +5053,22 @@ class TestRunnerTests(unittest.TestCase):
     # check of its code. Adding to this list is an exemption, the maintainer's alone to give (CLAUDE.md).
     BROWSER_TESTS = {
         "IconTests.test_icons_are_what_the_tab_icon_draws": "pixels: each icon is compared with what Chromium draws from the logo",
-        "WebBuildTests.test_pages_pass_the_accessibility_check": "layout: axe-core's contrast and visibility rules need the real layout",
+        "WebCheckTests.test_pages_pass_the_accessibility_check": "layout: axe-core's contrast and visibility rules need the real layout",
     }
 
     def test_no_test_drives_a_browser_but_those_that_must(self):
         """A test that drives a real browser (Playwright's Chromium) is slow, needs Chromium installed, and is skipped where
         it isn't: one that checks what a page draws or does belongs in node (tests/dom.js, tests/render.js), or in a check
         that the page's controls use its shared functions. Only the tests in BROWSER_TESTS may: by a script of their own
-        that launches Chromium, by running a dev script that does, or by dev/web.js's a11y check."""
+        that launches Chromium, by running a dev script that does, or by callboard's accessibility check (callboard tool
+        webcheck's axe-core: callboard/webcheck.js)."""
         import ast
         start = "chromium" + ".launch("   # (in two: this test is no script that starts it)
         dev = os.path.join(ROOT, "dev")
-        launches = sorted(n for n in os.listdir(dev) if n.endswith(".js") and n != "web.js"
-                          and start in _read(os.path.join(dev, n), encoding="utf-8"))
+        launches = sorted(n for n in os.listdir(dev) if n.endswith(".js") and start in _read(os.path.join(dev, n), encoding="utf-8"))
         self.assertIn("icons.js", launches)   # (the scan finds the dev scripts that start Chromium)
-        self.assertIn(start, _read(os.path.join(dev, "web.js"), encoding="utf-8"))   # (web.js: its a11y check)
+        self.assertNotIn("web.js", launches)  # (the build draws nothing)
+        self.assertIn(start, _read(os.path.join(DEVLIB, "webcheck.js"), encoding="utf-8"))   # (callboard's web check: its axe-core run)
         found = {}
         for cls in ast.parse(_read(__file__, encoding="utf-8")).body:
             if not isinstance(cls, ast.ClassDef):
@@ -5090,8 +5091,8 @@ class TestRunnerTests(unittest.TestCase):
                     said = [c.value for c in ast.walk(n) if isinstance(c, ast.Constant) and isinstance(c.value, str)]
                     if name in ("run", "Popen", "check_output", "check_call", "call"):
                         why |= {"it runs dev/" + js for js in launches if js in said}
-                    if name == "_web_js" and said[:1] == ["a11y"]:
-                        why.add("it runs dev/web.js a11y")
+                    if name == "_webcheck" and said[:2] == ["--only", "axe"]:
+                        why.add("it runs callboard's accessibility check")   # (the web check's axe-core: no other test runs it with that in)
                 if why:
                     found[f"{cls.name}.{fn.name}"] = sorted(why)
         extra = {k: v for k, v in found.items() if k not in self.BROWSER_TESTS}
@@ -11527,6 +11528,15 @@ class MigrateTests(unittest.TestCase):
                 return start_answer if body["action"] == "copy" else {"ok": True}
         start_answer = {"started": True}
         self.enterContext(mock.patch.object(app.optimizing, "client", Client()))
+        ended = threading.Semaphore(0)
+        real_next = app.jobs.start_next
+
+        def start_next():  # (a job's end starts the next in a thread of its own: counted, so each job's end is waited for in full)
+            try:
+                return real_next()
+            finally:
+                ended.release()
+        self.enterContext(mock.patch.object(app.jobs, "start_next", start_next))
         mig = migrating.Migration(app)
         fresh = lambda: {"folder": folder, "temp_folder": folder + "-new", "child": "tank/Movies", "mirror": False, "library": "1",
                          "title": "Movies", "dataset": "tank", "step": "copy", "copying": True}
@@ -11554,6 +11564,7 @@ class MigrateTests(unittest.TestCase):
             deadline = time.time() + 30   # (its end waited for, however loaded the machine: not a count of naps)
             while app.jobs.busy() and time.time() < deadline:
                 time.sleep(0.02)
+            self.assertTrue(ended.acquire(timeout=30))                              # (and the start of the next it looked for)
         self.assertNotIn("copy", calls)                                             # still running: followed, not started again
         self.assertEqual(calls[:2], ["pause", "resume"])                            # while something played
         self.assertEqual((mig.state["copy"]["result"], mig.state["copying"]), ("failed", False))
@@ -11569,6 +11580,7 @@ class MigrateTests(unittest.TestCase):
             deadline = time.time() + 30   # (its end waited for, however loaded the machine: not a count of naps)
             while app.jobs.busy() and time.time() < deadline:
                 time.sleep(0.02)
+            self.assertTrue(ended.acquire(timeout=30))                              # (nothing left to start a queued copy below)
         self.assertEqual(mig.state["copy"], {"result": "failed", "reason": "no space"})
         # queued, then taken off the queue (or cancelled): back to where it was
         with mock.patch.object(app.jobs, "start_next", lambda: False):
@@ -16719,13 +16731,14 @@ class FutureTests(unittest.TestCase):
         p = future.pick_npm("terser", {"latest": "5.51.2", "next": "5.50.0-beta.1"})
         self.assertEqual((p.version, p.channel, p.kind), ("5.51.2", "stable", "npm"))
         # every package dev/package.json pins, both sections: tried here, kept current by upkeep, and checked a year ahead
-        # (dev/web.js on "futureBrowserslist", four years of browsers, when the run sets PLEXCACHE_WEB_TARGETS=future)
+        # (dev/web.js's build and callboard's web check on "futureBrowserslist", four years of browsers, when the run sets
+        # PLEXCACHE_WEB_TARGETS=future and CALLBOARD_WEB_TARGETS=futureBrowserslist)
         from dev import upkeep
         pkg = json.loads(_read(os.path.join(ROOT, "dev", "package.json"), encoding="utf-8"))
         self.assertEqual(set(upkeep.web_packages()), set(pkg["devDependencies"]) | set(pkg["dependencies"]))
         self.assertLessEqual(set(upkeep.web_packages()), {d.name for d in upkeep.DEPS})
         self.assertEqual(pkg["futureBrowserslist"], ["last 4 years", "not and_qq >= 1"])
-        self.assertEqual(future.WEB_TARGETS, ["-e", "PLEXCACHE_WEB_TARGETS=future"])
+        self.assertEqual(future.WEB_TARGETS, ["-e", "PLEXCACHE_WEB_TARGETS=future", "-e", "CALLBOARD_WEB_TARGETS=futureBrowserslist"])
         tool = _read(os.path.join(ROOT, "dev", "web.js"), encoding="utf-8")
         self.assertIn('process.env.PLEXCACHE_WEB_TARGETS === "future" ? settings.futureBrowserslist : settings.browserslist', tool)
         self.assertEqual(tool.count("settings.browserslist"), 1)                                   # (every use through TARGETS)
@@ -16768,12 +16781,10 @@ class FutureTests(unittest.TestCase):
 
 
 class WebBuildTests(unittest.TestCase):
-    """The web app's CSS, scripts and pages (dev/web.js, its settings in dev/package.json): the CSS written without browser
-    prefixes (-webkit-, -moz-, -ms-, -o-) and passing Stylelint, the scripts ESLint, the pages and the HTML the app draws
-    html-validate — each with its recommended (html-validate: standard) checks and no feature a target lacks, but the few
-    the pages can do without ("graceful"), the CSS's in what postcss-preset-env makes of it for the targets; built for the
-    image: the CSS by postcss-preset-env (the newer features the targets lack, rewritten), Autoprefixer (the prefixes they
-    need) and cssnano, the scripts by Terser, the pages by html-minifier-terser. One floor of target browsers for all three: every
+    """The web app's CSS, scripts and pages as they're built (dev/web.js, its settings in dev/package.json): the CSS written
+    without browser prefixes (-webkit-, -moz-, -ms-, -o-); built for the image, the CSS by postcss-preset-env (the newer
+    features the targets lack, rewritten), Autoprefixer (the prefixes they need) and cssnano, the scripts by Terser, the
+    pages by html-minifier-terser. One floor of target browsers for the build and the checks (WebCheckTests): every
     browser out in the last five years ("browserslist"), which moves on by itself."""
 
     VENDOR = re.compile(r"(?<![\w-])-(?:webkit|moz|ms|o)-[a-z]")
@@ -16793,14 +16804,6 @@ class WebBuildTests(unittest.TestCase):
     def _settings(self):
         return json.loads(_read(os.path.join(ROOT, "dev", "package.json"), encoding="utf-8"))
 
-    def test_pages_pass_the_accessibility_check(self):
-        """dev/web.js a11y: axe-core's standard rules, none turned off, on every page of the app as the two demos draw it
-        (the showcase and the one with problems), in Classic and Dionysus, light and dark. A finding is fixed in the code;
-        a colour's contrast is a look, so its fix goes through the style sample and the maintainer's OK."""
-        got = self._web_js("a11y", timeout=900, env={"PYTHON": sys.executable})
-        self.assertEqual(got.returncode, 0, got.stderr)
-        self.assertRegex(got.stderr, r"\d+ page\(s\) pass axe-core")
-
     def test_web_has_no_browser_prefixes(self):
         """Not in the stylesheets, not in the pages' or scripts' own styles, not in the themes' CSS (served at /theme.css)."""
         from plexcache import themes
@@ -16815,53 +16818,6 @@ class WebBuildTests(unittest.TestCase):
             if self.VENDOR.search(line):
                 found.append(f"/theme.css:{n}: {line.strip()[:120]}")
         self.assertEqual(found, [], "a browser prefix written by hand: leave it to Autoprefixer (dev/web.js)")
-
-    def test_web_passes_its_checks(self):
-        """dev/web.js lint: Stylelint on plexcache/web/*.css, ESLint on plexcache/web/*.js and the script the server makes
-        (/theme.js), html-validate on plexcache/web/*.html and every page as the app draws it, with dev/package.json's
-        settings: every recommended check of each (none turned off), no browser prefixes, and no feature a target lacks
-        (stylelint-no-unsupported-browser-features, eslint-plugin-compat, MDN's data) but the graceful ones."""
-        from plexcache import themes
-        web = os.path.join(ROOT, "plexcache", "web")
-        self.assertEqual(sorted(n for n in os.listdir(web) if n.endswith(".js")), sorted(self.SCRIPTS))  # (a new one: ship it built too)
-        with tempfile.TemporaryDirectory() as d:
-            theme = os.path.join(d, "theme.js")
-            with open(theme, "w", encoding="utf-8") as fh:
-                fh.write(themes.script({}))
-            pages, drawn, app = PageStructureTests(), [], _new_app()
-            for when in ("checking", "checked"):
-                app.checking = app.testing = when == "checking"
-                state = app.state()
-                for page in PageStructureTests.PAGES_DRAWN:
-                    drawn.append(os.path.join(d, f"{page}-{when}.html"))
-                    with open(drawn[-1], "w", encoding="utf-8") as fh:
-                        fh.write(pages._render(state, page)["html"])
-            got = self._web_js("lint", theme, *drawn, *[os.path.join(web, n) for n in sorted(os.listdir(web)) if n.endswith((".css", ".js", ".html"))])
-        self.assertEqual(got.returncode, 0, got.stderr)
-        self.assertIn("pass Stylelint", got.stderr)
-        self.assertIn("5 file(s) pass ESLint", got.stderr)
-        self.assertIn("4 file(s) pass TypeScript", got.stderr)  # (the app's own scripts: not the theme script the server makes)
-        self.assertIn(f"{len(drawn) + 2} file(s) pass html-validate", got.stderr)
-        settings = self._settings()
-        config = settings["stylelint"]
-        rules = config["rules"]
-        self.assertEqual(config["extends"], ["stylelint-config-recommended"])
-        self.assertEqual({r: v for r, v in rules.items() if v in (None, False)}, {}, "a Stylelint rule turned off")
-        for rule in ("property-no-vendor-prefix", "value-no-vendor-prefix", "selector-no-vendor-prefix",
-                     "media-feature-name-no-vendor-prefix", "at-rule-no-vendor-prefix"):
-            self.assertIs(rules.get(rule), True, rule)
-        config = settings["eslint"]
-        self.assertEqual(config["extends"], ["@eslint/js:recommended", "eslint-plugin-compat:flat/recommended"])
-        off = lambda v: (v[0] if isinstance(v, list) else v) in ("off", 0)
-        self.assertEqual({r: v for r, v in config["rules"].items() if off(v)}, {}, "an ESLint rule turned off")
-        tool = _read(os.path.join(ROOT, "dev", "web.js"), encoding="utf-8")
-        self.assertIn("lintAllEsApis: true", tool)                       # (the language's own features checked too, not only the DOM's)
-        self.assertIn("browserslistOpts: { path: __dirname }", tool)    # (the same targets as the CSS)
-        config = settings["htmlvalidate"]
-        self.assertEqual(config["extends"], ["html-validate:standard"])
-        self.assertEqual({r: v for r, v in config["rules"].items() if off(v)}, {}, "an html-validate rule turned off")
-        self.assertIn('"web-compat/compat": "error"', tool)
-        self.assertIn('"plugin/no-unsupported-browser-features": [true, { ignorePartialSupport: true, ignore: graceful }]', tool)
 
     def test_web_targets(self):
         """The floor: every browser version out in the last five years, a window that moves on by itself (November 2026:
@@ -16913,25 +16869,6 @@ class WebBuildTests(unittest.TestCase):
             if "," in m.group(1) and not m.group(1).startswith("@"):
                 self.assertNotRegex(m.group(1), r":focus-visible|:has\(", m.group(1))
 
-    def test_css_is_checked_as_written_and_as_the_targets_get_it(self):
-        """The CSS's two checks (dev/web.js lint): as written, Stylelint's own (a prefix written by hand is found), and as the
-        oldest targets get it, after postcss-preset-env: a newer feature it rewrites for them passes (nesting, the media
-        range syntax, lab and oklch colours), one it can't is found, at the line it's written on (container queries)."""
-        with tempfile.TemporaryDirectory() as d:
-            ok, bad = os.path.join(d, "ok.css"), os.path.join(d, "bad.css")
-            with open(ok, "w", encoding="utf-8") as fh:
-                fh.write(".a {\n  color: oklch(60% 0.15 30);\n  & .b { margin: 0; }\n}\n@media (width >= 600px) {\n  .c { color: lab(50% 20 30); }\n}\n")
-            with open(bad, "w", encoding="utf-8") as fh:
-                fh.write(".a { color: red; }\n.b { -webkit-appearance: none; }\n\n@container (min-width: 400px) {\n  .c { color: red; }\n}\n")
-            got = self._web_js("lint", ok)
-            self.assertEqual(got.returncode, 0, got.stderr)
-            got = self._web_js("lint", bad)
-        self.assertEqual(got.returncode, 1, got.stderr)
-        found = [line for line in got.stderr.splitlines() if "bad.css:" in line]
-        self.assertEqual(len(found), 2, got.stderr)
-        self.assertRegex(found[0], r"bad\.css:2:\d+: .*property-no-vendor-prefix")
-        self.assertRegex(found[1], r"bad\.css:4:1: .*css-container-queries")
-
     def test_scripts_and_pages_build_and_draw_the_same(self):
         """Terser minifies every script with no error, smaller; the built app.js and i18n.js draw every page as the source
         does (tests/render.js on both). The pages minify smaller, their text and tags as they were. The image ships the built
@@ -16965,6 +16902,130 @@ class WebBuildTests(unittest.TestCase):
         self.assertIn("COPY --from=web /web/plexcache/web/ /app/plexcache/web/", docker)
         self.assertLess(docker.index("COPY plexcache /app/plexcache"), docker.index("COPY --from=web /web/plexcache/web/"))
         self.assertIn("npm ci --prefix dev", _read(os.path.join(ROOT, ".github", "workflows", "build.yml"), encoding="utf-8"))
+
+
+class WebCheckTests(unittest.TestCase):
+    """DHTML: the web app's CSS, scripts and pages checked by callboard's web check (callboard tool webcheck: callboard.toml's
+    [dhtml], the settings and packages dev/package.json's) — Stylelint on the CSS, ESLint and TypeScript on the scripts,
+    html-validate on the pages and the HTML the app draws, each with its recommended (html-validate: standard) checks and
+    no feature a target lacks but the few the pages can do without ("graceful"), and axe-core on every page as the demos
+    draw it. On callboard's board it's the DHTML block's own run (Unit Tests leave this class out); the whole suite, and
+    the future track's, run it here."""
+
+    def _webcheck(self, *args, cwd=ROOT, timeout=600):
+        import subprocess
+        if not shutil.which("node"):
+            self.skipTest("node isn't installed")
+        dev = os.path.join(ROOT, "dev")
+        for package in [*self._settings()["devDependencies"], *self._settings()["dependencies"]]:
+            self.assertTrue(os.path.isdir(os.path.join(dev, "node_modules", package)), f"{package} isn't installed: npm ci --prefix dev")
+        # (by hand, as `callboard tool webcheck` in that folder: no block's context, so the DHTML integration's own rules)
+        env = {k: v for k, v in os.environ.items() if k not in ("CALLBOARD_INTEGRATION", *_policy_env())}
+        return subprocess.run([sys.executable, os.path.join(DEVLIB, "webcheck.py"), *args], cwd=cwd, capture_output=True, text=True, timeout=timeout,
+                              env=dict(env, CALLBOARD_PROJECT=cwd, PYTHON=sys.executable))
+
+    def _settings(self):
+        return json.loads(_read(os.path.join(ROOT, "dev", "package.json"), encoding="utf-8"))
+
+    def test_pages_pass_the_accessibility_check(self):
+        """callboard tool webcheck --only axe: axe-core's standard rules, none turned off, on every page of the app as the
+        two demos draw it (the showcase and the one with problems), in Classic and Dionysus, light and dark
+        (tests/webplan.py's pages). A finding is fixed in the code; a colour's contrast is a look, so its fix goes through
+        the style sample and the maintainer's OK."""
+        got = self._webcheck("--only", "axe", timeout=900)
+        self.assertEqual(got.returncode, 0, got.stdout + got.stderr)
+        self.assertIn("0 axe-core findings", got.stdout)
+
+    def test_web_passes_its_checks(self):
+        """callboard tool webcheck: Stylelint on plexcache/web/*.css, ESLint on plexcache/web/*.js and the script the server
+        makes (/theme.js), TypeScript on the app's own scripts, html-validate on plexcache/web/*.html and every page as the
+        app draws it, with dev/package.json's settings: every recommended check of each (none turned off), no browser
+        prefixes, and no feature a target lacks but the graceful ones. Every tool of DHTML's is on (callboard.toml)."""
+        import tomllib
+        web = os.path.join(ROOT, "plexcache", "web")
+        self.assertEqual(sorted(n for n in os.listdir(web) if n.endswith(".js")), sorted(WebBuildTests.SCRIPTS))  # (a new one: ship it built too)
+        got = self._webcheck("--skip", "axe")
+        self.assertEqual(got.returncode, 0, got.stdout + got.stderr)
+        self.assertIn("0 Stylelint findings · 0 ESLint findings · 0 TypeScript findings · 0 html-validate findings", got.stdout)
+        with open(os.path.join(ROOT, "callboard.toml"), "rb") as fh:
+            toml = tomllib.load(fh)
+        self.assertEqual(toml["integrations"]["dhtml"]["cmd"], "callboard tool webcheck")
+        own = toml["dhtml"]
+        self.assertEqual((own["folders"], own["package"], own["plan"], own["axe"]), (["plexcache/web"], "dev", "python3 tests/webplan.py", True))
+        self.assertEqual({t: own[t] for t in ("stylelint", "eslint", "typescript", "htmlvalidate") if own.get(t) is False}, {}, "a tool of DHTML's turned off")
+        settings = self._settings()
+        config = settings["stylelint"]
+        rules = config["rules"]
+        self.assertEqual(config["extends"], ["stylelint-config-recommended"])
+        self.assertEqual({r: v for r, v in rules.items() if v in (None, False)}, {}, "a Stylelint rule turned off")
+        for rule in ("property-no-vendor-prefix", "value-no-vendor-prefix", "selector-no-vendor-prefix",
+                     "media-feature-name-no-vendor-prefix", "at-rule-no-vendor-prefix"):
+            self.assertIs(rules.get(rule), True, rule)
+        config = settings["eslint"]
+        self.assertEqual(config["extends"], ["@eslint/js:recommended", "eslint-plugin-compat:flat/recommended"])
+        off = lambda v: (v[0] if isinstance(v, list) else v) in ("off", 0)
+        self.assertEqual({r: v for r, v in config["rules"].items() if off(v)}, {}, "an ESLint rule turned off")
+        config = settings["htmlvalidate"]
+        self.assertEqual(config["extends"], ["html-validate:standard"])
+        self.assertEqual({r: v for r, v in config["rules"].items() if off(v)}, {}, "an html-validate rule turned off")
+        # every tool is the project's own install (dev/package.json's pin, which the dependency check moves and the
+        # future track tries ahead), never one callboard fetched beside it
+        named = {**settings["devDependencies"], **settings["dependencies"]}
+        for package in ("stylelint", "eslint", "typescript", "html-validate", "axe-core", "playwright"):
+            self.assertIn(package, named, package)
+
+    def test_the_plan_names_what_the_app_makes_and_the_pages_to_draw(self):
+        """tests/webplan.py ([dhtml] plan): the script the server makes and every page as the app draws it, before the
+        first checks and after, each written for the checks to read; and for axe-core every page of the app (app.js's
+        PAGES) on both demos in each of the four looks."""
+        import subprocess
+        if not shutil.which("node"):
+            self.skipTest("node isn't installed")
+        with tempfile.TemporaryDirectory() as d:
+            got = subprocess.run([sys.executable, os.path.join(ROOT, "tests", "webplan.py")], capture_output=True, text=True, timeout=300, env=dict(os.environ, CALLBOARD_WEB_OUT=d))
+            self.assertEqual(got.returncode, 0, got.stderr)
+            plan = json.loads(got.stdout)
+            drawn = PageStructureTests.PAGES_DRAWN
+            self.assertEqual([f["as"] for f in plan["files"]], ["/theme.js", *[f"/{p} (checking)" for p in drawn], *[f"/{p} (checked)" for p in drawn]])
+            for f in plan["files"]:
+                self.assertGreater(os.path.getsize(f["path"]), 100, f["as"])
+        a11y = plan["a11y"]
+        pages = re.findall(r"([a-z]+):\s*page[A-Z]", some(re.search(r"const PAGES = \{([\s\S]*?)\};", _read(os.path.join(ROOT, "plexcache", "web", "app.js"), encoding="utf-8"))).group(1))
+        self.assertGreaterEqual(len(pages), 20)
+        self.assertEqual(sorted(a11y["servers"]), ["problems", "showcase"])
+        self.assertEqual(len(a11y["pages"]), len(pages) * 2 * 4)
+        self.assertEqual({(p["server"], p["path"]) for p in a11y["pages"]}, {(d, f"/{p}") for d in ("showcase", "problems") for p in pages})
+        self.assertEqual({(json.loads(p["storage"]["pc-theme"])["theme"], p["scheme"]) for p in a11y["pages"]},
+                         {("classic", "light"), ("classic", "dark"), ("dionysus", "light"), ("dionysus", "dark")})
+        self.assertEqual((a11y["wait_for"], a11y["settle"]), ("h1", 1500))
+        got = subprocess.run([sys.executable, os.path.join(ROOT, "tests", "webplan.py")], capture_output=True, text=True, timeout=60,
+                             env={k: v for k, v in os.environ.items() if k != "CALLBOARD_WEB_OUT"})
+        self.assertEqual((got.returncode, got.stdout), (2, ""))   # (by hand, with nowhere to write: said, nothing printed as a plan)
+
+    def test_css_is_checked_as_written_and_as_the_targets_get_it(self):
+        """The CSS's two checks (callboard tool webcheck, with dev/package.json's settings): as written, Stylelint's own (a
+        prefix written by hand is found), and as the oldest targets get it, after postcss-preset-env: a newer feature it
+        rewrites for them passes (nesting, the media range syntax, lab and oklch colours), one it can't is found, at the
+        line it's written on (container queries)."""
+        with tempfile.TemporaryDirectory() as d:
+            d = os.path.realpath(d)
+            with open(os.path.join(d, "callboard.toml"), "w", encoding="utf-8") as fh:
+                fh.write('[config]\nversion = 2\n\n[integrations.dhtml]\ntitle = "DHTML"\nkind = "checks"\ncmd = "callboard tool webcheck"\n\n'
+                         f'[dhtml]\npackage = {json.dumps(os.path.join(ROOT, "dev"))}\n\n[dhtml.push]\nerrors = "fail"\nwarnings = "fail"\ninformation = "info"\n')
+            with open(os.path.join(d, "ok.css"), "w", encoding="utf-8") as fh:
+                fh.write(".a {\n  color: oklch(60% 0.15 30);\n  & .b { margin: 0; }\n}\n@media (width >= 600px) {\n  .c { color: lab(50% 20 30); }\n}\n")
+            got = self._webcheck(cwd=d)
+            self.assertEqual(got.returncode, 0, got.stdout + got.stderr)
+            self.assertIn("0 Stylelint findings", got.stdout)
+            with open(os.path.join(d, "bad.css"), "w", encoding="utf-8") as fh:
+                fh.write(".a { color: red; }\n.b { -webkit-appearance: none; }\n\n@container (min-width: 400px) {\n  .c { color: red; }\n}\n")
+            got = self._webcheck(cwd=d)
+        self.assertEqual(got.returncode, 1, got.stdout + got.stderr)
+        found = [line for line in got.stdout.splitlines() if "bad.css:" in line]
+        self.assertEqual(len(found), 2, got.stdout)
+        self.assertRegex(found[0], r"bad\.css:2:\d+ - error: .*\(Stylelint property-no-vendor-prefix\)")
+        self.assertRegex(found[1], r"bad\.css:4:1 - error: .*css-container-queries")
+        self.assertNotIn("ok.css:", got.stdout)
 
 
 class IconTests(unittest.TestCase):
@@ -18199,7 +18260,7 @@ class PolicyTests(unittest.TestCase):
             self.assertEqual(policy.find_file(folder), "")
             self.assertEqual(policy.find_file(), os.path.join(ROOT, "callboard.toml"))
         import tests.run as run
-        # tests/run.py as a block of the checks' kind (DHTML runs the web's build tests): held to that block's rules, its
+        # tests/run.py as a block of the checks' kind (one that runs tests, as DHTML did before callboard's web check): held to that block's rules, its
         # failures as errors, never a KeyError for a setting the tests schema has and the checks' hasn't
         for block, rc in (("dhtml", 1), ("unit", 1), ("release", 1)):
             with mock.patch.object(run, "CONTEXT", {"CALLBOARD_INTEGRATION": block, **_policy_env("development")}), \
@@ -25403,16 +25464,25 @@ class MirrorHealthEdgeTests(unittest.TestCase):
         self.enterContext(mock.patch.object(mh, "_libs", None))
         with mock.patch.object(app.mirrors, "pairs", side_effect=RuntimeError("no pairs")):
             self.assertEqual(mh.paired(), ([], ("failed", "no pairs")))
-        with mock.patch.object(app.evaluator, "started", True):
+        with mock.patch.object(app.evaluator, "started", True), mock.patch.object(app.evaluator, "kick") as kick:  # (the evaluator told, not run: its turn would take what's wanted)
             with app.mirrors.lock:
                 app.mirrors.libs.pop("xyz", None)
             self.enterContext(mock.patch.object(mh, "_libs", None))
-            self.assertEqual(mh.paired()[1], ("pending", None))                                       # (read in the background: waited for)
-            wait_for(lambda: not mh.reading and app.mirrors.known("xyz"))
+            go, real_read = threading.Event(), app.mirrors.read_all
+
+            def read_all(*a, **kw):  # (held until the waiting is seen: however quick the read, it can't be in first)
+                go.wait(10)
+                return real_read(*a, **kw)
+            with mock.patch.object(app.mirrors, "read_all", read_all):
+                self.assertEqual(mh.paired()[1], ("pending", None))                                   # (read in the background: waited for)
+                go.set()
+                self.assertTrue(wait_for(lambda: not mh.reading and app.mirrors.known("xyz")))
             self.enterContext(mock.patch.object(mh, "_libs", None))
             self.assertEqual(mh.paired()[1], None)
+            kick.reset_mock()
             self.assertTrue(mh.check_async("1"))                                                      # (the evaluator's turn)
             self.assertIn("1", mh.wanted)
+            kick.assert_called_with()                                                                  # (told it has work)
             with mock.patch.object(mh, "libraries", return_value=[]):
                 self.assertFalse(mh.check_async())
             mh.wanted.clear()

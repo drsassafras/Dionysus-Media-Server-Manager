@@ -21,18 +21,20 @@ enabled = false
 [integrations.unit]
 title = "Unit Tests"
 kind = "tests"
-cmd = "python3 tests/run.py --coverage --exclude WebBuildTests --exclude StyleGuideTests"
+cmd = "python3 tests/run.py --coverage --exclude WebCheckTests --exclude StyleGuideTests"
 
 [integrations.future]
 title = "Previews"
-kind = "tests"
-cmd = "python3 dev/future.py --exclude StyleGuideTests"
+kind = "previews"
+# callboard's Previews, by this project's own route (the image built on the next Python: dev/future.py)
+cmd = "callboard tool previews -- python3 dev/future.py --exclude StyleGuideTests"
 stop_with = ["unit"]
 
 [integrations.dhtml]
 title = "DHTML"
 kind = "checks"
-cmd = "python3 tests/run.py tests.test_plexcache.WebBuildTests"
+cmd = "callboard tool webcheck"
+requires = ["node", "npm"]
 
 [integrations.types]
 title = "Code Validation"
@@ -113,6 +115,14 @@ skipped = "info"
 failures = "off"
 warnings = "off"
 skipped = "off"
+
+[dhtml]
+# plexcache/web's CSS, scripts and pages, with dev/package.json's settings and packages (callboard tool webcheck); what
+# the app makes, and the pages the accessibility check draws, are tests/webplan.py's to say
+folders = ["plexcache/web"]
+package = "dev"
+plan = "python3 tests/webplan.py"
+axe = true
 
 [dhtml.push]
 errors = "fail"

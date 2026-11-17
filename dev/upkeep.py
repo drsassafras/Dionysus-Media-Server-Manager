@@ -626,7 +626,7 @@ def _bump_ha(new: str) -> str:
 def _web_dep(package: str) -> Dep:
     return Dep(package, _package_pin(package), npm_latest(package), "its pin in dev/package.json", bump=_bump_package(package), package=package,
                cant=f"{package} in dev/package.json (npm install --prefix dev --save-exact {package}@<version>); "
-                    "WebBuildTests then say whether the CSS and scripts still pass and build.")
+                    "WebBuildTests and WebCheckTests then say whether the CSS and scripts still build and pass.")
 
 
 DEPS = [

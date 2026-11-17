@@ -4,7 +4,7 @@
     python3 tests/run.py <module>         # another test module, by its import name
     python3 tests/run.py -j 1             # one test at a time, in this process (also PLEXCACHE_TEST_JOBS=1)
     python3 tests/run.py -j 4             # four workers (the default: two per core)
-    python3 tests/run.py --exclude WebBuildTests   # all but that class (callboard runs it in a section of its own)
+    python3 tests/run.py --exclude WebCheckTests   # all but that class (callboard runs its checks in a section of their own: DHTML)
     python3 tests/run.py --coverage       # and what of plexcache/ it ran, every worker's, saved for callboard/coverage.py
 
 The tests are shared out among worker processes: a test at a time, except that a class set up once for all its tests
@@ -103,7 +103,7 @@ SCHEMA = policy.Schema("tests", "Tests", {
 SKIPPED = [0]   # (the tests skipped this run: the verdict's)
 
 
-# A block of the checks' kind that runs tests (DHTML: the web's build tests): its findings' rules, a failed test held as an
+# A block of the checks' kind that runs tests: its findings' rules, a failed test held as an
 # error is, a printed warning as a warning, a skipped test as information.
 CHECKS_AS = {"failures": "errors", "warnings": "warnings", "skipped": "information"}
 
@@ -117,7 +117,7 @@ def verdict(failed: int, warned: int, skipped: int) -> int:
         return 1 if failed else 0
     try:
         cfg = policy.Config(CONFIG)
-        if cfg.integration(id_)["kind"] not in ("tests", "checks"):   # (another kind's block: the first tests integration's rules)
+        if cfg.integration(id_)["kind"] not in ("tests", "previews", "checks"):   # (another kind's block: the first tests integration's rules)
             id_ = next((i["id"] for i in cfg.integrations(all_=True) if i["kind"] == "tests"), id_)
         r = policy.rules(id_, policy.context(env=CONTEXT, cfg=cfg), cfg)
     except policy.ConfigError as e:
@@ -325,7 +325,7 @@ def _units(suite) -> list[tuple[str, list[str]]] | None:
 
 
 def _without(suite, classes: set[str]):
-    """The suite without the tests of the classes named (by their names alone: WebBuildTests)."""
+    """The suite without the tests of the classes named (by their names alone: WebCheckTests)."""
     kept = unittest.TestSuite()
     for t in suite:
         if isinstance(t, unittest.TestSuite):

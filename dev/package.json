@@ -1,7 +1,7 @@
 {
   "name": "plex-cache-dev",
   "private": true,
-  "description": "What builds and checks the web app's CSS, scripts and pages (dev/web.js): postcss-preset-env rewrites the newer CSS the targets below lack as CSS they read, Autoprefixer adds the browser prefixes they need, cssnano, Terser and html-minifier-terser minify, Stylelint, ESLint and html-validate check the source (no prefixes written by hand, no feature a target lacks but the graceful ones: for the CSS, in what postcss-preset-env makes of it). The image build runs the build; the suite runs the checks.",
+  "description": "What builds and checks the web app's CSS, scripts and pages (the build: dev/web.js; the checks: callboard tool webcheck, callboard.toml's DHTML, which reads the settings here and runs these packages): postcss-preset-env rewrites the newer CSS the targets below lack as CSS they read, Autoprefixer adds the browser prefixes they need, cssnano, Terser and html-minifier-terser minify, Stylelint, ESLint and html-validate check the source (no prefixes written by hand, no feature a target lacks but the graceful ones: for the CSS, in what postcss-preset-env makes of it). The image build runs the build; callboard's DHTML block and the suite run the checks.",
   "browserslist": [
     "last 5 years",
     "not and_qq >= 1"

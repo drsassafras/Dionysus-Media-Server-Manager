@@ -68,8 +68,9 @@ NODE_DIR = os.path.join(os.path.dirname(upkeep.CACHE), "node")  # the node tarba
 # Docker volumes kept between runs, mounted over the checkout's for the suite (install_web)
 WEB_VOLUME = "plexcache-future-web"
 BROWSERS_VOLUME = "plexcache-future-browsers"
-# The web checks a year ahead: dev/web.js takes dev/package.json's "futureBrowserslist" (one year less of browsers)
-WEB_TARGETS = ["-e", "PLEXCACHE_WEB_TARGETS=future"]
+# The web a year ahead: dev/web.js's build and callboard's web check (callboard tool webcheck, which WebCheckTests run)
+# take dev/package.json's "futureBrowserslist" (one year less of browsers)
+WEB_TARGETS = ["-e", "PLEXCACHE_WEB_TARGETS=future", "-e", "CALLBOARD_WEB_TARGETS=futureBrowserslist"]
 # callboard's context, told to the suite in the container (tests/run.py's CONTEXT_KEYS): its exit code is what this
 # block's rules hold its failures, warnings and skipped tests as — the Future Tests' own, not a guess from a checkout
 # git can't read there (/src is the host's, owned by another user)
@@ -1183,7 +1184,7 @@ def main() -> int:
         return 2
     print(f"The suite on Python {args.python} ({' '.join(cmd)}), every warning an error:")
     suite = ["tests/run.py", *(x for c in args.exclude or [] for x in ("--exclude", c))] if args.tests == ["tests.test_plexcache"] else ["-m", "unittest", "-q", *args.tests]
-    got = subprocess.run(cmd + WARN + suite, cwd=ROOT, env=dict(os.environ, CI="1", PLEXCACHE_WEB_TARGETS="future"))  # (CI: no dependency check here)
+    got = subprocess.run(cmd + WARN + suite, cwd=ROOT, env=dict(os.environ, CI="1", PLEXCACHE_WEB_TARGETS="future", CALLBOARD_WEB_TARGETS="futureBrowserslist"))  # (CI: no dependency check here)
     print(f"\nPython {args.python}: " + ("clean." if got.returncode == 0 else "the suite fails — what it deprecates or removes needs a look before the image moves to it."))
     return 1 if got.returncode else 0
 
