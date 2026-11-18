@@ -14,6 +14,7 @@ import re
 import shutil
 import socket
 import struct
+import subprocess
 import sys
 import tempfile
 import threading
@@ -48,6 +49,10 @@ os.environ["TMPDIR"] = TMP
 # does reaches the board's Issues or a block's line. (tests/run.py takes these and its context first, for its own.)
 for _k in ("CALLBOARD_PROGRESS", "PLEXCACHE_PROGRESS", "CALLBOARD_DETAIL"):
     os.environ.pop(_k, None)
+# Never the person's own standard (callboard/standard.py: ~/Code/MyStandards' standard.toml, laid over every project's
+# rules), nor their MyStandards checkout's templates: the tests hold to callboard.toml as committed, as callboard's own do.
+os.environ["CALLBOARD_STANDARD"] = os.path.join(TMP, "no-standard.toml")
+os.environ["CALLBOARD_MYSTANDARDS"] = ""
 
 
 def some[T](x: T | None) -> T:
@@ -5461,7 +5466,7 @@ class DevToolsUITests(unittest.TestCase):
             with open(path, encoding="utf-8") as fh:
                 got = json.load(fh)
         self.assertEqual((got["kind"], got["result"], got["files"]), ("checks", "1 Ruff finding · pyright didn't run", ["a.py", "b.py"]))
-        self.assertEqual(got["tools"][0], {"name": "Ruff", "tool": "Ruff", "version": "0.1", "ran": True, "why": "", "facts": ["1 Ruff finding"], "failed": False, "level": "warn",
+        self.assertEqual(got["tools"][0], {"name": "Ruff", "tool": "Ruff", "version": "0.1", "ran": True, "why": "", "fix": "", "facts": ["1 Ruff finding"], "failed": False, "level": "warn",
                                            "findings": [{"tool": "Ruff", "path": "a.py", "line": 3, "col": 1, "severity": "warning", "message": "unused", "code": "F401", "fixable": True,
                                                          "level": "warn"}]})   # (each finding's level: what the rules hold it as — a warning, with no callboard.toml)
         self.assertEqual((got["tools"][1]["ran"], got["tools"][1]["why"], got["tools"][1]["findings"]), (False, "pyright didn't start", []))
@@ -5629,6 +5634,7 @@ class DevToolsUITests(unittest.TestCase):
         folder = tempfile.mkdtemp(dir=TMP)
         runs = os.path.join(folder, "runs")
         script = os.path.join(folder, "callboard")
+        hold = os.path.join(folder, "hold")   # (while it's there, a run the script stands for doesn't end)
         with open(script, "w", encoding="utf-8") as fh:   # (a callboard that only writes a record of what it was asked)
             fh.write('#!/bin/bash\n[ "$1" != status ] || { printf \'{"host": "nas.example", "user": "me", "app": "myapp", "web_port": 8643, "mode": "%s", "changes": {"known": true, "total": 2}}\' "$2"; exit 0; }\n'
                      f'mkdir -p "{runs}"; n=1; s="$(date +%Y%m%d-%H%M%S)"\n'   # (named as callboard names them: two in one second in order)
@@ -5636,7 +5642,8 @@ class DevToolsUITests(unittest.TestCase):
                      'k=checks; case "$*" in *--only*) k=only ;; *--sync-only*) k=sync ;; restart*) k=restart ;; esac\n'
                      'm="$1"; [ "$1" != push ] || m="$2"\n'
                      'printf \'{"kind": "%s", "mode": "%s", "args": "%s", "sections": [{"id": "unit", "title": "Unit Tests", "page": "c"}]}\' "$k" "$m" "$*" > "$d/plan.json"\n'
-                     'sleep 0.5\nprintf \'{"done": true, "started": 1, "ended": 2, "header": ["Local Copy"], "sections": [{"id": "unit", "title": "Unit Tests", "page": "c", "state": "pass", "status": "PASSED", "last": "ran: %s", "log": "", "issues": []}]}\' "$*" > "$d/state.json"\n')
+                     f'sleep 0.5; while [ -e "{hold}" ]; do sleep 0.05; done\n'   # (held while the test says so: running, however slow the machine)
+                     'printf \'{"done": true, "started": 1, "ended": 2, "header": ["Local Copy"], "sections": [{"id": "unit", "title": "Unit Tests", "page": "c", "state": "pass", "status": "PASSED", "last": "ran: %s", "log": "", "issues": []}]}\' "$*" > "$d/state.json"\n')
         os.chmod(script, 0o755)
         record = self.record(runs, "20260101-100000-1", {"kind": "run", "mode": "dev", "header": ["Committed Copy on Dev"], "sections": []},
                              {"header": ["Committed Copy on Dev"], "commit": "abc", "started": 1.0, "ended": 9.0, "done": True, "aborted": False,
@@ -5668,30 +5675,30 @@ class DevToolsUITests(unittest.TestCase):
                 status, page = ask("GET", "/")
                 self.assertEqual(status, 200)
                 page_text = page.decode()
-                self.assertIn(box["token"], page_text)
+                _assert_in_page(self, box["token"], page_text)
                 csp = box["headers"]["Content-Security-Policy"]
                 nonce = some(re.search(r"script-src 'nonce-([^']+)'", csp)).group(1)
-                self.assertIn(f'<link rel="stylesheet" nonce="{nonce}" href="/static/app.css">', page_text)   # (the app's stylesheet, by this response's nonce)
-                self.assertIn(f'<style nonce="{nonce}">', page_text)
-                self.assertIn(':root[data-theme="dionysus"][data-mode="dark"]', page_text)   # (the app's themes: plexcache/themes.py)
-                self.assertIn("window.PCTHEME=", page_text)
-                self.assertIn("sendBeacon('/bye'", page_text)
-                self.assertNotIn("/*EXTRA*/", page_text)
-                self.assertNotIn("__TOKEN__", page_text)
+                _assert_in_page(self, f'<link rel="stylesheet" nonce="{nonce}" href="/static/app.css">', page_text)   # (the app's stylesheet, by this response's nonce)
+                _assert_in_page(self, f'<style nonce="{nonce}">', page_text)
+                _assert_in_page(self, ':root[data-theme="dionysus"][data-mode="dark"]', page_text)   # (the app's themes: plexcache/themes.py)
+                _assert_in_page(self, "window.PCTHEME=", page_text)
+                _assert_in_page(self, "sendBeacon('/bye'", page_text)
+                _assert_not_in_page(self, "/*EXTRA*/", page_text)
+                _assert_not_in_page(self, "__TOKEN__", page_text)
                 self.assertIn("font-src 'self'", csp)
                 # the dev pages' tab icon, the film reel (dev/devpage.py icons): each size in the page, as img-src lets in
                 for px in (16, 32, 64):
-                    self.assertIn(f'<link rel="icon" type="image/svg+xml" sizes="{px}x{px}" href="data:image/svg+xml;base64,', page_text)
+                    _assert_in_page(self, f'<link rel="icon" type="image/svg+xml" sizes="{px}x{px}" href="data:image/svg+xml;base64,', page_text)
                 self.assertIn("img-src data:", csp)
                 # a block's last time is its result alone (no versions, counts or ages); the hub ends with what every
                 # failed block printed (its log: what went above the board too), with a button that copies it all
-                self.assertIn('"last time: " + (b.before.status || b.before.state || "").toLowerCase())', page_text)
-                self.assertNotIn("b.before.last", page_text)
-                self.assertNotIn("b.before.ended", page_text)
-                self.assertIn("failedOutput());", page_text)
-                self.assertIn('filter(b => (b.shown || b.state) === "fail")', page_text)
-                self.assertIn('api("/api/log?id=" + encodeURIComponent(b.id))', page_text)
-                self.assertIn("navigator.clipboard.writeText(text)", page_text)
+                _assert_in_page(self, '"last time: " + (b.before.status || b.before.state || "").toLowerCase())', page_text)
+                _assert_not_in_page(self, "b.before.last", page_text)
+                _assert_not_in_page(self, "b.before.ended", page_text)
+                _assert_in_page(self, "failedOutput());", page_text)
+                _assert_in_page(self, 'filter(b => (b.shown || b.state) === "fail")', page_text)
+                _assert_in_page(self, 'api("/api/log?id=" + encodeURIComponent(b.id))', page_text)
+                _assert_in_page(self, "navigator.clipboard.writeText(text)", page_text)
                 self.assertEqual(ask("GET", "/static/app.css")[0], 200)
                 self.assertEqual(box["headers"]["Content-Type"], "text/css; charset=utf-8")
                 self.assertEqual(ask("GET", "/static/fonts/cinzel-latin.woff2")[0], 200)
@@ -5714,6 +5721,7 @@ class DevToolsUITests(unittest.TestCase):
                 self.assertEqual(json.loads(body)["text"], "2 findings\n")
                 self.assertEqual(ask("GET", "/api/log?id=nope")[0], 400)
                 # the buttons: callboard run, with the last full run's mode; one at a time
+                open(hold, "w").close()
                 status, body = ask("POST", "/api/rerun", {"id": "build"})
                 self.assertEqual((status, json.loads(body)["what"]), (200, "build again"))
                 self.assertTrue(json.loads(ask("GET", "/api/run")[1])["job"]["running"])
@@ -5721,6 +5729,7 @@ class DevToolsUITests(unittest.TestCase):
                 self.assertEqual(status, 400)
                 self.assertIn("still running", json.loads(body)["error"])
                 self.assertEqual(ask("POST", "/api/rerun", {"id": "../x"})[0], 400)
+                os.remove(hold)   # (the run may end now)
                 for _ in range(100):
                     if not json.loads(ask("GET", "/api/run")[1])["job"]["running"]:
                         break
@@ -5748,8 +5757,8 @@ class DevToolsUITests(unittest.TestCase):
                 with mock.patch.object(devui, "hello", lambda host, port: {"url": f"http://{host}:{port}", "fingerprint": "ABCD-EF01-2345"}):
                     st = json.loads(ask("GET", "/api/status?mode=dev")[1])
                 self.assertEqual((st["mode"], st["app"], st["changes"]["total"], st["hello"]), ("dev", "myapp", 2, {"url": "http://nas.example:8643", "fingerprint": "ABCD-EF01-2345"}))
-                self.assertIn("function stIdenticon(id) {", page_text)   # (app.js's own, put in)
-                self.assertNotIn("/*IDENTICON*/", page_text)
+                _assert_in_page(self, "function stIdenticon(id) {", page_text)   # (app.js's own, put in)
+                _assert_not_in_page(self, "/*IDENTICON*/", page_text)
                 status, body = ask("POST", "/api/scan", {})
                 self.assertEqual(status, 200)
                 for _ in range(100):
@@ -5770,21 +5779,21 @@ class DevToolsUITests(unittest.TestCase):
         page = _read(os.path.join(DEVLIB, "devui.html"), encoding="utf-8")
         # an integration's rules, a card per gate it runs at (more added from "Add a gate", one taken off with its ×), each
         # with its rules and what's different for a pull request into a branch
-        self.assertIn('"Add a gate"', page)
-        self.assertIn("function gateCard(e, i, draft, g, sch, floored, noGh)", page)
-        self.assertIn('"Remove the rules for pull requests into " + b', page)
-        self.assertIn('"+ More <integration> <gate> rules"', page)
-        self.assertIn("else if (!editing()) render();", page)   # (a field in use, an open drop-down: not drawn again under it)
-        self.assertIn("table[k] = v; EDITED(); };", page)       # (Save and Undo follow the draft without a redraw)
+        _assert_in_page(self, '"Add a gate"', page)
+        _assert_in_page(self, "function gateCard(e, i, draft, g, sch, floored, noGh)", page)
+        _assert_in_page(self, '"Remove the rules for pull requests into " + b', page)
+        _assert_in_page(self, '"+ More <integration> <gate> rules"', page)
+        _assert_in_page(self, "else if (!editing()) render();", page)   # (a field in use, an open drop-down: not drawn again under it)
+        _assert_in_page(self, "table[k] = v; EDITED(); };", page)       # (Save and Undo follow the draft without a redraw)
         # the Integration card edits [integrations.<id>] itself (enabled, title, cmd, letter, after) and can remove it;
         # the Integrations page adds one and lists the check tools it runs
-        for part in ('"Remove from callboard.toml"', "delete data.integrations[id]", 'data.integrations[f.id] = Object.assign', "function toolsSec(e, draft, put)",
+        for part in ('"Remove from callboard.toml"', "delete data.integrations[id]", 'data.integrations[f.id] = Object.assign', "function toolsSec(e, draft, put, folded, bdraft)",
                      "= JSON.parse(JSON.stringify(DRAFT._spec[dkey || id]));"):
-            self.assertIn(part, page)
-        self.assertNotIn("<details", page)
-        self.assertIn("catch (e) { e.gone = true; throw e; }", page)
-        self.assertIn("if (VIEW.run !== SHOWN) { SHOWN = VIEW.run; LOGS = {}; DETAILS = {}; }", page)
-        self.assertIn("if (kept[id] && kept[id].gone) delete kept[id];", page)
+            _assert_in_page(self, part, page)
+        _assert_not_in_page(self, "<details", page)
+        _assert_in_page(self, "catch (e) { e.gone = true; throw e; }", page)
+        _assert_in_page(self, "if (VIEW.run !== SHOWN) { SHOWN = VIEW.run; LOGS = {}; DETAILS = {}; }", page)
+        _assert_in_page(self, "if (kept[id] && kept[id].gone) delete kept[id];", page)
         self.assertEqual(page.count("gone: !!err.gone"), 3)
 
     def test_the_config_tabs_and_the_gates_page(self):
@@ -5866,10 +5875,12 @@ class DevToolsUITests(unittest.TestCase):
         self.assertTrue(os.path.isfile(os.path.join(project, "changes", "manual-1.2.0.json")))   # (kept with the notes, in the project)
         with self.assertRaises(ValueError):
             data.tick({})
-        # no file: said, not a crash
-        with self.assertRaises(ValueError) as cm:
-            devui.Data(runs=os.path.join(folder, "runs"), script="/bin/true", root=folder).config({})
-        self.assertIn("callboard init", str(cm.exception))
+        # no file: not a crash — the defaults callboard finds in the project, written again in this computer's cache (here,
+        # the test's) and said to be defaults, with no project file
+        with mock.patch.dict(os.environ, {"XDG_CACHE_HOME": os.path.join(folder, "cache")}):
+            bare = devui.Data(runs=os.path.join(folder, "runs"), script="/bin/true", root=folder).config({})
+        self.assertEqual((bare["defaults"], bare["has_project"]), (True, False))
+        self.assertTrue(bare["path"].startswith(os.path.join(folder, "cache") + os.sep), bare["path"])
         # the view: the hub's letter and the code's context are the plan's; nothing of --release
         runs = os.path.join(folder, "runs")
         self.record(runs, "20260101-100000-1", {"kind": "checks", "mode": "local", "header": ["Local Copy · freeze (v1.2.0-rc.1) · Checks only"], "rules": "release",
@@ -7000,7 +7011,7 @@ class PageStructureTests(unittest.TestCase):
                 self.assertNotIn("Why:", text, "an explanation on the page itself")
                 # the long explanation: How it works on the card's heading, the Caching cards' toggle — not an ⓘ
                 # (its heading starts with the tool's icon, the one the Tools page, the menu, Processes and the events draw for it)
-                self.assertRegex(html, r'<div class="head"><h2><svg class="ico pic" viewBox="0 0 24 24" aria-hidden="true">.*?</svg>[^<]+</h2><span style="flex:1"></span><button class="link" type="button" data-guide="tool-' + name + '" aria-expanded="false">How it works</button>')
+                self.assertRegex(html, r'<div class="head"><h2><svg class="ico pic" viewBox="0 0 24 24" aria-hidden="true">.*?</svg>[^<]+</h2><span class="s-flex1"></span><button class="link" type="button" data-guide="tool-' + name + '" aria-expanded="false">How it works</button>')
                 self.assertNotIn('class="guide toolguide"', html, "the long explanation shows before How it works is pressed")
                 # a row whose record is one of a film's several (Merge Duplicates' rows): a red box saying to merge first
                 if name == "merge":
@@ -7800,7 +7811,7 @@ class PageStructureTests(unittest.TestCase):
                 between = html[box:at]
                 self.assertRegex(between, r"What Apply does</strong> \S", "the box doesn't say what Apply does")
                 self.assertRegex(between, r"What it changes</strong> \S", "the box doesn't say what Apply changes")
-                self.assertRegex(between, r'</div></div><div class="row"[^>]*><label class="det"><input type="checkbox" $', "something comes between the box and Apply")
+                self.assertRegex(between, r'</div></div><div class="row(?: [^"]*)?"[^>]*><label class="det"><input type="checkbox" $', "something comes between the box and Apply")
                 self.assertNotIn("<section", between)
                 self.assertIn("You back up yourself", between)                                     # (the backup the preference says is made first: of the files, or of Plex’s records)
         # Merge Duplicates: this server's Plex only, and what that means for a mirror — with none chosen, nothing of one
@@ -8529,6 +8540,39 @@ def _read(path, *args, **kw):
     """A file's content, the file closed again."""
     with open(path, *args, **kw) as fh:
         return fh.read()
+
+
+def _page_snippet(page: str, at: int, width: int = 160) -> str:
+    """A short piece of a long page: what's around `at`, marked … where it's cut."""
+    lo, hi = max(0, at - width // 2), min(len(page), at + width)
+    return ("…" if lo else "") + page[lo:hi] + ("…" if hi < len(page) else "")
+
+
+def _assert_in_page(test: unittest.TestCase, part: str, page: str) -> None:
+    """assertIn for a whole page (HTML, a script): a failure says what's missing and the nearest thing the page has
+    instead — the longest start of `part` found there, with a few lines around it — never the page itself (hundreds of
+    KB). What changed is usually just past that start (a function with a new argument, a renamed call)."""
+    if part in page:
+        return
+    found, at, lo, hi = 0, -1, 1, len(part)
+    while lo <= hi:   # (a start that's there has every shorter start there too: the longest found by halving)
+        mid = (lo + hi) // 2
+        i = page.find(part[:mid])
+        if i >= 0:
+            found, at, lo = mid, i, mid + 1
+        else:
+            hi = mid - 1
+    near = (f"\nthe nearest the page has ({part[:found]!r}, at {at}):\n{_page_snippet(page, at)}"
+            if found >= min(12, len(part)) else "\n(nothing like it in the page)")
+    test.fail(f"{part!r} not found in the page ({len(page):,} characters){near}")
+
+
+def _assert_not_in_page(test: unittest.TestCase, part: str, page: str) -> None:
+    """assertNotIn for a whole page: a failure says where the part is, with a few lines around it, not the whole page."""
+    at = page.find(part)
+    if at >= 0:
+        test.fail(f"{part!r} unexpectedly found in the page ({len(page):,} characters), "
+                  f"{page.count(part)} time(s); the first, at {at}:\n{_page_snippet(page, at)}")
 
 
 def _fetch(*args, **kw):
@@ -15954,7 +15998,8 @@ class IntegrationStandardTests(unittest.TestCase):
 class LiveSyncthingTests(unittest.TestCase):
     """The client against a real Syncthing, when one is given (SYNCTHING_LIVE_URL and SYNCTHING_LIVE_KEY: dev/future.py
     --syncthing downloads the newest pre-release and starts it): every call of CALLS answers, a folder added for the run is
-    read, changed and scanned as the app does it. Skipped otherwise — the suite stays offline."""
+    read, changed and scanned as the app does it. The suite stays offline: its runs leave this class out (callboard.toml, the
+    GitHub build), and callboard's Previews (dev/future.py) runs it after the suite, against Syncthing's newest pre-release."""
 
     def setUp(self):
         self.url, self.key = os.environ.get("SYNCTHING_LIVE_URL"), os.environ.get("SYNCTHING_LIVE_KEY")
@@ -16099,7 +16144,7 @@ class TranslationTests(unittest.TestCase):
 
     def test_the_board_block(self):
         """dev/i18n.py --callboard, callboard's Translations block: the overall share translated, one number; between
-        releases (the push gate: targets of 0) it only tells (exit 3), and where the catalogs gate (strict_now: the
+        releases (the push gate: targets of 0) every language has met its target (exit 0: the share is only told), and where the catalogs gate (strict_now: the
         release gate, and a pull request into main — targets of 100% held as "fail") a language short of its target is a finding, red — the one
         place that decides, for this suite's strictness too."""
         quiet = _policy_env("development", PLEXCACHE_PROGRESS="")
@@ -16111,7 +16156,7 @@ class TranslationTests(unittest.TestCase):
         with contextlib.ExitStack() as stack:
             for m in patched() + (mock.patch.dict(os.environ, quiet), contextlib.redirect_stdout(out)):
                 stack.enter_context(m)
-            self.assertEqual(self.tool.main(["i18n.py", "--callboard"]), 3)   # (between releases: it only tells)
+            self.assertEqual(self.tool.main(["i18n.py", "--callboard"]), 0)   # (between releases: a 0% target, met)
         self.assertIn("75.0% translated · 2 languages · 2 texts", out.getvalue())
         self.assertNotIn("error", out.getvalue())
         for role in ("release", "hotfix", "freeze"):   # (a release's code, a hotfix's pull request into main, a release candidate)
@@ -16180,7 +16225,7 @@ class TranslationTests(unittest.TestCase):
         # a --callboard run writes it, whether it only tells (between releases) or gates (strict)
         folder = tempfile.mkdtemp(dir=TMP)
         path = os.path.join(folder, "i18n.json")
-        for role, strict, rc in (("development", False, 3), ("release", True, 1)):
+        for role, strict, rc in (("development", False, 0), ("release", True, 1)):
             with mock.patch.dict(os.environ, _policy_env(role, CALLBOARD_DETAIL=path, PLEXCACHE_PROGRESS="")), \
                     mock.patch.object(tool, "all_keys", return_value=keys), mock.patch.object(tool, "TRANSLATED", ["fr", "de"]), \
                     mock.patch.object(tool, "load", side_effect=lambda code: cats.get(code, {})), mock.patch.object(tool, "leftovers", return_value=[]), \
@@ -16192,12 +16237,88 @@ class TranslationTests(unittest.TestCase):
             self.assertEqual(page["targets"], {"fr": 100, "de": 100} if strict else {"fr": 0, "de": 0})   # (the rules as read)
             self.assertEqual(page["context"]["rules"], POLICY_CODE[role][1])
             # each language its own check (the bar counts them), with its findings: short of its target, strict; between
-            # releases, with no target, how far it still is (grey: not met, not failed)
+            # releases, a target of 0% is met (nothing found: the share translated is the result line's)
             self.assertEqual([t["name"] for t in page["tools"]], ["fr", "de"])
-            found = [f for t in page["tools"] for f in t["findings"]]
-            self.assertEqual(({f["level"] for f in found}, sorted(f["path"] for f in found if f["code"] == "targets")),
-                             ({"fail"} if strict else {"info"}, ["plexcache/web/i18n/de.json", "plexcache/web/i18n/fr.json"]))
-            self.assertEqual([t["level"] for t in page["tools"]], ["fail", "fail"] if strict else ["info", "info"])
+            found = [f for t in page["tools"] for f in t["findings"] if f["code"] == "targets"]
+            self.assertEqual(({f["level"] for f in found}, sorted(f["path"] for f in found)),
+                             ({"fail"}, ["plexcache/web/i18n/de.json", "plexcache/web/i18n/fr.json"]) if strict else (set(), []))
+            self.assertEqual([t["level"] for t in page["tools"]], ["fail", "fail"] if strict else ["off", "off"])
+
+    def test_plural_rules_are_cldrs(self):
+        """plexcache/i18n.py's plural rules are CLDR's, as the browser has them (Intl.PluralRules): each language's forms
+        (PLURAL_FORMS) and the form each count takes (plural_category), so the server and the page pick the same one."""
+        from plexcache import i18n
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node isn't on this computer (Intl.PluralRules is CLDR's, as the browser has it)")
+        counts = [*range(0, 230), 1000, 1001, 10000, 1000000, 2000000, 3000000, 1000001, 0.5, 1.5, 2.5, 21.5, 1000000.5]
+        script = ("const [codes, counts] = JSON.parse(process.argv[1]); const out = {};"
+                  "for (const c of codes) { const p = new Intl.PluralRules(c === 'en' ? 'en-CA' : c);"
+                  " out[c] = [p.resolvedOptions().pluralCategories, counts.map(n => p.select(n))]; }"
+                  "console.log(JSON.stringify(out));")
+        got = json.loads(subprocess.run([node, "-e", script, json.dumps([i18n.CODES, counts])], capture_output=True, text=True,
+                                        timeout=60, check=True).stdout)
+        for code in i18n.CODES:
+            with self.subTest(code):
+                forms, picked = got[code]
+                self.assertEqual(sorted(i18n.plural_forms(code)), sorted(forms))
+                self.assertEqual([i18n.plural_category(code, n) for n in counts], picked)
+        # every translated plural has the forms the everyday counts need; the rest of CLDR's (French's "many") are the
+        # plurals rule's, which a release completes
+        self.assertEqual((self.tool.everyday_forms("fr"), self.tool.everyday_forms("ru"), self.tool.everyday_forms("ja")),
+                         (["one", "other"], ["one", "few", "many", "other"], ["other"]))
+        keys = {"{n} files": "{n} file"}
+        short = {"{n} files": {"one": "{n} fichier", "other": "{n} fichiers"}}
+        self.assertEqual(self.tool.check_catalog("fr", keys, short), [])
+        self.assertEqual(len(self.tool.plural_gaps("fr", keys, short)), 1)
+        self.assertEqual(self.tool.plural_gaps("fr", keys, {"{n} files": {**short["{n} files"], "many": "{n} de fichiers"}}), [])
+        self.assertEqual(len(self.tool.plural_gaps("de", keys, {"{n} files": {"one": "a", "few": "b", "other": "c"}})), 1)   # (a form German hasn't)
+        self.assertEqual(self.tool.plural_gaps("fr", keys, {"{n} files": None}), [])   # (untranslated: coverage's, not this)
+
+    def test_language_codes_are_bcp47(self):
+        """Each language code a well-formed BCP 47 tag, cased as the standard has it, its language ISO 639's; every
+        catalog one of them."""
+        from plexcache import i18n
+        self.assertEqual(self.tool.code_problems(i18n.CODES, sorted(os.listdir(self.tool.CATALOGS))), [])
+        got = self.tool.code_problems(["zh-cn", "pt_BR", "xx", "zh-Hant-TW", "es-419"], ["zz.json", "es-419.json"])
+        self.assertEqual(len(got), 4)
+        self.assertIn("'zh-cn' isn't a well-formed BCP 47 tag (BCP 47 writes it 'zh-CN')", got)
+        self.assertIn("'xx': 'xx' isn't an ISO 639 language code", got)
+        self.assertIn("zz.json: a catalog for no language the app offers", got)
+
+    def test_quality_checks(self):
+        """What the translation tools check a translation for, beyond its placeholders and tags (the quality rule)."""
+        q = lambda en, tr, code="fr": self.tool.quality_problems(code, {en: None}, {en: tr})
+        self.assertEqual(q("Saved.", "Enregistré."), [])
+        self.assertEqual(q("Saved.", "保存しました。", "ja"), [])                     # (a full-width full stop is one)
+        self.assertEqual(q("Delete {name}?", "Supprimer {name} ?"), [])              # (French's space before ? is fine)
+        self.assertEqual(q("{n}mo", "{n} Mon.", "de"), [])                           # (an abbreviation's full stop)
+        self.assertEqual(q("Lead-in Cache", "Lead-in Cache"), [])                    # (a name, left in English)
+        self.assertEqual(len(q("Saved.", "Enregistré")), 1)
+        self.assertEqual(len(q("Saved", "Enregistré ")), 1)
+        self.assertEqual(len(q("The cache is full", "The cache is full")), 1)
+        self.assertEqual(len(q("Pool is full", "Le  pool est plein")), 1)
+        self.assertEqual(len(q("Pool is full", "x" * 60)), 1)
+        self.assertEqual(q("Pool is full", "x" * 60, "ja"), [])                     # (length: not where words have no spaces)
+        self.assertEqual(len(self.tool.quality_problems("fr", {"{n} files": "{n} file"}, {"{n} files": {"one": "{n} fichier.", "other": "{n} fichiers"}})), 1)
+
+    def test_pseudo_locale(self):
+        """qps-ploc (localStorage pc-lang) shows every text through the helpers as accented English a third longer, in
+        ⟦ ⟧, its placeholders, tags and entities as they are; any other unknown choice is Automatic."""
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node isn't on this computer")
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        script = ("global.window = {}; global.navigator = {languages: ['en-CA']}; const store = {'pc-lang': process.argv[2]};"
+                  "global.localStorage = {getItem: k => store[k]}; global.fetch = () => Promise.reject(new Error('x'));"
+                  "global.document = {currentScript: null, documentElement: {}, querySelectorAll: () => []};"
+                  "require(process.argv[1]); const I = window.PCI18N;"
+                  "console.log(JSON.stringify([I.lang, I.choice, I.T('Pool {pool} is {pct}% full', {pool: 'tank', pct: 91}),"
+                  " I.H('<b>Idle</b> &amp; {x}', {x: '<'}), I.P(3, '{n} file', '{n} files'), I.T('{n} B', {n: 5})]));")
+        run = lambda choice: json.loads(subprocess.run([node, "-e", script, os.path.join(root, "plexcache", "web", "i18n.js"), choice],
+                                                       capture_output=True, text=True, timeout=60, check=True).stdout)
+        self.assertEqual(run("qps-ploc"), ["en", "qps-ploc", "⟦Þóóļ tank íš 91% ƒúļļ ~~~~⟧", "⟦<b>Íðļé</b> &amp; &lt; ~~⟧", "⟦3 ƒíļéš ~~⟧", "⟦5 Ɓ ~⟧"])
+        self.assertEqual(run("xx-nope")[1:3], ["auto", "Pool tank is 91% full"])   # (the browser's language: node's own navigator)
 
     def test_untranslated_falls_back_to_english(self):
         from unittest import mock
@@ -16222,7 +16343,8 @@ class TranslationTests(unittest.TestCase):
         from plexcache.i18n import Fixed, M
         plurals = [("ja", 1, "other"), ("fr", 0, "one"), ("fr", 2, "other"), ("ru", 1, "one"), ("ru", 3, "few"), ("ru", 11, "many"),
                    ("ru", 1.5, "other"), ("uk", 22, "few"), ("pl", 1, "one"), ("pl", 23, "few"), ("pl", 25, "many"), ("pl", 2.5, "other"),
-                   ("en", 1, "one"), ("en", 1.0, "one"), ("en", 2, "other"), ("en", "x", "other"), ("en", True, "other")]
+                   ("en", 1, "one"), ("en", 1.0, "one"), ("en", 2, "other"), ("en", "x", "other"), ("en", True, "other"),
+                   ("fr", 1000000, "many"), ("es", 2000000, "many"), ("pt-BR", 0, "one"), ("it", 1000000.5, "other"), ("de", 1000000, "other")]
         for lang, n, want in plurals:
             with self.subTest(lang=lang, n=n):
                 self.assertEqual(i18n.plural_category(lang, n), want)
@@ -16424,6 +16546,45 @@ class FutureTests(unittest.TestCase):
         self.assertEqual([r for r in recs if r.get("bar") == "tests"][-1]["bad"], 1)
         self.assertEqual(sum(1 for r in recs if "tell" in r), 2)          # (each part's failures, passed on)
         self.assertEqual([r["said"] for r in recs if "said" in r][-1], f"Ran on {future.IMAGE}")
+
+    def test_the_live_syncthing_tests_run_after_the_suite(self):
+        """A run of the whole suite (callboard's Previews) leaves LiveSyncthingTests out of it — it has no Syncthing to reach —
+        and runs them after it, on this machine, against Syncthing's newest pre-release: the run's result is both (a
+        failure in either fails it; Syncthing not downloaded is said, not a failure). A suite that couldn't run runs no live
+        tests; named tests, or --syncthing alone, run as asked."""
+        import io
+
+        from dev import future
+
+        from callboard import policy
+
+        def main(*argv, suite=policy.PASS, live=policy.PASS):
+            image, local, st = mock.Mock(return_value=suite), mock.Mock(return_value=suite), mock.Mock(return_value=live)
+            with mock.patch.object(sys, "argv", ["future.py", *argv]), mock.patch.object(sys, "stdout", io.StringIO()), \
+                    mock.patch.object(future, "image_python", return_value=(3, 15)), mock.patch.object(future, "image_route", image), \
+                    mock.patch.object(future, "local_route", local), mock.patch.object(future, "syncthing_route", st):
+                rc = future.main()
+            return rc, image, local, st
+        rc, image, _local, st = main("--exclude", "StyleGuideTests")
+        self.assertEqual(rc, policy.PASS)
+        self.assertEqual(image.call_args.args[-1], ["StyleGuideTests", "LiveSyncthingTests"])   # (left out of the suite)
+        st.assert_called_once()                                                                  # (and run after it)
+        self.assertEqual(main(live=policy.FAIL)[0], policy.FAIL)                                 # (its failure, the run's)
+        self.assertEqual(main(suite=policy.FAIL)[0], policy.FAIL)
+        self.assertEqual(main(suite=policy.INFO, live=policy.NOTRUN)[0], policy.INFO)            # (not downloaded: said, the suite's result stands)
+        rc, _image, local, st = main("--local")
+        self.assertEqual(local.call_args.args[-1], ["LiveSyncthingTests"])
+        st.assert_called_once()
+        for gone in (policy.NOTRUN, policy.BROKEN):   # (no suite run: nothing after it)
+            rc, _image, _local, st = main(suite=gone)
+            self.assertEqual(rc, gone)
+            st.assert_not_called()
+        rc, image, _local, st = main("tests.test_plexcache.AppTests")   # (tests named: those alone)
+        self.assertEqual(image.call_args.args[-1], None)
+        st.assert_not_called()
+        rc, image, _local, st = main("--syncthing")
+        image.assert_not_called()
+        st.assert_called_once()
 
     def test_the_suite_in_the_container_is_held_to_this_blocks_rules(self):
         """The suite inside the container is told callboard's context (the block's integration, the file as /src has it,
@@ -16882,11 +17043,6 @@ class WebBuildTests(unittest.TestCase):
             got = self._web_js("build", "--no-minify", os.path.join(web, "login.js"))  # (not minified: as written)
             self.assertEqual(got.returncode, 0, got.stderr)
             self.assertEqual(got.stdout, _read(os.path.join(web, "login.js"), encoding="utf-8"))
-            pages = PageStructureTests()
-            state = _new_app().state()
-            for page in PageStructureTests.PAGES_DRAWN:
-                with self.subTest(page=page):
-                    self.assertEqual(pages._render(state, page, web=d), pages._render(state, page))
             words = lambda html: re.sub(r"\s+", " ", re.sub(r">\s+<", "><", html)).strip()
             for name in ("index.html", "login.html"):
                 got = self._web_js("build", os.path.join(web, name), os.path.join(d, name))
@@ -16895,6 +17051,12 @@ class WebBuildTests(unittest.TestCase):
                 self.assertLess(len(built), len(src), name)
                 self.assertEqual(re.findall(r"<(\w+)", built), re.findall(r"<(\w+)", src), name)           # (every tag kept)
                 self.assertEqual(re.sub(r"<[^>]*>", "", words(built)).split(), re.sub(r"<[^>]*>", "", words(src)).split(), name)
+            # the built pages are in d by now: render.js reads index.html from the folder it's given, beside the scripts
+            pages = PageStructureTests()
+            state = _new_app().state()
+            for page in PageStructureTests.PAGES_DRAWN:
+                with self.subTest(page=page):
+                    self.assertEqual(pages._render(state, page, web=d), pages._render(state, page))
         # the image ships the built copies, made from the same files
         docker = _read(os.path.join(ROOT, "Dockerfile"), encoding="utf-8")
         self.assertIn("RUN for f in plexcache/web/*.css plexcache/web/*.js plexcache/web/*.html; do node dev/web.js build \"$f\" \"$f\" || exit 1; done", docker)
@@ -17961,9 +18123,17 @@ class UpkeepTests(unittest.TestCase):
         """The suite's look (saved=True) reads the last look's answers and nothing else: no network, no npm."""
         from dev import upkeep
         found = {d.name: [d.have(), d.have()] for d in upkeep.DEPS}
+        real_run = subprocess.run
+
+        def local_git_only(cmd, *args, **kw):
+            # (callboard reading the rules asks git about the checkout — where it is, its remotes, its files: local, and
+            # not upkeep's. Anything else run — npm, a tool, the network — is what this test refuses)
+            if isinstance(cmd, (list, tuple)) and cmd and cmd[0] == "git" and not set(cmd[1:2]) & {"fetch", "pull", "push", "clone", "ls-remote"}:
+                return real_run(cmd, *args, **kw)
+            raise AssertionError(f"ran {cmd!r}")
         with tempfile.TemporaryDirectory() as d, mock.patch.object(upkeep, "CACHE", os.path.join(d, "upkeep.json")), \
                 mock.patch.object(upkeep, "_get", side_effect=AssertionError("upstream asked")), \
-                mock.patch.object(upkeep.subprocess, "run", side_effect=AssertionError("npm run")), mock.patch.dict(os.environ, _policy_env()):
+                mock.patch.object(upkeep.subprocess, "run", side_effect=local_git_only), mock.patch.dict(os.environ, _policy_env()):
             with self.assertRaises(upkeep.Offline):
                 upkeep.check(apply=False, saved=True)                                     # (nothing saved yet)
             upkeep._save_cache({k: v for k, v in found.items() if k != "eslint"})
@@ -18765,6 +18935,11 @@ class CheckToolTests(unittest.TestCase):
             self.assertIn("from callboard import checks", text, f"dev/{name} isn't on callboard/checks.py")
             self.assertNotRegex(text, r'"npx"|"pip"|Progress\(', f"dev/{name} fetches or reports a tool its own way")
             used |= set(re.findall(r'checks\.command\("([\w-]+)"\)', text))
+        # (a linter of another language — PMD, RuboCop… — runs only where the project has that language's code: callboard's
+        # own toggle for it, read by its shared code, says whether this project has; one it hasn't needs no pin here)
+        from callboard import policy
+        other = {k for k in used if (s := checks.SCHEMA.settings.get(k)) is not None and s.lang and not policy.toggle_default(s, ROOT)}
+        used -= other
         self.assertEqual(used - set(checks.TOOLCHAIN), set(table), "every tool in dev/tools.toml is run by a check, and only those")   # (a toolchain's own, go vet, is the project's Go's: never pinned there)
         for key, tool in table.items():
             self.assertIn(tool["get"], ("npx", "pip", "release"), key)

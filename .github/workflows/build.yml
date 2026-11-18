@@ -40,9 +40,10 @@ jobs:
       # the browser the accessibility check draws the pages in (dev/web.js a11y: axe-core, through Playwright at
       # dev/package.json's version), with the libraries it needs
       - run: npx --prefix dev playwright install --with-deps chromium
-      # the suite (tests/run.py: its classes shared out among workers), but for the style guide, a step of its own
+      # the suite (tests/run.py: its classes shared out among workers), but for the style guide, a step of its own, and the
+      # live Syncthing tests (callboard's Previews runs them against a live Syncthing: dev/future.py)
       - name: Tests
-        run: python -W error::DeprecationWarning -W error::PendingDeprecationWarning tests/run.py --exclude StyleGuideTests
+        run: python -W error::DeprecationWarning -W error::PendingDeprecationWarning tests/run.py --exclude StyleGuideTests --exclude LiveSyncthingTests
       # every look the app wears approved by the maintainer (dev/style.py, dev/style-guide.json): a failure here is a look
       # waiting for their OK (python3 dev/style.py sample, then they approve), not a broken test
       - name: Style guide

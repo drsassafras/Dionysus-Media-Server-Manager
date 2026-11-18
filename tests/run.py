@@ -202,13 +202,21 @@ class ProgressResult(unittest.TextTestResult):
         self.progress.before = BEFORE
         self.progress.workers = 1   # (this process alone: on the board, at the bar's right)
         self.on_stop: Callable[..., Any] | None = None   # the SIGTERM handler main() sets, kept in place between tests
+        self.drawn: set[str] = set()   # (the tests the bar has counted)
 
     @property
     def done(self) -> int:
         return self.progress.done
 
     def _draw(self, test):
+        self.drawn.add(test.id())
         self.progress.draw(_name(test), len(self.failures) + len(self.errors), WARNED[0])
+
+    def stopTest(self, test):
+        super().stopTest(test)
+        # A test whose subtest failed gets no addSuccess/addFailure of its own: it's drawn here, so the bar counts it.
+        if isinstance(test, unittest.TestCase) and test.id() not in self.drawn:
+            self._draw(test)
 
     def startTest(self, test):
         # A test can leave its own SIGTERM handler behind (the app's main() sets one); put ours back,
@@ -554,6 +562,7 @@ def worker(module: str) -> int:
     class Result(unittest.TextTestResult):
         def __init__(self):
             super().__init__(unittest.runner._WritelnDecorator(sys.stderr), True, 0)
+            self.said_ids: set[str] = set()   # (the tests said as done)
 
         def startTest(self, test):
             if signal.getsignal(signal.SIGTERM) is not stop:  # (a test can leave a handler of its own behind)
@@ -567,7 +576,23 @@ def worker(module: str) -> int:
             if err is not None:
                 text = f"{self.separator1}\n{flavour}: {self.getDescription(test)}\n{self.separator2}\n{self._exc_info_to_string(err, test)}"  # pyright: ignore[reportAttributeAccessIssue] — unittest's own way of saying a failure, not in its stubs
             counted = isinstance(test, unittest.TestCase)  # (a setUpClass/tearDownModule error isn't a test)
+            if counted:
+                self.said_ids.add(test.id())
             say(t="test", id=test.id() if counted else None, name=_name(test), text=text, skipped=skipped)
+
+        def addSubTest(self, test, subtest, err):
+            super().addSubTest(test, subtest, err)
+            if err is not None:   # (a subtest that failed: a failure of its own, said now; the test is counted once it stops)
+                flavour = "FAIL" if issubclass(err[0], test.failureException) else "ERROR"
+                text = f"{self.separator1}\n{flavour}: {self.getDescription(subtest)}\n{self.separator2}\n{self._exc_info_to_string(err, test)}"  # pyright: ignore[reportAttributeAccessIssue] — unittest's own way of saying a failure, not in its stubs
+                say(t="test", id=None, name=_name(test), text=text)
+
+        def stopTest(self, test):
+            super().stopTest(test)
+            # A test whose subtest failed gets no addSuccess/addFailure of its own: said here, so it's counted.
+            if isinstance(test, unittest.TestCase) and test.id() not in self.said_ids:
+                self.said_ids.add(test.id())
+                say(t="test", id=test.id(), name=_name(test))
 
         def addSuccess(self, test):
             super().addSuccess(test)

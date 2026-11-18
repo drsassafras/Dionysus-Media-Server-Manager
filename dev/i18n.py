@@ -7,6 +7,7 @@
     python3 dev/i18n.py check --release    # ...and catalogs in step with the code: nothing missing or unused
     python3 dev/i18n.py check --complete   # ...and every text translated
     python3 dev/i18n.py status             # how much of each language is translated
+    python3 dev/i18n.py quality [code]     # plurals short of their CLDR forms, and translations to look at (the quality rule)
     python3 dev/i18n.py sync               # add new texts as null, drop texts no longer used
     python3 dev/i18n.py missing de         # what German still needs, as JSON to fill in
     python3 dev/i18n.py merge de new.json  # add translations to plexcache/web/i18n/de.json
@@ -46,17 +47,22 @@ WEB = os.path.join(PKG, "web")
 CATALOGS = os.path.join(WEB, "i18n")
 sys.path.insert(0, ROOT)
 import dev  # noqa: E402, F401 — (puts the callboard install on the path: dev/__init__.py)
-from plexcache.i18n import CODES  # noqa: E402
+from plexcache.i18n import CODES, plural_category, plural_forms  # noqa: E402
+from plexcache.languages import NAMES as ISO639  # noqa: E402 — the ISO 639 language codes, for BCP 47's language subtag
 
 from callboard import policy  # noqa: E402 — the rules (callboard.toml)
 
 TRANSLATED = [c for c in CODES if c not in ("en", "en-US", "en-GB")]
 VARIANTS = ("en-US", "en-GB")
-CATEGORIES = {  # CLDR plural categories used for whole numbers (and "other" for fractions)
-    "ja": ["other"], "zh-CN": ["other"], "zh-TW": ["other"], "ko": ["other"],
-    "ru": ["one", "few", "many", "other"], "uk": ["one", "few", "many", "other"],
-    "pl": ["one", "few", "many", "other"],
-}
+CLDR_ORDER = ["zero", "one", "two", "few", "many", "other"]
+
+
+def everyday_forms(code: str) -> list[str]:
+    """The CLDR plural forms a language uses for the counts the app shows every day (0 to 999, and fractions): what every
+    translated plural must have. The rest of its forms (French's "many", only for exact millions: plural_forms) are
+    held by the ``plurals`` rule, as a release completes them."""
+    used = {plural_category(code, n) for n in [*range(1000), 0.5, 1.5, 2.5]}
+    return [c for c in CLDR_ORDER if c in used]
 _PLACE = re.compile(r"\{(\w+)\}")
 _TAG = re.compile(r"</?([a-zA-Z][a-zA-Z0-9]*)")
 
@@ -66,6 +72,9 @@ SCHEMA = policy.Schema("i18n", "Translations", {
     "targets": policy.Setting("targets", "each language's share of the texts translated (a code, a group, or \"*\" for the rest)", unit="%"),
     "unused": policy.Setting("level", "catalog entries the code no longer uses, and texts the catalogs haven't got yet (what sync fixes)"),
     "present": policy.Setting("level", "a text added since the gate's base not translated in every catalog (diff mode)"),
+    "plurals": policy.Setting("level", "a translated plural without every form its language's CLDR plural rules have (French's \"many\", for exact millions), or with one they haven't"),
+    "codes": policy.Setting("level", "a language code that isn't a well-formed BCP 47 tag (an ISO 639 language, then a script or region, cased as the standard has them), or a catalog for no language the app offers"),
+    "quality": policy.Setting("level", "a translation that differs from its English where it shouldn't: spaces at either end, a doubled space, line breaks, the closing punctuation, the English left as it is, or far longer"),
 }, "How far the translation catalogs are, and whether they're in step with the code.")
 GROUPS: dict[str, list[str]] = {}   # (named groups of languages a target may name: none yet)
 
@@ -363,14 +372,14 @@ def check_catalog(code: str, keys: dict, cat: dict, complete: bool = False, rele
         val = cat[key]
         want_places, want_tags = _shape(key)
         if one is not None:
-            need = CATEGORIES.get(code, ["one", "other"])
+            need = everyday_forms(code)
             if variant and isinstance(val, dict):
                 need = ["one", "other"]
             if not isinstance(val, dict) or any(c not in val for c in need):
                 out.append(f"plural needs {need}: {key[:80]!r}")
                 continue
             forms = list(val.values())
-            want_places = sorted(set(want_places) | set(_PLACE.findall(one)) - ({"n"} if code in CATEGORIES else set()))
+            want_places = sorted(set(want_places) | set(_PLACE.findall(one)) - ({"n"} if everyday_forms(code) != ["one", "other"] else set()))
             for f in forms:
                 places, tags = _shape(f)
                 extra = set(places) - set(_PLACE.findall(key)) - set(_PLACE.findall(one))
@@ -390,6 +399,100 @@ def check_catalog(code: str, keys: dict, cat: dict, complete: bool = False, rele
     for key in cat:
         if release and key not in keys:
             out.append(f"no longer used: {key[:90]!r}")
+    return out
+
+
+def plural_gaps(code: str, keys: dict, cat: dict) -> list[str]:
+    """``plurals``: translated plurals without every CLDR form the language has (beyond the everyday ones check_catalog
+    asks for), or with a form it hasn't. Untranslated ones are coverage's, not this."""
+    if code in VARIANTS:
+        return []
+    want = plural_forms(code)
+    out = []
+    for key, one in keys.items():
+        val = cat.get(key)
+        if one is None or not isinstance(val, dict) or not all(isinstance(f, str) for f in val.values()):
+            continue
+        lack = [c for c in want if c not in val]
+        extra = [c for c in val if c not in want]
+        if lack:
+            out.append(f"plural without its {', '.join(repr(c) for c in lack)} form{'s' if len(lack) > 1 else ''} (CLDR): {key[:70]!r}")
+        if extra:
+            out.append(f"plural with a form {code} hasn't ({', '.join(repr(c) for c in extra)}): {key[:70]!r}")
+    return out
+
+
+_BCP47 = re.compile(r"(?P<lang>[a-z]{2,3})(?:-(?P<script>[A-Z][a-z]{3}))?(?:-(?P<region>[A-Z]{2}|[0-9]{3}))?")
+
+
+def code_problems(codes: list[str], files: list[str]) -> list[str]:
+    """``codes``: each language code a well-formed BCP 47 tag, cased as the standard writes it (language lower case, a
+    script title case, a region upper case), its language a real ISO 639 one; and every catalog a language the app offers."""
+    out = []
+    for code in codes:
+        m = _BCP47.fullmatch(code)
+        if not m:
+            low = code.split("-")
+            hint = "-".join([low[0].lower()] + [p.title() if len(p) == 4 else p.upper() for p in low[1:]])
+            out.append(f"{code!r} isn't a well-formed BCP 47 tag" + (f" (BCP 47 writes it {hint!r})" if _BCP47.fullmatch(hint) else ""))
+        elif m["lang"] not in ISO639:
+            out.append(f"{code!r}: {m['lang']!r} isn't an ISO 639 language code")
+    for name in files:
+        if name.endswith(".json") and name[:-5] not in codes:
+            out.append(f"{name}: a catalog for no language the app offers")
+    return out
+
+
+_MARKUP = re.compile(r"<[^>]*>|&#?\w+;")
+_CLOSERS = ")\"'”»）」』】"
+_FULLWIDTH = str.maketrans({"。": ".", "！": "!", "？": "?", "：": ":", "；": ";"})
+_END = re.compile(r"([.!?:;…]+)$")
+_WIDE = ("ja", "ko", "zh")   # (written without spaces between words, so far shorter than the English)
+
+
+def _plain(text: str) -> str:
+    """A text as it reads: markup gone, each placeholder a word."""
+    return _PLACE.sub("x", _MARKUP.sub("", text))
+
+
+def _ending(text: str) -> str:
+    """The punctuation mark a text closes with (full-width as its ASCII, ... as …), past any closing bracket or quote; none
+    for "..", a path's parent rather than punctuation."""
+    end = _END.search(_plain(text).rstrip().rstrip(_CLOSERS).rstrip().translate(_FULLWIDTH))
+    return end.group(1).replace("...", "…")[-1] if end and end.group(1) != ".." else ""
+
+
+def quality_problems(code: str, keys: dict, cat: dict) -> list[str]:
+    """``quality``: what translation tools (Weblate, the Translate Toolkit's pofilter) check each translation for, beyond
+    placeholders and tags: spaces at either end the English hasn't, a doubled space, its line breaks, the closing
+    punctuation (a full stop after an abbreviation allowed), the English left as it is (three words or more, not a name),
+    and far longer than the English (not in a language written without spaces)."""
+    if code in VARIANTS:
+        return []
+    out = []
+    for key, one in keys.items():
+        val = cat.get(key)
+        pairs = [((one if c == "one" and one is not None else key), f) for c, f in val.items()] if isinstance(val, dict) else [(key, val)]
+        for eng, form in pairs:   # (a plural's "one" form against the English singular, its others against the plural)
+            if not isinstance(form, str) or not form:
+                continue
+            said = []
+            if (eng[:1].isspace(), eng[-1:].isspace()) != (form[:1].isspace(), form[-1:].isspace()):
+                said.append("spaces at its ends differ")
+            if "  " in form and "  " not in eng:
+                said.append("a doubled space")
+            if form.count("\n") != eng.count("\n"):
+                said.append(f"{form.count(chr(10))} line breaks, not {eng.count(chr(10))}")
+            want, got = _ending(eng), _ending(form)
+            if want != got and not (got == "." and not want and re.search(r"(?:^|\W)\w{1,4}\.$", _plain(form).strip())):
+                said.append(f"ends {repr(got) if got else 'without punctuation'}, where the English ends {repr(want) if want else 'without'}")
+            words = re.findall(r"[A-Za-z]{3,}", _plain(eng))
+            if form == eng and len(words) >= 3 and any(w.islower() for w in words):
+                said.append("the English, untranslated")
+            size, length = len(_plain(eng).strip()), len(_plain(form).strip())
+            if code.split("-")[0] not in _WIDE and size >= 8 and length > max(2.5 * size, size + 25):
+                said.append(f"{length / size:.1f}× the English's length")
+            out += [f"{s}: {key[:70]!r}" for s in said]
     return out
 
 
@@ -515,11 +618,25 @@ def main(argv: list[str]) -> int:
                                          problem, "unused", level=r.level("unused")))
         if r and r.level("present") != "off" and r.ctx.base:
             found += present_check(keys, r.ctx.base, r.level("present"))
+        # the standards a catalog is held to beyond its own English: CLDR's plural forms, BCP 47's language codes, and
+        # the translation tools' quality checks — each a finding per language, what it found counted, the first named
+        for rule, unit, what, look in (("plurals", "plural", "short of their CLDR forms", plural_gaps),
+                                       ("quality", "translation", "to look at", quality_problems)):
+            if r and r.level(rule) != "off":
+                for code in TRANSLATED:
+                    got = look(code, keys, load(code))
+                    if got:
+                        found.append(Finding("Translations", catalog(code), 0, 0, "warning",
+                                             f"{counted(len(got), unit)} {what}: " + "; ".join(got[:3]) + ("…" if len(got) > 3 else ""),
+                                             rule, level=r.level(rule)))
+        if r and r.level("codes") != "off":
+            for problem in code_problems(CODES, sorted(os.listdir(CATALOGS))):
+                found.append(Finding("Translations", os.path.join("plexcache", "i18n.py"), 0, 0, "warning", problem, "codes", level=r.level("codes")))
         notes = {"info": "in progress", "warn": "behind target", "fail": "under target"}
-        if level != "off" and not strict:   # (a language with no target here, not complete: told, grey — not met, not failed)
-            for lang in shown["languages"]:
+        if level != "off" and not strict:   # (a language with no target here, not complete: told, grey — not met, not failed;
+            for lang in shown["languages"]:   # one whose target is 0%, as between releases, has met it)
                 code = lang["code"]
-                if code in left and not targets.get(code):
+                if code in left and code not in targets:
                     found.append(Finding("Translations", catalog(code), 0, 0, "information",
                                          f"{lang['pct']:.1f}% translated, no target here ({left[code]} of {counted(len(keys), 'text')} to do)",
                                          "targets", level="info"))
@@ -534,6 +651,12 @@ def main(argv: list[str]) -> int:
     if cmd == "keys":
         for k in keys:
             print(k)
+        return 0
+    if cmd == "quality":
+        for code in argv[2:] or TRANSLATED:
+            cat = load(code)
+            for problem in plural_gaps(code, keys, cat) + quality_problems(code, keys, cat):
+                print(f"{code:6} {problem}")
         return 0
     if cmd == "leftovers":
         print("\n".join(leftovers() + problems))
@@ -569,9 +692,12 @@ def main(argv: list[str]) -> int:
     complete = "--complete" in argv
     release = "--release" in argv
     print(f"{len(keys)} texts")
+    for problem in code_problems(CODES, sorted(os.listdir(CATALOGS))):
+        bad += 1
+        print("codes ", problem)
     for code in TRANSLATED + list(VARIANTS):
         cat = load(code)
-        issues = check_catalog(code, keys, cat, complete, release)
+        issues = check_catalog(code, keys, cat, complete, release) + (plural_gaps(code, keys, cat) if complete else [])
         bad += bool(issues)
         left = "" if code in VARIANTS else f"  ({len(untranslated(keys, cat))} untranslated)"
         print(f"{code:6} {'ok' if not issues else str(len(issues)) + ' problems'}{left}")

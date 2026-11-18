@@ -125,11 +125,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PLEXCACHE_COMMIT=$PLEXCACHE_COMMIT
 
 # MKVToolNix from its own repository, at the pinned release; oxipng from its release — for the architecture being built
-# (amd64: the NAS; arm64: a build on an Apple-silicon Mac). What fetched them is removed again.
+# (amd64: the NAS; arm64: a build on an Apple-silicon Mac). What fetched them is removed again. First, Debian's fixes the
+# base image hasn't taken yet (apt-get upgrade): the python image is pinned to a digest and Debian publishes a fix days or
+# weeks before that image is rebuilt with it, so a package of the base (zlib1g, CVE-2026-27171) can carry a fixed CVE until
+# then. Nothing to upgrade once the base has them: a no-op, and no package named here to take out again.
 RUN set -eux; \
     arch="$(dpkg --print-architecture)"; \
     case "$arch" in amd64) rust=x86_64; oxisum="${OXIPNG_SHA256_AMD64}" ;; arm64) rust=aarch64; oxisum="${OXIPNG_SHA256_ARM64}" ;; *) echo "no builds of the tools for $arch"; exit 1 ;; esac; \
     apt-get update; \
+    apt-get upgrade -y; \
     apt-get install -y --no-install-recommends ca-certificates curl gnupg; \
     curl -fsSL https://mkvtoolnix.download/gpg-pub-moritzbunkus.gpg -o /usr/share/keyrings/gpg-pub-moritzbunkus.gpg; \
     # the key is what the repository's packages are checked against, so the key itself is checked: its fingerprint,

@@ -140,6 +140,22 @@ def from_json(v):
 
 
 # ------------------------------------------------------------------ plurals
+# Each language's CLDR plural categories (the Unicode CLDR's plural rules, as Intl.PluralRules has them:
+# resolvedOptions().pluralCategories). TranslationTests holds this and plural_category to the browser's own.
+# French, Spanish, Italian and Portuguese's "many" is only for exact millions ("1 million de fichiers").
+PLURAL_FORMS = {
+    "en": ["one", "other"], "de": ["one", "other"], "nl": ["one", "other"], "sv": ["one", "other"], "tr": ["one", "other"],
+    "es": ["one", "many", "other"], "fr": ["one", "many", "other"], "it": ["one", "many", "other"], "pt": ["one", "many", "other"],
+    "pl": ["one", "few", "many", "other"], "ru": ["one", "few", "many", "other"], "uk": ["one", "few", "many", "other"],
+    "ja": ["other"], "ko": ["other"], "zh": ["other"],
+}
+
+
+def plural_forms(lang: str) -> list[str]:
+    """The CLDR plural categories a language has (PLURAL_FORMS, by its base language): one and other where it isn't listed."""
+    return PLURAL_FORMS.get(lang.split("-")[0], ["one", "other"])
+
+
 def plural_category(lang: str, n) -> str:
     """CLDR plural category of ``n`` (the same answer Intl.PluralRules gives)."""
     if not isinstance(n, (int, float)) or isinstance(n, bool):
@@ -149,6 +165,8 @@ def plural_category(lang: str, n) -> str:
     base = lang.split("-")[0]
     if base in ("ja", "zh", "ko"):
         return "other"
+    if base in ("es", "fr", "it", "pt") and whole and i and i % 1000000 == 0:
+        return "many"
     if base in ("fr", "pt"):
         return "one" if i in (0, 1) else "other"
     if base in ("ru", "uk"):

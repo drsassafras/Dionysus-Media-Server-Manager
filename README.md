@@ -384,10 +384,23 @@ python3 dev/i18n.py status      # how much of each language is translated
 python3 dev/i18n.py sync        # for a release: add new texts as null, drop unused ones
 python3 dev/i18n.py check       # placeholders, HTML tags and plural forms match the English
 python3 dev/i18n.py check --release   # ...and every catalog in step with the code
+python3 dev/i18n.py check --complete  # ...and every text translated, every plural with all its CLDR forms
+python3 dev/i18n.py quality     # plurals short of their CLDR forms, and translations to look at
 python3 dev/i18n.py leftovers   # English in app.js that isn't marked for translation
 ```
 
-Keep every `{placeholder}` and HTML tag from the English. A plural is an object with the forms its language uses, e.g. `{"one": "{n} file", "other": "{n} files"}`; Russian, Ukrainian and Polish also use `few` and `many`, and Japanese, Korean and Chinese only `other`. `en-US.json` and `en-GB.json` only list the texts whose spelling differs from the Canadian original. The tests always fail if a translation doesn't match its English. They fail on a catalog out of step with the code only for a release: with `PLEXCACHE_I18N_RELEASE=1`, which CI sets for `main`, version tags and pull requests into `main`, or under `callboard release` / `callboard beta`.
+Keep every `{placeholder}` and HTML tag from the English. A plural is an object with the forms its language uses, e.g. `{"one": "{n} file", "other": "{n} files"}`; Russian, Ukrainian and Polish also use `few` and `many`, and Japanese, Korean and Chinese only `other`. French, Spanish, Italian and Portuguese also have a `many` for exact millions ("1 million de fichiers"): without it the app uses `other`, and a release adds it. The forms are the [Unicode CLDR plural rules](https://cldr.unicode.org/index/cldr-spec/plural-rules), the ones the browser's `Intl.PluralRules` uses; the tests hold `plexcache/i18n.py`'s copy of them to the browser's. `en-US.json` and `en-GB.json` only list the texts whose spelling differs from the Canadian original. The tests always fail if a translation doesn't match its English. They fail on a catalog out of step with the code only for a release: with `PLEXCACHE_I18N_RELEASE=1`, which CI sets for `main`, version tags and pull requests into `main`, or under `callboard release` / `callboard beta`.
+
+#### The standards the catalogs are held to
+
+Besides how much is translated, callboard's Translations block (`dev/i18n.py --callboard`) holds the catalogs to these standards, each a rule in `callboard.toml`'s `[i18n]` that a gate sets to `fail`, `warn` or `info` (and that a local or My Standards file can only make stricter):
+
+- `codes`: every language code a well-formed [BCP 47](https://www.rfc-editor.org/info/bcp47) tag (`pt-BR`, not `pt_BR` or `pt-br`) whose language is an ISO 639 code, and every catalog one the app offers. Every gate.
+- `plurals`: every translated plural with all of its language's CLDR forms, and none it hasn't. At a release.
+- `quality`: the checks translation tools such as Weblate and the Translate Toolkit run: spaces at either end, doubled spaces, line breaks, the closing punctuation, the English left untranslated, and a translation far longer than its English. A warning at a release.
+- `targets`, `unused`, `present`: how much is translated, and the catalogs in step with the code (above).
+
+To check the layout and find text that isn't marked for translation, switch the app to the pseudo-locale: run `localStorage.setItem("pc-lang", "qps-ploc")` in the browser's console and reload. Every marked text then shows as accented English a third longer, in `⟦ ⟧`. Plain English on the page was never marked, and a `⟦` without its `⟧` is text the layout cuts short. Picking a language from the menu turns it off.
 
 #### Writing the texts
 

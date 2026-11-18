@@ -8,6 +8,11 @@
  *
  * Catalogs (static/i18n/<code>.json) are keyed by the English text; see plexcache/i18n.py.
  * The language follows the browser unless one is picked from the menu next to Sign out.
+ *
+ * Pseudo-localization, for testing: localStorage.setItem("pc-lang", "qps-ploc") in the browser's console (qps-ploc is
+ * BCP 47's private-use tag for it; picking a language from the menu ends it). Every text through these helpers shows as
+ * accented English a third longer, in ⟦ ⟧: plain English left on the page never went through them, and a ⟦ without its
+ * ⟧ is text the layout cuts short.
  */
 (function () {
   "use strict";
@@ -21,6 +26,7 @@
   ];
   const CODES = LANGUAGES.map(function (l) { return l[0]; });
   const KEY = "pc-lang";
+  const PSEUDO = "qps-ploc";
   const REPO = "https://github.com/drsassafras/Dionysus-Media-Server-Manager";
 
   // English with UK spelling: the UK and the countries that follow it.
@@ -50,8 +56,9 @@
 
   let choice = "auto";
   try { choice = localStorage.getItem(KEY) || "auto"; } catch { /* storage unavailable */ }
-  if (choice !== "auto" && CODES.indexOf(choice) < 0) choice = "auto";
-  const lang = choice === "auto" ? browserLang() : choice;
+  if (choice !== "auto" && choice !== PSEUDO && CODES.indexOf(choice) < 0) choice = "auto";
+  const pseudoloc = choice === PSEUDO;
+  const lang = pseudoloc ? "en" : choice === "auto" ? browserLang() : choice;
   const locale = lang === "en" ? "en-CA" : lang;
   let cat = {};
   const plural = (window.Intl && Intl.PluralRules) ? new Intl.PluralRules(locale) : null;
@@ -71,6 +78,21 @@
     if (typeof v === "object" && typeof v._t === "string") return msg(v);
     return String(v);
   }
+  /** @type {Record<string, string>} */
+  const ACCENTED = {};
+  "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ".split("").forEach(function (c, i) {
+    ACCENTED[c] = "áƀçðéƒĝĥíĵķļɱñóþǫŕšţúṽŵẋýžÅƁÇÐÉƑĜĤÍĴĶĻṀÑÓÞǪŔŠŢÚṼŴẊÝŽ"[i];
+  });
+  // A template pseudo-localized (only under qps-ploc): its letters accented, a third longer, in ⟦ ⟧; its {placeholders},
+  // tags and entities as they are.
+  function pseudo(text) {
+    if (!pseudoloc) return text;
+    let letters = 0;
+    const out = String(text).split(/(<[^>]*>|&#?\w+;|\{\w+\})/).map(function (part, i) {
+      return i % 2 ? part : part.replace(/[A-Za-z]/g, function (c) { letters++; return ACCENTED[c]; });
+    }).join("");
+    return "⟦" + out + (letters ? " " + "~".repeat(Math.ceil(letters / 3)) : "") + "⟧";
+  }
   function fill(text, vars, escape) {
     vars = vars || {};
     return text.replace(/\{(\w+)\}/g, function (all, k) {
@@ -89,10 +111,10 @@
     if (typeof e === "string") return e;
     return n === 1 && one != null ? one : other;
   }
-  function T(s, vars) { const e = cat[s]; return fill(typeof e === "string" ? e : s, vars, false); }
-  function H(s, vars) { const e = cat[s]; return fill(typeof e === "string" ? e : s, vars, true); }
-  function P(n, one, other, vars) { vars = Object.assign({ n: n }, vars || {}); return fill(pick(other, one, n), vars, false); }
-  function PH(n, one, other, vars) { vars = Object.assign({ n: n }, vars || {}); return fill(pick(other, one, n), vars, true); }
+  function T(s, vars) { const e = cat[s]; return fill(pseudo(typeof e === "string" ? e : s), vars, false); }
+  function H(s, vars) { const e = cat[s]; return fill(pseudo(typeof e === "string" ? e : s), vars, true); }
+  function P(n, one, other, vars) { vars = Object.assign({ n: n }, vars || {}); return fill(pseudo(pick(other, one, n)), vars, false); }
+  function PH(n, one, other, vars) { vars = Object.assign({ n: n }, vars || {}); return fill(pseudo(pick(other, one, n)), vars, true); }
   function N(s) { return s; }
   // A message from the server: plain text, or {_t: template, _p: values, _one: English singular}.
   function msg(v) {

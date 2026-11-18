@@ -13,6 +13,10 @@ gates a build.
     python3 dev/future.py -v           # the build's and the tools' full output (quiet otherwise: one progress line)
     python3 dev/future.py --local      # the suite on a 3.16 interpreter of this machine instead (python3.16, or uv)
     python3 dev/future.py --python 3.17 --tag 3.17-rc-slim-trixie
+    python3 dev/future.py --syncthing  # only the live Syncthing tests, against Syncthing's newest pre-release
+
+A run of the whole suite (callboard's Previews) runs the live Syncthing tests after it, on this machine, against
+Syncthing's newest pre-release (syncthing_route): they're left out of the suite itself, which has no Syncthing to reach.
 
 The channels (CHANNELS below): Python's alphas, betas and rcs as Docker Hub tags them; Node's nightlies and rcs from
 nodejs.org (the page tests need node; the image serves no pages through it, so it's fetched for the run, cached, and
@@ -1175,15 +1179,26 @@ def main() -> int:
     args = ap.parse_args()
     if args.syncthing:
         return syncthing_route(args.verbose)
-    if not args.local:
-        return image_route(args.python, args.tag, args.tests, args.verbose, args.stable, args.fresh, args.exclude)
+    # the whole suite: the live Syncthing tests left out of it (no Syncthing there: they'd only skip) and run after it, here,
+    # against Syncthing's newest pre-release (syncthing_route) — the run's result is both. Not when the suite couldn't be run.
+    live = args.tests == ["tests.test_plexcache"] and "LiveSyncthingTests" not in (args.exclude or [])
+    exclude = [*(args.exclude or []), "LiveSyncthingTests"] if live else args.exclude
+    rc = image_route(args.python, args.tag, args.tests, args.verbose, args.stable, args.fresh, exclude) if not args.local else local_route(args, exclude)
+    if not live or rc in (policy.NOTRUN, policy.BROKEN):
+        return rc
+    print("\nThe live Syncthing tests, on this machine:", flush=True)
+    return combined([rc, syncthing_route(args.verbose)])
+
+
+def local_route(args: argparse.Namespace, exclude: list[str] | None) -> int:
+    """--local: the suite on an interpreter of this machine (python3.<next>, or uv's)."""
     cmd = find_python(args.python)
     if not cmd:
         print(f"No Python {args.python} here. Get one (python3.{args.python.split('.')[1]} on PATH), or install uv — it fetches prerelease builds "
               f"and this script uses it. Or drop --local: the image route needs only Docker.")
         return 2
     print(f"The suite on Python {args.python} ({' '.join(cmd)}), every warning an error:")
-    suite = ["tests/run.py", *(x for c in args.exclude or [] for x in ("--exclude", c))] if args.tests == ["tests.test_plexcache"] else ["-m", "unittest", "-q", *args.tests]
+    suite = ["tests/run.py", *(x for c in exclude or [] for x in ("--exclude", c))] if args.tests == ["tests.test_plexcache"] else ["-m", "unittest", "-q", *args.tests]
     got = subprocess.run(cmd + WARN + suite, cwd=ROOT, env=dict(os.environ, CI="1", PLEXCACHE_WEB_TARGETS="future", CALLBOARD_WEB_TARGETS="futureBrowserslist"))  # (CI: no dependency check here)
     print(f"\nPython {args.python}: " + ("clean." if got.returncode == 0 else "the suite fails — what it deprecates or removes needs a look before the image moves to it."))
     return 1 if got.returncode else 0

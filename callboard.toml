@@ -21,7 +21,8 @@ enabled = false
 [integrations.unit]
 title = "Unit Tests"
 kind = "tests"
-cmd = "python3 tests/run.py --coverage --exclude WebCheckTests --exclude StyleGuideTests"
+# (LiveSyncthingTests: Previews runs them, against a live Syncthing; here they could only skip)
+cmd = "python3 tests/run.py --coverage --exclude WebCheckTests --exclude StyleGuideTests --exclude LiveSyncthingTests"
 
 [integrations.future]
 title = "Previews"
@@ -246,20 +247,27 @@ release_rules = "fail"
 [i18n.push]
 targets = {"*" = 0}
 present = "warn"
+codes = "fail"
 
 [i18n.merge]
 github = true
 targets = {"*" = 0}
 present = "warn"
+codes = "fail"
 
 [i18n.merge.into.main]
 targets = {"*" = 100}
 unused = "fail"
+plurals = "fail"
+quality = "warn"
 
 [i18n.release]
 github = true
 targets = {"*" = 100}
 unused = "fail"
+plurals = "fail"
+quality = "warn"
+codes = "fail"
 
 [release]
 notes_dir = "changes"
