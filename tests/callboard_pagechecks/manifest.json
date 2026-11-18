@@ -1,0 +1,16 @@
+{
+ "about": "Page checks: a copy of callboard's template, written by callboard. Never edit this folder by hand: say what's this project's in pagechecks.json.",
+ "kind": "template",
+ "name": "pagechecks",
+ "version": 1,
+ "format": 1,
+ "from": {
+  "repo": "MyStandards",
+  "commit": "dd52c9102df03d601e6ab25b5d59bd4b08041d9f"
+ },
+ "files": {
+  "__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "pagechecks.js": "a2e99da07f495640b4aad3f9c1e311cfb9821029c6048040dcc61e4d20ca7c34",
+  "test_pagechecks.py": "028bd16a1143d5eb721fc8f86f9fde4379b458de829d1141c977fffefc3e1b53"
+ }
+}

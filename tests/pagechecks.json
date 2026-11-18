@@ -1,0 +1,204 @@
+{
+ "servers": {
+  "showcase": {
+   "cmd": [
+    "python3",
+    "tests/demo.py",
+    "{port}"
+   ],
+   "env": {
+    "DEMO_SHOWCASE": "1"
+   },
+   "ready": "/api/state"
+  }
+ },
+ "pages": [
+  {
+   "server": "showcase",
+   "path": "/health",
+   "label": "/health",
+   "scheme": "light",
+   "storage": {
+    "pc-theme": "{\"theme\": \"classic\", \"mode\": \"light\"}"
+   }
+  },
+  {
+   "server": "showcase",
+   "path": "/caching",
+   "label": "/caching",
+   "scheme": "light",
+   "storage": {
+    "pc-theme": "{\"theme\": \"classic\", \"mode\": \"light\"}"
+   }
+  },
+  {
+   "server": "showcase",
+   "path": "/ssd",
+   "label": "/ssd",
+   "scheme": "light",
+   "storage": {
+    "pc-theme": "{\"theme\": \"classic\", \"mode\": \"light\"}"
+   }
+  },
+  {
+   "server": "showcase",
+   "path": "/library",
+   "label": "/library",
+   "scheme": "light",
+   "storage": {
+    "pc-theme": "{\"theme\": \"classic\", \"mode\": \"light\"}"
+   }
+  },
+  {
+   "server": "showcase",
+   "path": "/tools",
+   "label": "/tools",
+   "scheme": "light",
+   "storage": {
+    "pc-theme": "{\"theme\": \"classic\", \"mode\": \"light\"}"
+   }
+  },
+  {
+   "server": "showcase",
+   "path": "/optimizer",
+   "label": "/optimizer",
+   "scheme": "light",
+   "storage": {
+    "pc-theme": "{\"theme\": \"classic\", \"mode\": \"light\"}"
+   }
+  },
+  {
+   "server": "showcase",
+   "path": "/convert",
+   "label": "/convert",
+   "scheme": "light",
+   "storage": {
+    "pc-theme": "{\"theme\": \"classic\", \"mode\": \"light\"}"
+   }
+  },
+  {
+   "server": "showcase",
+   "path": "/dataset",
+   "label": "/dataset",
+   "scheme": "light",
+   "storage": {
+    "pc-theme": "{\"theme\": \"classic\", \"mode\": \"light\"}"
+   }
+  },
+  {
+   "server": "showcase",
+   "path": "/merge",
+   "label": "/merge",
+   "scheme": "light",
+   "storage": {
+    "pc-theme": "{\"theme\": \"classic\", \"mode\": \"light\"}"
+   }
+  },
+  {
+   "server": "showcase",
+   "path": "/versions",
+   "label": "/versions",
+   "scheme": "light",
+   "storage": {
+    "pc-theme": "{\"theme\": \"classic\", \"mode\": \"light\"}"
+   }
+  },
+  {
+   "server": "showcase",
+   "path": "/folders",
+   "label": "/folders",
+   "scheme": "light",
+   "storage": {
+    "pc-theme": "{\"theme\": \"classic\", \"mode\": \"light\"}"
+   }
+  },
+  {
+   "server": "showcase",
+   "path": "/unlink",
+   "label": "/unlink",
+   "scheme": "light",
+   "storage": {
+    "pc-theme": "{\"theme\": \"classic\", \"mode\": \"light\"}"
+   }
+  },
+  {
+   "server": "showcase",
+   "path": "/sync",
+   "label": "/sync",
+   "scheme": "light",
+   "storage": {
+    "pc-theme": "{\"theme\": \"classic\", \"mode\": \"light\"}"
+   }
+  },
+  {
+   "server": "showcase",
+   "path": "/filechecks",
+   "label": "/filechecks",
+   "scheme": "light",
+   "storage": {
+    "pc-theme": "{\"theme\": \"classic\", \"mode\": \"light\"}"
+   }
+  },
+  {
+   "server": "showcase",
+   "path": "/plexchecks",
+   "label": "/plexchecks",
+   "scheme": "light",
+   "storage": {
+    "pc-theme": "{\"theme\": \"classic\", \"mode\": \"light\"}"
+   }
+  },
+  {
+   "server": "showcase",
+   "path": "/mirrorchecks",
+   "label": "/mirrorchecks",
+   "scheme": "light",
+   "storage": {
+    "pc-theme": "{\"theme\": \"classic\", \"mode\": \"light\"}"
+   }
+  },
+  {
+   "server": "showcase",
+   "path": "/processes",
+   "label": "/processes",
+   "scheme": "light",
+   "storage": {
+    "pc-theme": "{\"theme\": \"classic\", \"mode\": \"light\"}"
+   }
+  },
+  {
+   "server": "showcase",
+   "path": "/mirrors",
+   "label": "/mirrors",
+   "scheme": "light",
+   "storage": {
+    "pc-theme": "{\"theme\": \"classic\", \"mode\": \"light\"}"
+   }
+  },
+  {
+   "server": "showcase",
+   "path": "/activity",
+   "label": "/activity",
+   "scheme": "light",
+   "storage": {
+    "pc-theme": "{\"theme\": \"classic\", \"mode\": \"light\"}"
+   }
+  },
+  {
+   "server": "showcase",
+   "path": "/system",
+   "label": "/system",
+   "scheme": "light",
+   "storage": {
+    "pc-theme": "{\"theme\": \"classic\", \"mode\": \"light\"}"
+   }
+  }
+ ],
+ "wait_for": "h1",
+ "settle": 1500,
+ "probes": [
+  "info_buttons",
+  "info_popovers",
+  "info_paragraphs"
+ ]
+}

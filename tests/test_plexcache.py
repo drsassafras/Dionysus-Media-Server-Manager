@@ -26830,3 +26830,8 @@ class TlsPinTests(unittest.TestCase):
             self.assertEqual(app.settings.section("tls")["pins"]["truenas"], self.fp)
             code, _got = post("/api/tls/trust", {"service": "../etc"})
             self.assertEqual(code, 400)
+
+
+# The page checks (a callboard template: tests/callboard_pagechecks, kept in step with it and never edited here), part
+# of this suite so tests/run.py and GitHub run them. tests/pagechecks.json names the pages they draw.
+from tests.callboard_pagechecks.test_pagechecks import PageChecks  # noqa: E402, F401
