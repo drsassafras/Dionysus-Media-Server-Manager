@@ -1,0 +1,16 @@
+{
+ "about": "Temp folders through a symlink: a copy of a shared test from your MyStandards, written by callboard. Never edit this folder by hand: leave it out only in callboard.toml, with the reason.",
+ "kind": "template",
+ "name": "tmplink",
+ "version": 1,
+ "format": 2,
+ "from": {
+  "repo": "MyStandards"
+ },
+ "files": {
+  "__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "template.toml": "293fa1d35c576a93f3a1419311ccad77e250f81928d6446a58608ae1e7d539a0",
+  "tmplink.go": "ea8b4e5bdc7a1e45a8d443c10fd87af08683da5dd6d36ba410bca1a3cec56736",
+  "tmplink.py": "6f4b608d2623fee2fb146547b52b8311487239c912b9bb92c303989e05b77c7a"
+ }
+}

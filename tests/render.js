@@ -5,6 +5,8 @@
 // "blocks" (what every red chip that stops a row says), "menu" (the count beside Tools, and "sub": the tools under it while a tool page is open)} on stdout,
 // where the state is the server's /api/state (settings included) and <page> a path such as "system".
 "use strict";
+require("../dev/cli.js").front(process.argv.slice(2), "node tests/render.js", "A page of the web UI drawn in node, from the /api/state answer given on stdin (for the tests: PageStructureTests).",
+  ["node tests/render.js [<page>] < state.json     # the page (health, with none given) as JSON on stdout"]);
 const fs = require("fs"), path = require("path");
 const { page } = require("./dom.js");
 

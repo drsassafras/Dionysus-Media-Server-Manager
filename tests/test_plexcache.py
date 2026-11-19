@@ -10259,6 +10259,42 @@ class OptimizerTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"PLEXCACHE_PORT": closed, "PLEXCACHE_OPTIMIZER_PORT": closed}):
             self.assertEqual(healthcheck.main(), 1)
 
+    def test_the_entry_points_answer_as_a_command_line_does(self):
+        """Each thing of the app's that's run from a shell (python -m plexcache, its health check, the optimizer, and the
+        README's rewrite_blocks.py) answers --version with one line and refuses an option it doesn't have with exit 2,
+        before it does anything (the Command line checks, tests/callboard_clichecks, run each for real); with nothing
+        asked, it does what it always did."""
+        import contextlib
+        import io
+
+        import plexcache
+        from plexcache import __main__ as entry
+        from plexcache import healthcheck
+        from plexcache.optimize import __main__ as optimize
+        rb = BlockSizeTests.load_rewrite()
+        self.assertEqual(rb.__version__, plexcache.__version__,
+                         "plexcache/tools/rewrite_blocks.py says its release itself (it's run on its own): set its __version__ too")
+        for mod, name in ((entry, "plexcache"), (healthcheck, "plexcache.healthcheck")):
+            with mock.patch.object(mod, "main", lambda: 7):
+                self.assertEqual(mod.cli([]), 7)
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as cm:
+                    mod.cli(["--version"])
+                self.assertEqual((cm.exception.code, out.getvalue()), (0, f"{name} {plexcache.version_label()}\n"))
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as cm:
+                    mod.cli(["--no-such-option"])
+                self.assertEqual(cm.exception.code, 2)
+                self.assertIn("--no-such-option", err.getvalue())
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as cm:
+            optimize.main(["--version"])
+        self.assertEqual((cm.exception.code, out.getvalue()), (0, f"plexcache.optimize {plexcache.version_label()}\n"))
+        out = io.StringIO()
+        with mock.patch.object(sys, "argv", ["rewrite_blocks.py", "--version"]), contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as cm:
+            rb.main()
+        self.assertEqual((cm.exception.code, out.getvalue()), (0, f"rewrite_blocks.py {plexcache.__version__}\n"))
+
     def test_service_folders_and_failures(self):
         """The optimizer service's folder steps, its answers to bad requests, how each failure is
         reported (never stuck busy), and how it starts."""
@@ -14124,8 +14160,8 @@ class MQTTTests(unittest.TestCase):
             self.assertEqual(appmod.App(self.app.config_dir).web_url, "http://192.168.50.222:8643")  # kept
             self.enable()
             self.assertTrue(wait_for(lambda: self.broker.state(next(
-                (t for t in self.broker.retained if t.endswith("/health/config")), "x")) is not None))
-            cfg = json.loads(next(v for t, v in self.broker.retained.items() if t.endswith("/health/config")))
+                (t for t in self.broker.retained_now() if t.endswith("/health/config")), "x")) is not None))
+            cfg = json.loads(next(v for t, v in self.broker.retained_now().items() if t.endswith("/health/config")))
             self.assertEqual(cfg["device"]["configuration_url"], "http://192.168.50.222:8643")
         finally:
             self.app.web_url = saved
@@ -14147,7 +14183,7 @@ class MQTTTests(unittest.TestCase):
         assert st is not None
         self.assertEqual(st["streams"], 0)
         self.assertIn("total_streams", st)
-        disc = {t: json.loads(v) for t, v in self.broker.retained.items() if t.startswith("homeassistant/")}
+        disc = {t: json.loads(v) for t, v in self.broker.retained_now().items() if t.startswith("homeassistant/")}
         self.assertGreater(len(disc), 60)
         self.assertEqual(self.app.ha.status["state"], "connected")
         self.assertEqual(self.app.ha.status["entities"], len(disc))
@@ -14343,9 +14379,9 @@ class MQTTTests(unittest.TestCase):
     def test_watch_only(self):
         self.enable(allow_control=False)
         self.assertTrue(wait_for(lambda: self.state() is not None))
-        comps = {t.split("/")[1] for t in self.broker.retained if t.startswith("homeassistant/")}
+        comps = {t.split("/")[1] for t in self.broker.retained_now() if t.startswith("homeassistant/")}
         self.assertEqual(comps, {"sensor", "binary_sensor", "update"})
-        upd = json.loads(next(v for t, v in self.broker.retained.items() if t.startswith("homeassistant/update/") and v))
+        upd = json.loads(next(v for t, v in self.broker.retained_now().items() if t.startswith("homeassistant/update/") and v))
         self.assertNotIn("command_topic", upd)                                          # (not installable: watch only)
         self.broker.inject("plexcache/set/nowplaying_enabled", "OFF")
         time.sleep(0.5)
@@ -14359,7 +14395,7 @@ class MQTTTests(unittest.TestCase):
         # Entities from an older version are still retained on the broker
         self.enable()
         self.assertTrue(wait_for(lambda: self.state() is not None))
-        health = next(t for t in self.broker.retained if t.endswith("/health/config"))
+        health = next(t for t in self.broker.retained_now() if t.endswith("/health/config"))
         node = health.split("/")[2]
         self.app.ha.close()
         stale = [f"homeassistant/sensor/{node}/arc_max/config", f"homeassistant/sensor/{node}/l2arc_needed/config",
@@ -14372,7 +14408,7 @@ class MQTTTests(unittest.TestCase):
         self.app._save_json("mqtt-entities.json", {"topics": [stale[2]]})
         self.app.ha = type(self.app.ha)(self.app)
         self.app.ha.start()
-        self.assertTrue(wait_for(lambda: not any(t in self.broker.retained for t in stale)), [t for t in stale if t in self.broker.retained])
+        self.assertTrue(wait_for(lambda: not any(t in self.broker.retained_now() for t in stale)), [t for t in stale if t in self.broker.retained_now()])
         saved = some(self.app._load_json("mqtt-entities.json"))["topics"]
         self.assertIn(health, saved)
 
@@ -14385,7 +14421,7 @@ class MQTTTests(unittest.TestCase):
         self.enable()
         self.assertTrue(wait_for(lambda: self.app.ha.status.get("entities") and self.state() is not None, 15))
         state = self.state()
-        configs = {t: v for t, v in self.broker.retained.items() if t.endswith("/config") and v}
+        configs = {t: v for t, v in self.broker.retained_now().items() if t.endswith("/config") and v}
         self.assertGreater(len(configs), 50)
         components = {"sensor", "binary_sensor", "switch", "button", "number", "select", "update"}
         data_units = {"bit", "kbit", "Mbit", "Gbit", "B", "kB", "MB", "GB", "TB", "PB", "KiB", "MiB", "GiB", "TiB", "PiB"}
@@ -14554,7 +14590,7 @@ class MQTTTests(unittest.TestCase):
         self.enable()
         self.assertTrue(wait_for(lambda: self.app.ha.status.get("entities") and self.state() is not None, 15))
         used = {"entity": set(), "availability": set(), "device": set(), "origin": set()}
-        for topic, raw in self.broker.retained.items():
+        for topic, raw in self.broker.retained_now().items():
             if topic.endswith("/config") and raw:
                 conf = json.loads(raw)
                 used["entity"] |= set(conf)
@@ -14572,10 +14608,10 @@ class MQTTTests(unittest.TestCase):
     def test_without_discovery(self):
         """For Node-RED and the like: just the state, availability and command topics."""
         self.enable()
-        self.assertTrue(wait_for(lambda: any(t.startswith("homeassistant/") for t in self.broker.retained)))
+        self.assertTrue(wait_for(lambda: any(t.startswith("homeassistant/") for t in self.broker.retained_now())))
         # Turning discovery off removes the Home Assistant entities
         self.app.settings.update({"mqtt": {"discovery": False}})
-        self.assertTrue(wait_for(lambda: not any(t.startswith("homeassistant/") for t in self.broker.retained)
+        self.assertTrue(wait_for(lambda: not any(t.startswith("homeassistant/") for t in self.broker.retained_now())
                                  and self.app.ha.status["state"] == "connected"))
         self.assertTrue(wait_for(lambda: self.app.ha.status["steps"]["publish"] == {"status": "ok", "text": "plexcache/state"}),
                         self.app.ha.status["steps"]["publish"])
@@ -16513,6 +16549,7 @@ class FutureTests(unittest.TestCase):
                 n = 500 if image.startswith("python:") else 20
                 recs = [{"bar": "tests", "done": n, "total": n, "bad": 1 if n == 20 else 0, "tests": True, "label": "x", "workers": 4}]
                 self.stdout = [f"\036{json.dumps(r)}\n" for r in recs] + [f"\036{json.dumps({'tell': 'FAIL: y'})}\n", f"ran on {image}\n"]
+                self.stdout.insert(-1, f"\036{json.dumps({'issue': {'level': 'error', 'text': 'FAIL: tests.t.A.test_y', 'fix': 'python3 -m unittest tests.t.A.test_y'}})}\n")
                 self.returncode = 1 if n == 20 else 0
 
             def __enter__(self):
@@ -16533,8 +16570,10 @@ class FutureTests(unittest.TestCase):
                 mock.patch.object(future.subprocess, "Popen", Proc), mock.patch.object(future.subprocess, "run", return_value=mock.Mock(returncode=0)):
             rc = future.parallel_route("3.16.0a1-slim-trixie", [], [], None, ["StyleGuideTests"])
         self.assertEqual(rc, 1)
-        (plain, plain_cmd), (image, image_cmd) = runs
-        self.assertEqual((plain, image), ("python:3.16.0a1-slim-trixie", future.IMAGE))
+        # (both parts run at once, so which one's docker run starts first is a race: each found by its image)
+        self.assertEqual(sorted(image for image, _ in runs), sorted(["python:3.16.0a1-slim-trixie", future.IMAGE]))
+        cmds = dict(runs)
+        plain_cmd, image_cmd = cmds["python:3.16.0a1-slim-trixie"], cmds[future.IMAGE]
         self.assertIn("--exclude StyleGuideTests --exclude OptimizerTests -j8", plain_cmd)   # (the tools' tests left for the image)
         self.assertIn("--exclude StyleGuideTests --exclude AppTests -j8", image_cmd)          # (only those in it, and nothing the run leaves out)
         self.assertNotIn("OptimizerTests", image_cmd)
@@ -16545,7 +16584,35 @@ class FutureTests(unittest.TestCase):
         self.assertEqual(bars[-1], (523, 523))                            # (3 steps, 500 there, 20 in the image: one bar)
         self.assertEqual([r for r in recs if r.get("bar") == "tests"][-1]["bad"], 1)
         self.assertEqual(sum(1 for r in recs if "tell" in r), 2)          # (each part's failures, passed on)
+        # each said with what it ran on (callboard puts it in the failure's heading and its issue), and its fix the command
+        # that runs it again in the image, not on this machine
+        self.assertEqual(sorted(r["where"] for r in recs if "tell" in r),
+                         sorted(["Python 3.16.0a1 image (python:3.16.0a1-slim-trixie)", f"Python 3.16.0a1 image ({future.IMAGE})"]))
+        self.assertEqual({(r["issue"]["where"], r["issue"]["fix"]) for r in recs if "issue" in r},
+                         {(w, "python3 dev/future.py --tag 3.16.0a1-slim-trixie tests.t.A.test_y")
+                          for w in ("Python 3.16.0a1 image (python:3.16.0a1-slim-trixie)", f"Python 3.16.0a1 image ({future.IMAGE})")})
         self.assertEqual([r["said"] for r in recs if "said" in r][-1], f"Ran on {future.IMAGE}")
+
+    def test_a_failure_in_the_image_is_run_again_there(self):
+        """A failure of the suite in a container: its fix (tests/run.py's, for this machine) made the command that runs that
+        test in the image again — with --stable when the run was — and the page's failures say it too; a fix of another
+        kind as it was."""
+        from dev import future
+        self.assertEqual(future.rerun_there("3.16.0a1-slim-trixie")("python3 -m unittest tests.test_plexcache.A.test_b"),
+                         "python3 dev/future.py --tag 3.16.0a1-slim-trixie tests.test_plexcache.A.test_b")
+        self.assertEqual(future.rerun_there("3.16-rc-slim-trixie", stable=True)("python3 -m unittest tests.test_plexcache.A"),
+                         "python3 dev/future.py --tag 3.16-rc-slim-trixie --stable tests.test_plexcache.A")
+        self.assertEqual(future.rerun_there("3.16.0a1-slim-trixie")("npm ci --prefix dev"), "npm ci --prefix dev")
+        self.assertEqual(future.where_run("3.16.0a1-slim-trixie", future.IMAGE), f"Python 3.16.0a1 image ({future.IMAGE})")
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {"CALLBOARD_DETAIL": os.path.join(d, "page.json")}):
+            page = future.Detail()
+            with open(os.path.join(page.folder, "image.json"), "w", encoding="utf-8") as fh:
+                json.dump({"kind": "tests", "failures": [{"kind": "FAIL", "test": "tests.test_plexcache.A.test_b", "text": "x"},
+                                                         {"kind": "ERROR", "test": "", "text": "y"}]}, fh)
+            page.write("3.16.0a1-slim-trixie", [], True, {"image": (1, "")}, rerun=future.rerun_there("3.16.0a1-slim-trixie"))
+            with open(os.path.join(d, "page.json"), encoding="utf-8") as fh:
+                failures = json.load(fh)["parts"]["image"]["failures"]
+        self.assertEqual([f.get("rerun") for f in failures], ["python3 dev/future.py --tag 3.16.0a1-slim-trixie tests.test_plexcache.A.test_b", None])
 
     def test_the_live_syncthing_tests_run_after_the_suite(self):
         """A run of the whole suite (callboard's Previews) leaves LiveSyncthingTests out of it — it has no Syncthing to reach —
@@ -17353,6 +17420,8 @@ class StyleGuideTests(unittest.TestCase):
         self.assertEqual(s.finder("css @keyframes ripen", ""), {"how": "animation", "name": "ripen", "width": 1280, "frames": list(s.FRAMES)})
         self.assertEqual(s.finder("css .x", "transition:color .2s")["frames"], list(s.FRAMES))
         self.assertEqual(s.finder("css .x", "transition:color .2s")["states"], [[".x", ["hover"]]])   # (a transition: as it's hovered)
+        self.assertEqual(s.finder("css .infopop *+.ipara", "margin-top:1.5em")["open"], "info")   # (in a bubble: opened from an ⓘ)
+        self.assertNotIn("open", s.finder("css .info", ""))
         pat = s.finder("inline width:…%;background:var(--c-tv)", "")["pattern"]
         self.assertRegex("width:12.5%;background:var(--c-tv)", pat)
         self.assertNotRegex("width:12.5%", pat)
@@ -17637,6 +17706,9 @@ class StyleGuideTests(unittest.TestCase):
             self.assertIn(".sample-before-only", _read(os.path.join(tree, "plexcache", "web", "app.css"), encoding="utf-8"))
             self.assertFalse(os.path.exists(os.path.join(tree, "plexcache", "web", "theatre.svg")))   # not there then
             self.assertTrue(os.path.exists(os.path.join(tree, "tests", "demo.py")))                   # the demo runs it
+            shown = subprocess.run([sys.executable, os.path.join(tree, "tests", "demo.py"), "--help"], cwd=tree,
+                                   capture_output=True, text=True, timeout=60)
+            self.assertEqual(shown.returncode, 0, shown.stderr)   # ... and has what it imports (dev/cli.py: else it never starts)
             before = s.looks(tree)
             self.assertEqual(before["css .sample-before-only"], "gap:3px")
             self.assertNotIn("file plexcache/web/theatre.svg", before)
@@ -18504,8 +18576,12 @@ class GateTests(unittest.TestCase):
             self.assertEqual(release.change_notes(), ["changes/a-first.md", "changes/b-second.md"])
             self.assertEqual(release.release_notes(), "A fix, not committed yet.\n\n## Faster\n\nIt's faster.\n")
             self.assertEqual(release.bump(), "1.3.0")
+            os.makedirs(os.path.join(folder, "plexcache", "tools"))   # (the script that says its release itself: bumped with it)
+            with open(os.path.join(folder, "plexcache", "tools", "rewrite_blocks.py"), "w", encoding="utf-8") as fh:
+                fh.write('"""Doc."""\n__version__ = "1.3.0"   # (kept)\n')
             self.assertEqual(release.bump(), "1.4.0")
         self.assertIn('__version__ = "1.4.0"', _read(os.path.join(folder, "plexcache", "__init__.py"), encoding="utf-8"))
+        self.assertIn('__version__ = "1.4.0"   # (kept)', _read(os.path.join(folder, "plexcache", "tools", "rewrite_blocks.py"), encoding="utf-8"))
         got = subprocess.run([sys.executable, os.path.join(ROOT, "dev", "release.py"), "notes"], cwd=folder, env=dict(env, CALLBOARD_REPO=folder),
                              capture_output=True, text=True, timeout=60)
         self.assertEqual((got.returncode, "It's faster." in got.stdout), (0, True), got.stdout + got.stderr)
@@ -20265,7 +20341,7 @@ class AuditTests(unittest.TestCase):
             self.assertIn("This page is out of date.", fh.read())
 
     def test_the_audits_page_comes_back_where_it_was(self):
-        """Started again (dev/audit.py gui), the page comes back on the address and keys it had, kept for you alone
+        """Started again (dev/audit.py ui), the page comes back on the address and keys it had, kept for you alone
         outside both repos: a tab still open carries on with its cookie, and no new code is needed. It says what the last
         audit was and whether both its halves arrived, and which findings were worked on without a fix reported."""
         import http.client
@@ -26833,5 +26909,11 @@ class TlsPinTests(unittest.TestCase):
 
 
 # The page checks (a callboard template: tests/callboard_pagechecks, kept in step with it and never edited here), part
-# of this suite so tests/run.py and GitHub run them. tests/pagechecks.json names the pages they draw.
-from tests.callboard_pagechecks.test_pagechecks import PageChecks  # noqa: E402, F401
+# of this suite so tests/run.py and GitHub run them. tests/pagechecks.json names the pages they draw. A class of this
+# module (its tests the template's, one per check), not the template's own imported: a test of another module would
+# have unittest end this one first (tearDownModule: TMP and the fake servers gone) for every test a worker runs after it.
+from tests.callboard_pagechecks import test_pagechecks as _pagechecks  # noqa: E402
+
+
+class PageChecks(_pagechecks.PageChecks):
+    """The page checks, each check a test (test_<check>: tests/callboard_pagechecks/template.toml's [checks])."""

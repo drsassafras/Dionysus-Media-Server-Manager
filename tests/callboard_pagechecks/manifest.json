@@ -1,16 +1,16 @@
 {
- "about": "Page checks: a copy of callboard's template, written by callboard. Never edit this folder by hand: say what's this project's in pagechecks.json.",
+ "about": "Page checks: a copy of a shared test from your MyStandards, written by callboard. Never edit this folder by hand: say what's this project's in pagechecks.json, and leave a check out only in callboard.toml, with the reason.",
  "kind": "template",
  "name": "pagechecks",
- "version": 1,
- "format": 1,
+ "version": 2,
+ "format": 2,
  "from": {
-  "repo": "MyStandards",
-  "commit": "dd52c9102df03d601e6ab25b5d59bd4b08041d9f"
+  "repo": "MyStandards"
  },
  "files": {
   "__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-  "pagechecks.js": "a2e99da07f495640b4aad3f9c1e311cfb9821029c6048040dcc61e4d20ca7c34",
-  "test_pagechecks.py": "028bd16a1143d5eb721fc8f86f9fde4379b458de829d1141c977fffefc3e1b53"
+  "pagechecks.js": "3e0999ad8c1e268e99af59422c2ca14f8c257091c48a7d899e1a0b755493e939",
+  "template.toml": "443bd8ed055ca962e899eb708459d683aae32fdfdb453d0167dd17b16f67b91f",
+  "test_pagechecks.py": "7426294e6a7989c48b7db16f3dac3a6dd7f18ee7cacb185470a64b0b9a28ee50"
  }
 }

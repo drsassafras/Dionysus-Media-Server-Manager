@@ -1,0 +1,10 @@
+# A shared test (a MyStandards template): what Callboard needs to copy it into a project and keep the copy in step.
+# Every one of these is in each of my projects; a project leaves one out only in its callboard.toml, with the reason:
+#     [templates.tmplink]   opt_out = "why it doesn't apply here"
+
+title = "Temp folders through a symlink"
+version = 1
+about = "The tests' temp folders reached through a symlink, as a Mac's are, so a path said as given where one as it really is was meant fails everywhere."
+folder = "tests/callboard_tmplink"
+files = ["tmplink.py", "tmplink.go", "template.toml"]
+empty = ["__init__.py"]

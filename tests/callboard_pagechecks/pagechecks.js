@@ -1,16 +1,20 @@
 #!/usr/bin/env node
 // Page checks: how each page of the project behaves for the person using it, drawn in Chromium by Playwright.
-// callboard-template: pagechecks 1
+// callboard-template: pagechecks 2
 // This file is a copy of a template (MyStandards' templates/pagechecks/, else callboard's callboard/templates/pagechecks/),
 // kept in step with it: callboard says when the two differ. Say what's this project's in its settings file (the
 // project's tests/pagechecks.json), never here.
 //
-//     node pagechecks.js [pagechecks.json] [--json]
+//     node pagechecks.js [pagechecks.json] [--json] [--skip=check,check] [--leave-out=<CSS selector>]...
+//     node pagechecks.js -h, --help | --version
 //
 // pagechecks.json: {"servers": {name: {"cmd": [...], "env": {...}, "ready": "/path"}} (each given a free port as
 // {port}), "pages": [{"url"} or {"server", "path"}, with "label", "scheme": "light" | "dark", "storage": {key: value}],
-// "wait_for": a selector the page has once it's drawn, "settle": ms after it, "live_wait", "settings", "probes": the
-// checks to run (all of them, not set)}. It prints each finding, or with --json one object: {"pages", "findings":
+// "wait_for": a selector the page has once it's drawn, "settle": ms after it, "live_wait", "settings", "skip": the
+// checks to leave out (none, not set; "probes": the only ones to run, where a project names them that way)}. --skip=a,b
+// leaves those out too (the copy's tests: the ones callboard.toml says why of). --leave-out=<selector> (one each):
+// what every check passes over, on every page (the copy's tests: callboard.toml's [templates.pagechecks.leave_out],
+// each with its reason). It prints each finding, or with --json one object: {"pages", "findings":
 // [{"severity", "message", "code"}]} or {"error"}. Exit 0 nothing found (warnings only too), 1 an error found, 2 it
 // couldn't run. Playwright is the project's own (its node_modules), or NODE_PATH's.
 "use strict";
@@ -38,15 +42,16 @@ async function startServer(name, spec, root) {
 }
 
 // How each page behaves for the person using it, drawn in Chromium by Playwright as axe-core's are (the same "a11y":
-// its servers, pages, wait_for and settle), each check on a fresh copy of the page. The job's "probes" are the ones the
-// project has on. "a11y" may also say "live_wait" (ms: how long the page's own updates are waited for; 4000) and
+// its servers, pages, wait_for and settle), each check on a fresh copy of the page. Every check runs but the job's "skip"
+// (and only its "probes", where it names some). "a11y" may also say "live_wait" (ms: how long the page's own updates are waited for; 4000) and
 // "settings" ({"row", "info", "revert"}: selectors for a setting's row and its buttons where the page's own don't match
 // the usual words; "default_ok": texts a setting's row may say "default" in).
 //
 //   steady_clicks       a control that opens or closes something (aria-expanded, a <summary>) stays where it was on the
 //                       screen when clicked: what's above it closing doesn't move it
 //   stays_open          what's opened stays open while the page updates itself
-//   survives_reload     what's open, the tab picked and the place scrolled to come back after a reload
+//   survives_reload     what's open (not a bubble or menu that opens for a moment), the tab picked and the place
+//                       scrolled to come back after a reload
 //   keeps_typing        what's typed in a field is still there after the page updates itself, and after a reload
 //   search_holds        a search box keeps its text, its cursor and the focus while the page updates as it's typed in
 //   focus_holds         the field in use keeps the focus while the page updates itself
@@ -57,7 +62,8 @@ async function startServer(name, spec, root) {
 //                       nothing covers or clips it; older browsers get it from a polyfill, or the page's own bubble)
 //   info_paragraphs     an info button's bubble says each of its parts in a paragraph of its own (a <p>), led by its
 //                       label in bold with a colon after it (Content: …, Warning: …, Saved as: …): no words outside a
-//                       paragraph, and none that runs a second label on after its own words
+//                       paragraph (a list right under one is its own), none that runs a second label on after its
+//                       own words, and a sentence starts with a capital
 //   revert_buttons      each setting has a button that puts it back (revert, reset, ↺)
 //   no_default_words    a setting's own words don't say what its default is: its revert button does
 const PROBE_SAYS = {
@@ -73,24 +79,35 @@ const PROBE_SEVERITY = { info_buttons: "warning", info_popovers: "warning", reve
 const MOVED = 4;   // px: more than this is a move a person sees
 
 // In the page: the controls a check works on, each with a fingerprint that finds it again after the page draws it anew
-function inPage() {
-  const shown = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== "hidden"; };
+function inPage(leave) {
+  // (what the project's callboard.toml says the checks pass over, each with why: --leave-out, as if it weren't there)
+  const over = (el) => (leave || []).some((sel) => { try { return !!el.closest(sel); } catch { return false; } });
+  // (inside a closed <details> an element still has a size, but isn't drawn: checkVisibility says so)
+  const shown = (el) => { if (over(el)) return false; const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== "hidden" && (!el.checkVisibility || el.checkVisibility({ visibilityProperty: true })); };
   const words = (el) => (el.getAttribute("aria-label") || el.getAttribute("title") || el.textContent || "").replace(/\s+/g, " ").trim().slice(0, 60);
-  const fp = (el, all) => { const w = words(el); return { tag: el.tagName, w, n: all.filter((x) => x.tagName === el.tagName && words(x) === w).indexOf(el) }; };
+  // (what finds it again: its id or its data- attributes, which its own click leaves as they are, else its words, which a
+  // click can change: "How it works" turns into "Hide how it works")
+  const key = (el) => el.id || Object.entries(el.dataset).filter(([, v]) => v !== "true" && v !== "false").map(([k, v]) => `${k}=${v}`).sort().join(" ");
+  const same = (el, f) => el.tagName === f.tag && (f.k ? key(el) === f.k : words(el) === f.w);
+  const fp = (el, all) => { const f = { tag: el.tagName, w: words(el), k: key(el) }; f.n = all.filter((x) => same(x, f)).indexOf(el); return f; };
   const togglers = () => [...document.querySelectorAll("[aria-expanded], details > summary")].filter(shown);
   const typing = () => [...document.querySelectorAll("input, textarea")].filter((el) => shown(el) && !el.disabled && !el.readOnly
     && (el.tagName === "TEXTAREA" || ["", "text", "search", "email", "url", "tel", "number"].includes((el.getAttribute("type") || "").toLowerCase())));
   const isSearch = (el) => el.type === "search" || el.getAttribute("role") === "searchbox" || /search|find|filter/i.test((el.placeholder || "") + " " + (el.getAttribute("aria-label") || ""));
   window.__cb = {
-    shown, words, togglers, typing, isSearch,
+    shown, words, key, togglers, typing, isSearch,
     list: (what) => { const all = what === "toggle" ? togglers() : typing(); return all.map((el) => fp(el, all)); },
-    find: (what, f) => { const all = what === "toggle" ? togglers() : typing(); return all.filter((el) => el.tagName === f.tag && words(el) === f.w)[f.n] || null; },
+    find: (what, f) => { const all = what === "toggle" ? togglers() : typing(); return all.filter((el) => same(el, f))[f.n] || null; },
+    // a bubble or menu that opens for a moment (an info button's, a picker's list): what a reload brings back is what's
+    // shown open on the page itself (a section, a "How it works"), not one of these
+    passing: (el) => { if (el.hasAttribute("aria-haspopup") || el.hasAttribute("popovertarget")) return true; const c = el.getAttribute("aria-controls"); const t = c && document.getElementById(c); return !!t && (t.getAttribute("role") === "tooltip" || t.hasAttribute("popover")); },
     open: (el) => el.tagName === "SUMMARY" ? !!(el.parentElement && el.parentElement.open) : el.getAttribute("aria-expanded") === "true",
   };
 }
 
 async function run(plan, opts = {}) {
-  const want = new Set(opts.probes || plan.probes || Object.keys(PROBE_SAYS));
+  const skip = new Set([...(opts.skip || []), ...(plan.skip || [])]);
+  const want = new Set((opts.probes || plan.probes || Object.keys(PROBE_SAYS)).filter((name) => !skip.has(name)));
   const live = Number(plan.live_wait) || 4000;
   const root = opts.root || process.cwd();
   if (!(plan.pages || []).length) return { pages: 0, findings: [] };   // (no page named: nothing to draw, no browser started)
@@ -112,7 +129,7 @@ async function run(plan, opts = {}) {
   const fresh = async (job) => {
     const ctx = await browser.newContext({ colorScheme: job.scheme === "dark" ? "dark" : "light", viewport: { width: 1280, height: 900 } });
     if (job.storage) await ctx.addInitScript((o) => { try { for (const [k, v] of Object.entries(o)) localStorage.setItem(k, v); } catch { /* none */ } }, job.storage);
-    await ctx.addInitScript(inPage);
+    await ctx.addInitScript(inPage, opts.leave || []);
     const p = await ctx.newPage();
     p.on("dialog", (d) => d.dismiss().catch(() => {}));
     await p.goto(job.url || `${servers[job.server].url}${job.path}`);
@@ -146,20 +163,30 @@ async function run(plan, opts = {}) {
         const opened = await p.evaluate(([x]) => { const el = window.__cb.find("toggle", x); if (!el) return false; if (!window.__cb.open(el)) el.click(); return true; }, [f]);
         if (opened) { await p.waitForTimeout(200); if (await p.evaluate(([x]) => { const el = window.__cb.find("toggle", x); return !!el && window.__cb.open(el); }, [f])) shut.push(f); }
       }
+      // (what's still open once all are opened: one that a later one closed, as a bubble that's one at a time, is no fault)
+      const isOpen = (f) => p.evaluate(([x]) => { const el = window.__cb.find("toggle", x); return !!el && window.__cb.open(el); }, [f]);
+      const still = [];
+      for (const f of shut) if (await isOpen(f)) still.push(f);
       await p.waitForTimeout(live);
-      for (const f of shut) if (!(await p.evaluate(([x]) => { const el = window.__cb.find("toggle", x); return !!el && window.__cb.open(el); }, [f]))) say("stays_open", name(f), label);
+      for (const f of still) if (!(await isOpen(f))) say("stays_open", name(f), label);
     },
     async survives_reload(p, label) {
-      const f = (await p.evaluate(() => window.__cb.list("toggle").filter((x) => !window.__cb.open(window.__cb.find("toggle", x)))))[0];
+      // a tab first, then something opened on what it shows (opened first, a tab could hide it); a tab that's a link to
+      // another page isn't one to pick here
+      const url = p.url();
+      let tab = await p.evaluate(() => { const tabs = [...document.querySelectorAll('[role="tab"]')].filter(window.__cb.shown); const t = tabs.find((x) => x.getAttribute("aria-selected") !== "true" && !x.hasAttribute("href")); if (!t) return null; t.click(); return { w: window.__cb.words(t), k: window.__cb.key(t) }; });
+      await p.waitForTimeout(300);
+      if (p.url() !== url) { await p.goto(url); await drawn(p); tab = null; }
+      const f = (await p.evaluate(() => window.__cb.list("toggle").filter((x) => { const el = window.__cb.find("toggle", x); return !window.__cb.open(el) && !window.__cb.passing(el); })))[0];
       if (f) await p.evaluate(([x]) => window.__cb.find("toggle", x).click(), [f]);
-      const tab = await p.evaluate(() => { const tabs = [...document.querySelectorAll('[role="tab"]')].filter(window.__cb.shown); const t = tabs.find((x) => x.getAttribute("aria-selected") !== "true"); if (!t) return null; t.click(); return window.__cb.words(t); });
       await p.waitForTimeout(300);
       const y = await p.evaluate(() => { const y = Math.floor((document.scrollingElement.scrollHeight - innerHeight) / 2); scrollTo(0, y); return scrollY; });
       await p.waitForTimeout(300);
       await p.reload();
       await drawn(p);
       if (f && !(await p.evaluate(([x]) => { const el = window.__cb.find("toggle", x); return !!el && window.__cb.open(el); }, [f]))) say("survives_reload", `${name(f)}, opened`, label);
-      if (tab && !(await p.evaluate(([w]) => [...document.querySelectorAll('[role="tab"]')].some((t) => window.__cb.words(t) === w && t.getAttribute("aria-selected") === "true"), [tab]))) say("survives_reload", `the "${tab}" tab, picked`, label);
+      // (found again by its data- attributes, else its words: a count beside its name can change meanwhile)
+      if (tab && !(await p.evaluate(([x]) => [...document.querySelectorAll('[role="tab"]')].some((t) => (x.k ? window.__cb.key(t) === x.k : window.__cb.words(t) === x.w) && t.getAttribute("aria-selected") === "true"), [tab]))) say("survives_reload", `the "${tab.w}" tab, picked`, label);
       if (y > 100 && Math.abs((await p.evaluate(() => scrollY)) - y) > 50) say("survives_reload", "the place scrolled to", label);
     },
     async keeps_typing(p, label) {
@@ -167,7 +194,16 @@ async function run(plan, opts = {}) {
       const typed = [];
       for (const [i, f] of fields.entries()) {
         const el = await p.evaluateHandle(([x]) => window.__cb.find("type", x), [f]);
-        const text = /number/.test(await el.evaluate((e) => e.type)) ? String(40 + i) : `callboard ${i}`;
+        // (what the field takes, so it's a change a page keeps: a number inside its min and max that it doesn't hold now;
+        // an address where it holds or shows one, an email address where it wants one; else words)
+        const text = await el.evaluate((e, i) => {
+          if (e.type === "url" || /^https?:\/\//i.test(e.value || e.placeholder || "")) return `http://192.0.2.${10 + i}:8080`;
+          if (e.type === "email") return `callboard${i}@example.com`;
+          if (e.type !== "number") return `callboard ${i}`;
+          const lo = e.min === "" ? 40 : Number(e.min), hi = e.max === "" ? lo + 100 : Number(e.max);
+          for (let n = lo + i; n <= hi; n++) if (String(n) !== e.value) return String(n);
+          return String(lo);
+        }, i);
         await el.asElement()?.fill("").catch(() => {});
         await el.asElement()?.type(text).catch(() => {});
         typed.push([f, text]);
@@ -203,11 +239,12 @@ async function run(plan, opts = {}) {
         const el = document.elementFromPoint(innerWidth / 2, innerHeight / 2);
         if (!el) return null;
         el.setAttribute("data-callboard-here", "");
-        return { w: window.__cb.words(el), top: el.getBoundingClientRect().top };
+        const w = window.__cb.words(el);   // (and which of the elements saying those words it is: a page drawn anew has it again, in its place)
+        return { w, nth: [...document.querySelectorAll("body *")].filter((x) => window.__cb.words(x) === w).indexOf(el), top: el.getBoundingClientRect().top };
       });
       if (!at) return;
       await p.waitForTimeout(live);
-      const now = await p.evaluate(([w]) => { const el = document.querySelector("[data-callboard-here]") || [...document.querySelectorAll("body *")].find((x) => window.__cb.words(x) === w); return el ? el.getBoundingClientRect().top : null; }, [at.w]);
+      const now = await p.evaluate(([w, nth]) => { const el = document.querySelector("[data-callboard-here]") || [...document.querySelectorAll("body *")].filter((x) => window.__cb.words(x) === w)[nth]; return el ? el.getBoundingClientRect().top : null; }, [at.w, at.nth]);
       if (now !== null && Math.abs(now - at.top) > MOVED) say("no_surprise_scroll", `the page, by ${Math.round(now - at.top)}px`, label);
     },
     async keeps_selection(p, label) {
@@ -253,7 +290,9 @@ async function run(plan, opts = {}) {
     const said = (x) => x.textContent.replace(/\s+/g, " ").trim();
     const paras = [...pop.querySelectorAll("p")];
     if (!paras.length) return said(pop) ? "isn't in paragraphs" : null;
-    const loose = (el) => [...el.childNodes].some((x) => x.nodeType === 3 ? x.textContent.trim() : x.nodeType === 1 && x.tagName !== "P" && (x.querySelector("p") ? loose(x) : said(x)));
+    // (a list right under a paragraph is that paragraph's: its items, as "What MKV wouldn't keep:" and what follows)
+    const listed = (x) => /^(UL|OL)$/.test(x.tagName) && !!x.previousElementSibling && /^(P|UL|OL)$/.test(x.previousElementSibling.tagName) && !x.querySelector("p");
+    const loose = (el) => [...el.childNodes].some((x) => x.nodeType === 3 ? x.textContent.trim() : x.nodeType === 1 && x.tagName !== "P" && !listed(x) && (x.querySelector("p") ? loose(x) : said(x)));
     if (loose(pop)) return "has words outside its paragraphs";
     for (const para of paras) {
       const text = said(para), lead = para.firstElementChild, label = lead ? said(lead) : "";
@@ -262,6 +301,7 @@ async function run(plan, opts = {}) {
       const rest = text.slice(label.length);
       if ([...para.querySelectorAll("b, strong")].slice(1).some((x) => /:$/.test(said(x))) || /[.!?]\s+[A-Z][A-Za-z]*( [a-z]+)?:\s/.test(rest))
         return `runs a second part on in the "${label}" paragraph`;
+      if (/[.!?]$/.test(rest.trim()) && /^\s*[a-z]/.test(rest)) return `starts the "${label}" sentence with a small letter`;
     }
     return "";
   });
@@ -327,9 +367,33 @@ async function run(plan, opts = {}) {
 }
 
 
+// What every command line answers before anything else (the Command line checks: templates/clichecks): its help and
+// its version on stdout (0), an option it doesn't have refused on stderr (2); null where there's a run to make.
+function front(argv) {
+  const own = fs.readFileSync(__filename, "utf8");
+  if (argv.includes("-h") || argv.includes("--help")) {
+    process.stdout.write("Page checks: how each page of the project behaves for the person using it, drawn in Chromium by Playwright.\n\n"
+      + "  node pagechecks.js [pagechecks.json] [--json] [--skip=check,check] [--leave-out=<CSS selector>]...\n"
+      + "  node pagechecks.js -h, --help      # this help\n  node pagechecks.js --version       # the template's version\n");
+    return 0;
+  }
+  if (argv.includes("--version")) {
+    process.stdout.write("pagechecks " + ((/^\/\/ callboard-template: pagechecks (\S+)/m.exec(own) || [])[1] || "unknown") + "\n");
+    return 0;
+  }
+  const bad = argv.find((a) => a.startsWith("-") && a !== "--json" && !a.startsWith("--skip=") && !a.startsWith("--leave-out="));
+  if (bad) {
+    process.stderr.write(`pagechecks.js: unknown option: ${bad} (see node pagechecks.js --help)\n`);
+    return 2;
+  }
+  return null;
+}
+
 async function main(argv) {
+  const answered = front(argv);
+  if (answered !== null) return answered;
   const json = argv.includes("--json");
-  const file = argv.find((a) => !a.startsWith("--")) || path.join(__dirname, "pagechecks.json");
+  const file = argv.find((a) => !a.startsWith("-")) || path.join(__dirname, "pagechecks.json");   // (--leave-out=… starts with "-" too)
   let plan;
   try {
     plan = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -340,7 +404,9 @@ async function main(argv) {
   }
   let got;
   try {
-    got = await run(plan, { root: process.env.PAGECHECKS_ROOT || process.cwd(), chromium: process.env.CALLBOARD_CHROMIUM || "" });
+    const skip = argv.filter((a) => a.startsWith("--skip=")).flatMap((a) => a.slice(7).split(",")).filter(Boolean);
+    const leave = argv.filter((a) => a.startsWith("--leave-out=")).map((a) => a.slice(12)).filter(Boolean);
+    got = await run(plan, { root: process.env.PAGECHECKS_ROOT || process.cwd(), chromium: process.env.CALLBOARD_CHROMIUM || "", skip, leave });
   } catch (e) {
     got = { error: String((e && e.message) || e).split("\n")[0] };
   }

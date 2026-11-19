@@ -616,6 +616,10 @@ PROPERTY_STATES = ("checked", "disabled", "indeterminate")
 # The settings an @media rule can be pictured in (Playwright's context options); a rule for any other isn't.
 MEDIA = {"prefers-reduced-motion:reduce": ("reducedMotion", "reduce"), "forced-colors:active": ("forcedColors", "active")}
 FRAMES = (0, 0.25, 0.5, 0.75)   # how far through each animation or transition the filmstrip's pictures are taken
+# The parts of a page drawn only once something opens them: a look in one is looked for, and photographed, with it open
+# (style-sample.js find): the info bubble (app.js showInfo, #infopop), opened from each ⓘ on the page in turn until one
+# shows the look, and the same ⓘ's on the other side.
+OPENS = {"info": re.compile(r"[.#]infopop\b")}
 _PSEUDO = re.compile(r"::?([a-z-]+)")
 
 
@@ -636,7 +640,8 @@ def _state_target(sel: str) -> tuple[str, list[str]] | None:
 
 def finder(look: str, value) -> dict:
     """How the sample finds a look on the demo's pages: by selector, by style, by the animation it names, on the usual
-    pages, or not at all; and what it's photographed in: a ``width`` an @media rule takes, the ``media`` settings it
+    pages, or not at all; the part of the page it's in that has to be opened first (``open``: OPENS, an info bubble);
+    and what it's photographed in: a ``width`` an @media rule takes, the ``media`` settings it
     takes (reduced motion, forced colours), the ``states`` its selector names (each [element, states]), and ``frames``
     when it moves (an animation, a transition: a filmstrip of FRAMES)."""
     kind, _, rest = look.partition(" ")
@@ -658,6 +663,9 @@ def finder(look: str, value) -> dict:
                 media[MEDIA[feature][0]] = MEDIA[feature][1]
         parts = [_STATE.sub("", p).strip() or "body" for p in sel.split(",")]
         out = {"how": "selector", "selectors": parts, "width": width}
+        opens = [k for k, pat in OPENS.items() if any(pat.search(p) for p in parts)]
+        if opens:
+            out["open"] = opens[0]
         if media:
             out["media"] = media
         states = [t for t in (_state_target(p) for p in sel.split(",")) if t]
@@ -804,6 +812,9 @@ def approved_files(files: dict, into: str, repo: str = ROOT) -> list[str]:
     return missing
 
 
+DEMO_NEEDS = ("cli.py",)   # (dev/: what tests/demo.py imports of it, copied into a Before's tree)
+
+
 def before_tree(src: str | dict, tmp: str, approved: dict | None = None, repo: str = ROOT) -> str:
     """The app as it was approved: this tree's plexcache and tests, with the look files from ``src`` (the guide's
     ``files``, out of git; or a folder or zip given with --before) put over theirs, and any look file ``src`` doesn't
@@ -821,6 +832,11 @@ def before_tree(src: str | dict, tmp: str, approved: dict | None = None, repo: s
     skip = shutil.ignore_patterns("__pycache__", "*.pyc", "node_modules")
     for d in ("plexcache", "tests"):
         shutil.copytree(os.path.join(ROOT, d), os.path.join(tree, d), ignore=skip)
+    os.makedirs(os.path.join(tree, "dev"), exist_ok=True)
+    for f in DEMO_NEEDS:   # (the dev code tests/demo.py imports: without it the Before's demo never starts)
+        shutil.copy2(os.path.join(ROOT, "dev", f), os.path.join(tree, "dev", f))
+    with open(os.path.join(tree, "dev", "__init__.py"), "w", encoding="utf-8") as fh:   # (not dev's own: that one wants callboard beside the tree)
+        fh.write('"""The dev code a Before\'s demo imports, and nothing else (dev/style.py: before_tree)."""\n')
     for rel in look_files(tree):
         if not os.path.exists(os.path.join(src, rel)):
             os.remove(os.path.join(tree, rel))
@@ -1345,7 +1361,7 @@ def page_html(items: list, shots: dict, fp: str, off: dict | None, compared: boo
                f'{pics}</div>'
                f'<div><b>{len(s["code"])}</b> aren\'t drawn on the demo pages: judge by the code</div>'
                f'<div><b>{len(s["same"])}</b> drew exactly the same before and after</div></div>') if compared else ""
-    body = ("<h1>Wardrobe</h1>"
+    body = (devpage.wardrobe_logo() +   # (its logo: callboard/devpage.py)
             f"<p class=\"lead\">{total} look{'s' if total != 1 else ''} differ from the style guide. Each change is shown "
             "<b>Before</b> (as approved) and <b>After</b> (now), side by side, in Classic and Dionysus, light and dark, "
             "only where it looks different.</p>" +
@@ -1362,7 +1378,7 @@ def page_html(items: list, shots: dict, fp: str, off: dict | None, compared: boo
             f"<p class=\"foot\">To approve them, the maintainer runs <code>{REVIEW}</code> at a terminal. "
             f"Fingerprint {fp}</p>")
     html = ("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-            "<title>Wardrobe</title><style>" + _CSS + _swatches(body) + "</style></head><body><main>" + body +
+            + devpage.icons("wardrobe-icon") + "<title>Wardrobe</title><style>" + _CSS + devpage.LOGO_CSS + _swatches(body) + "</style></head><body><main>" + body +
             "</main><script>" + _JS + "</script></body></html>")
     return html, {"seen": seen_looks, "code": len(s["code"]), "same": len(s["same"])}
 
@@ -1938,6 +1954,10 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    import cli  # (dev/cli.py: what every dev script's command line does the same)
+    _answered = cli.front(sys.argv[1:], __doc__, "python3 dev/style.py", options=("--before=", "--board", "--step"), commands=("check", "sample", "approve", "review"))
+    if _answered is not None:
+        sys.exit(_answered)
     try:
         sys.exit(main(sys.argv))
     except KeyboardInterrupt:   # (Ctrl-C: stopped, said so, no trace — callboard's review at the end, say, skipped)

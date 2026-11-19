@@ -358,3 +358,6 @@ waiting = "warn"
 [style.release]
 github = true
 waiting = "warn"
+
+[templates.pagechecks.leave_out]
+"[data-secret]" = "The Plex, TrueNAS and Syncthing key fields empty themselves once the key is saved, so browser password managers never store it"

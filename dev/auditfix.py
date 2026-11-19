@@ -300,7 +300,7 @@ def main(args: list[str]) -> int:
         if args[0] == "fixed":
             ids = [x for x in args[1:2] if audit.FINDING_ID.match(x)]
             if not ids:
-                print("usage: dev/audit.py fixed F-YYYY-NNN [--mitigated | --attempted | --not-real] [--test TestClass.test_name]… [--note TEXT]")
+                print("usage: dev/audit.py fixed F-YYYY-NNN [--mitigated | --attempted | --not-real] [--test TestClass.test_name]… [--note TEXT]", file=sys.stderr)
                 return 2
             status = ("mitigated" if "--mitigated" in args else "attempted" if "--attempted" in args else "not-real" if "--not-real" in args
                       else "fixed")
@@ -318,7 +318,7 @@ def main(args: list[str]) -> int:
                 x["cvss"] = (_flag(args, "--cvss") or [""])[0]
             if not audit.FINDING_ID.match(via) or not x["title"] or not x["lines"] or not x["detail"]:
                 print("usage: dev/audit.py found --via F-YYYY-NNN --title TEXT --lines path:start-end… "
-                      "(--cvss VECTOR | --hardening --priority low|medium|high) [--test TestClass.test_name]… --detail TEXT")
+                      "(--cvss VECTOR | --hardening --priority low|medium|high) [--test TestClass.test_name]… --detail TEXT", file=sys.stderr)
                 return 2
             if x["type"] == "vulnerability" and not x["cvss"]:
                 print("  a vulnerability needs its CVSS 3.1 vector (--cvss), or it's --hardening with a --priority")

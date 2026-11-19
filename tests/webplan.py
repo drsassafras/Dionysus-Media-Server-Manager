@@ -2,7 +2,7 @@
 """What DHTML checks beyond the files in plexcache/web: callboard.toml's [dhtml] plan, the command callboard's web
 check (callboard tool webcheck) runs first and reads as JSON.
 
-    CALLBOARD_WEB_OUT=<folder> python3 tests/webplan.py
+    python3 tests/webplan.py        # with CALLBOARD_WEB_OUT=<folder> set: where the files go
 
 "files": what the app makes, written into that folder for ESLint and html-validate to read — the script the server
 makes (/theme.js) and every page as the app draws it (tests/render.js: PageStructureTests.PAGES_DRAWN), before the
@@ -79,4 +79,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.path.insert(0, ROOT)
+    from dev import cli  # (dev/cli.py: what every script's command line does the same)
+    _answered = cli.front(sys.argv[1:], __doc__, "python3 tests/webplan.py")
+    sys.exit(main() if _answered is None else _answered)

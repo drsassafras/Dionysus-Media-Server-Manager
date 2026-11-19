@@ -749,6 +749,11 @@ class FakeMQTTBroker:
             v = self.retained.get(topic)
         return v
 
+    def retained_now(self) -> dict:
+        """A copy of the retained messages, taken under the lock: the broker's threads add to them while a test reads."""
+        with self.lock:
+            return dict(self.retained)
+
     @staticmethod
     def _str(data, i):
         n = struct.unpack("!H", data[i:i + 2])[0]

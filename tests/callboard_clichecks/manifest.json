@@ -1,0 +1,16 @@
+{
+ "about": "Command line checks: a copy of a shared test from your MyStandards, written by callboard. Never edit this folder by hand: say what's this project's in clichecks.json, and leave a check out only in callboard.toml, with the reason.",
+ "kind": "template",
+ "name": "clichecks",
+ "version": 1,
+ "format": 2,
+ "from": {
+  "repo": "MyStandards"
+ },
+ "files": {
+  "__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "clichecks.py": "6d152cdedb0c47c3caa2e2cbbba553c2ed8b8920577eccd50f4c94135eb4894f",
+  "template.toml": "9e095ce41fbc36e877bc14408ec8b8fa8ac6d41d40bc50091cf8188a092f0abe",
+  "test_clichecks.py": "af614d708ccb2e980ae34ce4363b39466a2af2d526a0bf03131e5d996e763dea"
+ }
+}

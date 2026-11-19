@@ -8,7 +8,7 @@ audited, and the release rules.
     python3 dev/audit.py start [PATH…]   # the standard prompt, filled in (no paths: a full audit; paths: a partial)
     python3 dev/audit.py record FILE     # a filled-in templates/audit.toml, checked, split and saved
     python3 dev/audit.py record FILE --author   # …an author's own review while building: counts on dev, never at release
-    python3 dev/audit.py gui             # all of it on a page in your browser: a person's audit, start to end (dev/auditgui.py)
+    python3 dev/audit.py ui              # all of it on a page in your browser: a person's audit, start to end (dev/auditgui.py)
     python3 dev/audit.py fixes           # the open findings, and how to fix and report them (fixed, found: dev/auditfix.py)
     python3 dev/audit.py run …           # an audit by an AI auditor installed here, when there is one (dev/auditrun.py)
 
@@ -1434,12 +1434,12 @@ def save(rec: dict, private: str | None = None, force: bool = False, snapshot: s
 
 # ---------------------------------------------------------------- the commands
 def main(argv: list[str] | None = None) -> int:
-    """``python3 dev/audit.py``: the command's subcommands (record, gui and the rest)."""
+    """``python3 dev/audit.py``: the command's subcommands (record, ui and the rest)."""
     args = sys.argv[1:] if argv is None else argv
     now = time.time()
     if args[:1] == ["record"]:
         if len(args) < 2:
-            print("usage: dev/audit.py record FILE [--force] [--author]")
+            print("usage: dev/audit.py record FILE [--force] [--author]", file=sys.stderr)
             return 2
         rc, said = record(args[1], force="--force" in args, author="--author" in args)
         for line in said:
@@ -1448,7 +1448,7 @@ def main(argv: list[str] | None = None) -> int:
     if args[:1] in (["fixes"], ["fixed"], ["found"]):
         from dev import auditfix  # (fixing the findings: dev/auditfix.py)
         return auditfix.main(args)
-    if args[:1] in (["run"], ["gui"]):
+    if args[:1] in (["run"], ["ui"], ["gui"]):   # (gui: what ui was called)
         from dev import auditgui, auditrun  # (the runner, and the page: only for these)
         return auditrun.main(args[1:]) if args[0] == "run" else auditgui.main(args[1:])
     if args[:1] == ["start"]:
@@ -1503,4 +1503,6 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    import cli  # (dev/cli.py: what every dev script's command line does the same)
+    _answered = cli.front(sys.argv[1:], __doc__, "python3 dev/audit.py", options=('--author', '--force', '--target=', '--auditor=', '--thoroughness=', '--no-browser', '--port=', '--mitigated', '--attempted', '--not-real', '--test=', '--note=', '--via=', '--title=', '--lines=', '--hardening', '--priority=', '--cvss=', '--detail='), commands=('next', 'start', 'record', 'ui', 'gui', 'fixes', 'fixed', 'found', 'run'))
+    sys.exit(main() if _answered is None else _answered)

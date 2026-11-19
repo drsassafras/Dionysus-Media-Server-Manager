@@ -95,7 +95,7 @@ RUN --mount=type=cache,id=ffmpeg-ccache,target=/root/.ccache set -eux; \
 # copies of them replace those in the image.
 FROM node:${NODE_TAG} AS web
 WORKDIR /web
-COPY dev/package.json dev/package-lock.json dev/web.js dev/
+COPY dev/package.json dev/package-lock.json dev/web.js dev/cli.js dev/
 RUN npm ci --prefix dev --no-audit --no-fund
 COPY plexcache/web/*.css plexcache/web/*.js plexcache/web/*.html plexcache/web/
 RUN for f in plexcache/web/*.css plexcache/web/*.js plexcache/web/*.html; do node dev/web.js build "$f" "$f" || exit 1; done

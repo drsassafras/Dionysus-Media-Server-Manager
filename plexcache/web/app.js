@@ -117,6 +117,43 @@ PCI18N.ready.then(function () {
     return '<button type="button" class="info" data-info="' + id + '" aria-label="' + esc(about ? T("About {what}", { what: about }) : T("About this")) +
       '" aria-expanded="false" aria-controls="infopop"><span aria-hidden="true">i</span></button>';
   }
+  // What a bubble says, each part a paragraph of its own led by its label in bold with a colon after it (the page checks'
+  // info_paragraphs, as every project's bubbles): a part is what's between blank lines (<br><br>), or ends at a list,
+  // which stays under its paragraph. A part that starts with its own bold label (<strong>What it checks</strong>: …) keeps
+  // it (a label run on after a sentence starts a part of its own); the first one without is the Content, the ones after
+  // it a Note, and a paragraph of its own (a link to read more) is More. The words are as written (and translated): only
+  // their paragraphs, the colon and a sentence's capital are added here.
+  function infoParas(html) {
+    if (!html) return "";
+    if (typeof html === "object") html = esc(html);   // (a message to translate: its words)
+    const parts = [];
+    let cur = { body: "", list: "" };
+    // (a part that runs the next one on — "… the recommended size. Pass: the second best …" — is two: split where a
+    // sentence ends and a label of a word or two and its colon begins)
+    const runOn = /([.!?])\s+((?:<(?:strong|b)>)?[A-Z][A-Za-z]*(?: [a-z]+)?(?::<\/(?:strong|b)>|<\/(?:strong|b)>:|:)\s)/g;
+    String(html).replace(runOn, "$1<br><br>$2").split(/(<br\s*\/?>\s*<br\s*\/?>|<(?:ul|ol)\b[\s\S]*?<\/(?:ul|ol)>|<p\b[^>]*>[\s\S]*?<\/p>)/).forEach(function (bit, i) {
+      if (i % 2 === 0) { cur.body += bit; return; }
+      if (/^<(ul|ol)/.test(bit)) cur.list += bit;
+      parts.push(cur); cur = { body: "", list: "" };
+      if (/^<p\b/.test(bit)) { parts.push({ body: bit.replace(/^<p\b[^>]*>|<\/p>$/g, ""), list: "", more: true }); }
+    });
+    parts.push(cur);
+    let seen = false;
+    return parts.map(function (pt) {
+      let body = pt.body.replace(/^(\s|<br\s*\/?>)+|(\s|<br\s*\/?>)+$/g, ""), label = "";
+      // (its label: bold, with its colon inside or after it — after a word in brackets too, "Remove the extra paths (no
+      // mirror):" — or on a line of its own)
+      const m = /^<(strong|b)>([^<]+?)(:?)<\/\1>(?:\s*\(([^)<]*)\))?/.exec(body), after = m ? body.slice(m[0].length) : "";
+      if (m && (m[3] || /^\s*(:|<br\s*\/?>|$)/.test(after))) { label = m[2].trim() + (m[4] ? " (" + m[4].trim() + ")" : ""); body = after.replace(/^\s*:?(\s|<br\s*\/?>)*/, ""); }
+      const plain = !label && /^([A-Z][\p{L}’']*(?: [\p{Ll}’']+)?):\s+/u.exec(body);   // (one in plain words: "Kept: its title…")
+      if (plain) { label = plain[1]; body = body.slice(plain[0].length); }
+      if (!body && !pt.list) return "";
+      if (!label) label = pt.more ? T("More") : seen ? T("Note") : T("Content");
+      seen = true;
+      body = body.replace(/^([^<\p{L}]*)(\p{Ll})/u, function (_, lead, c) { return lead + c.toUpperCase(); });   // (a sentence: its capital)
+      return '<p class="ipara"><b class="ilabel">' + esc(label) + ":</b>" + (body ? " " + body : "") + "</p>" + pt.list;
+    }).join("");
+  }
   function plainLen(h) { return String(h).replace(/<[^>]*>/g, "").length; }
   // Field help is either a string (short stays under the field, long goes behind an info button)
   // or {s: "shown under the field", more: "behind the info button"}.
@@ -376,10 +413,11 @@ PCI18N.ready.then(function () {
   }
 
   // Health → Libraries: each library's record size, with the one recommended for its media.
-  const RS_HELP = H("The block size ZFS uses for new files, read from the library’s dataset, and the one recommended for the library from its average bitrate: " +
-    "<strong>512K</strong> under 1 Mbps (music, audiobooks), <strong>1M</strong> up to 15 Mbps (FLAC, SD to 1080p encodes), <strong>2M</strong> up to 40 Mbps (4K encodes, 1080p remuxes) " +
-    "and <strong>4M</strong> above (4K remuxes); <strong>128K</strong> for files under 1 MB, which fit in a block or two anyway. The second best is " +
-    "the neighbour on the side the bitrate leans to. <strong>Ideal</strong>: the dataset uses the recommended size. <strong>Pass</strong>: it uses the second best — " +
+  const RS_HELP = H("The block size ZFS uses for new files, read from the library’s dataset, and the one recommended for the library from its average bitrate:" +
+    "<ul><li><strong>512K</strong>: under 1 Mbps (music, audiobooks)</li><li><strong>1M</strong>: up to 15 Mbps (FLAC, SD to 1080p encodes)</li>" +
+    "<li><strong>2M</strong>: up to 40 Mbps (4K encodes, 1080p remuxes)</li><li><strong>4M</strong>: above 40 Mbps (4K remuxes)</li>" +
+    "<li><strong>128K</strong>: files under 1 MB, which fit in a block or two anyway</li></ul>" +
+    "<strong>Second best</strong>: the neighbour on the side the bitrate leans to. <strong>Ideal</strong>: the dataset uses the recommended size. <strong>Pass</strong>: it uses the second best — " +
     "fine too, so a library near the line between two doesn’t flip back and forth. <strong>Warning</strong>: neither.<br><br>" +
     "<strong>To fix a warning</strong>: in TrueNAS, Datasets → the library’s dataset → Edit → Advanced Options → <strong>Record Size</strong>: the recommended size. " +
     "It only applies to files written afterwards; on the Optimizer page, <strong>TrueNAS compression &amp; record size</strong> writes the existing ones again. " +
@@ -5762,7 +5800,46 @@ PCI18N.ready.then(function () {
     if (why) { el.setAttribute("title", why); el.setAttribute("aria-label", why); } else { el.removeAttribute("title"); el.removeAttribute("aria-label"); }
   }
   // a redraw that leaves the page where it is: what opens or closes under a click doesn't move what's on the screen
-  function renderStill() { const y = window.scrollY; render(); window.scrollTo(window.scrollX, y); }
+  // — and the button clicked stays where it was under the pointer: what opens or shuts above it, or beside it (a chip's
+  // words pushing its row onto a new line), scrolls the page by as much, the other way
+  let CLICKED = /** @type {Element | null} */ (null);
+  let CLICKED_AT = 0;
+  document.addEventListener("click", /** @param {On<MouseEvent>} e */ function (e) { CLICKED = e.target.closest ? e.target.closest("button, a, summary, [role=button]") : null; CLICKED_AT = Date.now(); }, true);
+  function sameAs(el, nth) {  // the element drawn anew in its place: the same tag and data- attributes (the nth of those)
+    const sel = el.tagName.toLowerCase() + Object.keys(el.dataset).map(function (k) {
+      return "[data-" + k.replace(/[A-Z]/g, function (c) { return "-" + c.toLowerCase(); }) + '="' + String(el.dataset[k] || "").replace(/["\\]/g, "\\$&") + '"]';
+    }).join("");
+    try { return Object.keys(el.dataset).length ? main.querySelectorAll(sel)[nth || 0] || null : el.id ? document.getElementById(el.id) : null; } catch { return null; }  // (a selector this browser can't read: left where the redraw puts it)
+  }
+  // what you're at, held where it is over a redraw: what changes above it (a stream starting, a figure growing a line)
+  // doesn't move it (the browser's own scroll anchoring can't: the page is drawn anew). The button clicked a moment ago
+  // while it's on the screen, else what's in the middle of the window.
+  // Its answer: {at: where it is now, again(): it, drawn anew}, or null.
+  function middle() {
+    if (!window.scrollY || !document.elementFromPoint) return null;
+    if (CLICKED && main.contains(CLICKED) && Date.now() - CLICKED_AT < 15000) {
+      const r = CLICKED.getBoundingClientRect(), was = CLICKED;
+      let nth = 0;
+      while (sameAs(was, nth) && sameAs(was, nth) !== was) nth++;
+      if (sameAs(was, nth) === was && r.bottom > 0 && r.top < window.innerHeight) return { at: r.top, clicked: true, again: function () { return sameAs(was, nth); } };
+    }
+    // (the smallest thing there that says something: found again by its tag and words, and which of those it is)
+    let el = /** @type {HTMLElement | null} */ (document.elementFromPoint(window.innerWidth / 2, window.innerHeight / 2));
+    const said = function (/** @type {Element} */ x) { return (x.textContent || "").replace(/\s+/g, " ").trim().slice(0, 200); };
+    while (el && el !== main && !said(el)) el = el.parentElement;
+    if (!el || el === main || !main.contains(el)) return null;
+    const tag = el.tagName, words = said(el);
+    const alike = function () { return Array.prototype.filter.call(main.getElementsByTagName(tag), function (/** @type {Element} */ x) { return said(x) === words; }); };
+    const nth = alike().indexOf(el);
+    return { at: el.getBoundingClientRect().top, again: function () { return alike()[nth] || null; } };
+  }
+  function renderStill() {
+    const y = window.scrollY, el = CLICKED && main.contains(CLICKED) ? CLICKED : null, was = el ? el.getBoundingClientRect().top : 0;
+    render();
+    window.scrollTo(window.scrollX, y);
+    const now = el && sameAs(el);
+    if (now) window.scrollBy(0, now.getBoundingClientRect().top - was);
+  }
   function render() {
     if (!ST) return;
     document.querySelectorAll(".nav").forEach(function (a) {
@@ -5817,6 +5894,7 @@ PCI18N.ready.then(function () {
       document.querySelector(".shell").appendChild(bar);
     }
     applyTheme();
+    const held = middle();
     setHtml(main, PAGES[page]());
     fitBars();
     fitPosters();
@@ -5824,6 +5902,9 @@ PCI18N.ready.then(function () {
     stickHeights();
     comets();
     if (window.PCDECOR) window.PCDECOR.paint(main);  // the theme's decorations (decor.js): vines round the cards, film under the title
+    const again = held && held.again();
+    if (again) window.scrollBy(0, again.getBoundingClientRect().top - held.at);
+    if (CLICKED && !main.contains(CLICKED) && document.body.contains(main)) CLICKED = held && held.clicked ? again : sameAs(CLICKED);  // (the button clicked, as it's drawn now)
   }
   // Library Health's legend stays at the top of the window, and the table's column names just under it
   function stickHeights() {
@@ -5950,7 +6031,7 @@ PCI18N.ready.then(function () {
   function showInfo(btn, pinned) {
     if (popFor && popFor !== btn.dataset.info) document.querySelectorAll('.info[aria-expanded="true"]').forEach(function (b) { b.setAttribute("aria-expanded", "false"); });
     popFor = btn.dataset.info; popPinned = !!pinned;
-    setHtml(pop, INFO[popFor] || "");
+    setHtml(pop, infoParas(INFO[popFor]));
     pop.hidden = false;
     if (topLayer && !popUp) { pop.showPopover(); popUp = true; }
     btn.setAttribute("aria-expanded", "true");
@@ -5977,7 +6058,7 @@ PCI18N.ready.then(function () {
     if (!b) { hideInfo(); return; }
     b.setAttribute("aria-expanded", "true");
     b.setAttribute("aria-describedby", "infopop");
-    setHtml(pop, INFO[popFor] || "");
+    setHtml(pop, infoParas(INFO[popFor]));
     placeInfo(b);
   }
   const hoverable = window.matchMedia && window.matchMedia("(hover: hover)").matches;
@@ -6132,7 +6213,7 @@ PCI18N.ready.then(function () {
       render();
     } else if (t.dataset.guide) {
       guides[t.dataset.guide] = !guides[t.dataset.guide];
-      render();
+      renderStill();
     } else if (t.dataset.copy) {
       copyText(t.dataset.copy);
     } else {
@@ -6192,8 +6273,8 @@ PCI18N.ready.then(function () {
         render();
       }
     }
-    else if (act === "merge-field") { MERGE_FIELD = MERGE_FIELD && MERGE_FIELD.row === el.dataset.id && MERGE_FIELD.id === el.dataset.f ? null : { row: el.dataset.id, id: el.dataset.f }; delete TOOL_OPEN["merge:" + el.dataset.id]; render(); }
-    else if (act === "sync-field") { SYNC_FIELD = SYNC_FIELD && SYNC_FIELD.row === el.dataset.id && SYNC_FIELD.id === el.dataset.f ? null : { row: el.dataset.id, id: el.dataset.f }; delete TOOL_OPEN["sync:" + el.dataset.id]; render(); }
+    else if (act === "merge-field") { MERGE_FIELD = MERGE_FIELD && MERGE_FIELD.row === el.dataset.id && MERGE_FIELD.id === el.dataset.f ? null : { row: el.dataset.id, id: el.dataset.f }; delete TOOL_OPEN["merge:" + el.dataset.id]; renderStill(); }
+    else if (act === "sync-field") { SYNC_FIELD = SYNC_FIELD && SYNC_FIELD.row === el.dataset.id && SYNC_FIELD.id === el.dataset.f ? null : { row: el.dataset.id, id: el.dataset.f }; delete TOOL_OPEN["sync:" + el.dataset.id]; renderStill(); }
     else if (act === "tool-switch" || act === "tool-switch-revert") {
       // a tool's option for this library: saved under tools.<tool>.<library>, and the page redrawn at once from the rows it has
       const sname = el.dataset.tool, skey = el.dataset.key, sopt = el.dataset.opt, st2 = toolState(sname);
@@ -6338,8 +6419,8 @@ PCI18N.ready.then(function () {
         toast(r.ok ? T("It’s tried again after the file in hand") : T("Already waiting to be tried again")); load(); procFetch(true);
       }).catch(function (e) { toast(e.message); el.disabled = false; });
     }
-    else if (act === "proc-chart") { procChart[el.dataset.key] = !procChart[el.dataset.key]; render(); }
-    else if (act === "file-toggle") { SHOWFILE[el.dataset.file] = !SHOWFILE[el.dataset.file]; render(); }
+    else if (act === "proc-chart") { procChart[el.dataset.key] = !procChart[el.dataset.key]; renderStill(); }
+    else if (act === "file-toggle") { SHOWFILE[el.dataset.file] = !SHOWFILE[el.dataset.file]; renderStill(); }
     else if (act === "lib-view") { LIB.view = el.dataset.view; LIB_DRIVE.at = 0; if (LIB.view === "caching") libFetch(true); render(); }
     else if (act === "lh-open") { const lk = el.dataset.key + ":" + el.dataset.id; LH_OPEN[lk] = !LH_OPEN[lk]; renderStill(); }
     else if (act === "lh-ignore" || act === "lh-restore") {
@@ -6781,9 +6862,54 @@ PCI18N.ready.then(function () {
 
   window.addEventListener("popstate", function () { go(location.pathname.replace("/", "") || "health", false); });
 
+  // ---- A reload brings the page back as it was: what's opened on it, the library picked and the place scrolled to are
+  // kept for this tab (sessionStorage, as the page goes), and a setting typed but not saved yet (its field still in use:
+  // it saves as you leave it) is sent then too, so nothing typed is lost.
+  const KEPT = { guides: guides, openDetails: openDetails, SHOWFILE: SHOWFILE, procChart: procChart, LH_OPEN: LH_OPEN, TOOL_OPEN: TOOL_OPEN };
+  let keptScroll = {};
+  try {
+    const k = JSON.parse(sessionStorage.getItem("pc-kept") || "{}");
+    Object.keys(KEPT).forEach(function (n) { if (k.open && k.open[n]) Object.assign(KEPT[n], k.open[n]); });
+    if (k.lib && k.lib.key) { LIB.key = k.lib.key; LIB.view = k.lib.view || LIB.view; }
+    Object.keys(k.tools || {}).forEach(function (n) { if (TOOL[n] && k.tools[n]) TOOL[n].key = k.tools[n]; });  // each tool's library
+    keptScroll = k.scroll || {};
+  } catch { /* storage unavailable, or what it held isn't ours */ }
+  if ("scrollRestoration" in history) history.scrollRestoration = "manual";  // (the page puts it back itself, once it's drawn)
+  window.addEventListener("pagehide", function () {
+    const a = /** @type {Field | null} */ (document.activeElement);
+    if (a && main.contains(a) && a.dataset && a.dataset.set && a.value !== "" && /INPUT|TEXTAREA/.test(a.tagName) && a.checkValidity()) {
+      const q = a.dataset.set.split(".");
+      if (S && S[q[0]] && parseVal(q[0], q[1], a) !== S[q[0]][q[1]]) { pending[q[0]] = pending[q[0]] || {}; pending[q[0]][q[1]] = parseVal(q[0], q[1], a); }
+    }
+    if (Object.keys(pending).length) {
+      clearTimeout(saveTimer);
+      try { fetch("/api/settings", { method: "POST", keepalive: true, headers: { "Content-Type": "application/json" }, body: JSON.stringify(pending) }); } catch { /* (gone with the page) */ }
+      pending = {};
+    }
+    try {
+      keptScroll[page] = window.scrollY;
+      const tools = {};
+      Object.keys(TOOL).forEach(function (n) { if (TOOL[n] && TOOL[n].key) tools[n] = TOOL[n].key; });
+      sessionStorage.setItem("pc-kept", JSON.stringify({ open: KEPT, lib: { key: LIB.key, view: LIB.view }, tools: tools, scroll: keptScroll }));
+    } catch { /* storage unavailable */ }
+  });
+  // the place scrolled to, once the page is long enough to have it (a list still coming in draws it a little later);
+  // a scroll, key or touch of your own first, and it's left where you put it
+  function scrollBack(y) {
+    let left = 50;
+    const stop = function () { left = 0; };
+    ["wheel", "touchstart", "keydown", "pointerdown"].forEach(function (ev) { window.addEventListener(ev, stop, { once: true, passive: true }); });
+    (function tryIt() {
+      if (left-- <= 0) return;
+      if (document.scrollingElement.scrollHeight - window.innerHeight >= y) { window.scrollTo(0, y); return; }
+      setTimeout(tryIt, 100);
+    })();
+  }
+
   page = location.pathname.replace("/", "") || "health";
   load().then(function () {
     go(page, false);
+    if (!location.hash && keptScroll[page] > 0) scrollBack(keptScroll[page]);
     // A link straight to a card (/ssd#l2arc-settings)
     if (reveal(location.hash.slice(1))) { render(); scrollToSoon(location.hash.slice(1), -70); }  // (a record: once its list is in)
     const target = location.hash && document.getElementById(location.hash.slice(1));

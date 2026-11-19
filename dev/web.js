@@ -108,6 +108,9 @@ async function build(args) {
 
 const COMMANDS = { build };
 if (require.main === module) {
+  require("./cli.js").front(process.argv.slice(2), "node dev/web.js", "The web app's CSS, scripts and pages, built as browsers get them.",
+    ["node dev/web.js build [--no-minify] <in.css|.js|.html> [<out>]     # one file built (onto itself, with no <out>)"],
+    { options: ["--no-minify"], commands: Object.keys(COMMANDS) });
   const [cmd, ...args] = process.argv.slice(2);
   if (!COMMANDS[cmd]) {
     console.error("usage: node dev/web.js build [--no-minify] <in.css|.js|.html> [<out>]");

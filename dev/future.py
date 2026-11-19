@@ -47,6 +47,7 @@ import sys
 import tempfile
 import threading
 import time
+import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -59,7 +60,7 @@ import dev  # noqa: E402 — (puts the callboard install on the path: dev/__init
 from dev import upkeep  # noqa: E402 — the exit codes; the pins, the stable releases and the version arithmetic are its
 
 from callboard import policy  # noqa: E402 — the exit codes; the pins, the stable releases and the version arithmetic are its
-from callboard.progress import Progress, detail, feeding, record, result, said, status, timed  # noqa: E402 — the bar the dev tools share (on callboard's board: sent to it)
+from callboard.progress import Progress, detail, feeding, placed, record, result, said, status, timed  # noqa: E402 — the bar the dev tools share (on callboard's board: sent to it)
 from callboard.progress import tell as tell_above  # noqa: E402 — a failure in full, above the board (this file's tell: a word on the way)
 
 WARN = ["-X", "dev", "-W", "error::DeprecationWarning", "-W", "error::PendingDeprecationWarning", "-W", "error::SyntaxWarning"]
@@ -112,6 +113,22 @@ def verdict_line(tag: str, rc: int) -> str:
     return f"\nPython {tag}, inside the image: " + {
         policy.PASS: "clean.", policy.WARN: "passes, with warnings its rules hold as such.", policy.INFO: "passes, with notes (skipped tests or warnings told).",
     }.get(rc, "the suite fails — what it deprecates or removes needs a look before the image moves to it.")
+
+
+def rerun_there(tag: str, stable: bool = False) -> Callable[[str], str]:
+    """How a failure of the suite in a container is run again from this machine: its own fix ("python3 -m unittest
+    tests.…", tests/run.py's) made this file's run of that test in the image on ``tag``; any other fix as it was."""
+    head = "python3 -m unittest "
+
+    def rerun(fix: str) -> str:
+        return f"python3 dev/future.py --tag {tag}{' --stable' if stable else ''} {fix[len(head):]}" if fix.startswith(head) else fix
+    return rerun
+
+
+def where_run(tag: str, image: str) -> str:
+    """What a part of the suite ran on, for its failures on callboard's board (callboard.progress.placed): "Python
+    3.16.0a1 image (plex-cache:future)"."""
+    return f"Python {tag.split('-')[0]} image ({image})"
 # the build's lines that say where it is: the legacy builder's "Step 8/31 : RUN …", BuildKit's "#8 [ffmpeg 2/3] RUN …"
 STEP_LEGACY = re.compile(r"^Step (\d+)/(\d+) : (.*)")
 STEP_BUILDKIT = re.compile(r"^#(\d+) \[([^\]]+)\] (.*)")
@@ -239,7 +256,13 @@ def started(cmd: list[str], wait: float, say: Callable[[str], None] | None = Non
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, text=True, errors="replace")
     except OSError as e:
         return 1, str(e)
-    timer = threading.Timer(wait, proc.kill)
+    expired = threading.Event()
+
+    def stop():   # (said before it's killed: the timer's thread can still be alive once the kill is done, so is_alive() can't tell)
+        if proc.poll() is None:
+            expired.set()
+            proc.kill()
+    timer = threading.Timer(wait, stop)
     timer.start()
     with proc:   # (its pipe closed however it ends)
         try:
@@ -250,9 +273,8 @@ def started(cmd: list[str], wait: float, say: Callable[[str], None] | None = Non
                     say(f"  {text}")
             rc = proc.wait()
         finally:
-            expired = not timer.is_alive() and proc.returncode not in (0, None)
             timer.cancel()
-    return (None if expired else rc), last
+    return (None if expired.is_set() else rc), last
 
 
 def docker_up(wait: float = 300, step: float = 2, say: Callable[[str], None] | None = None) -> str:
@@ -585,6 +607,12 @@ def count_tests(tests: list[str], exclude: list[str] | None = None) -> int:
             per.setdefault(cls, [])
         elif cls and (m := re.match(r"    def (test\w*)\(", line)):
             per[cls].append(m.group(1))
+    if "PageChecks" in per:   # (its tests made from the page checks' template, a test per check: none written out here)
+        try:
+            with open(os.path.join(ROOT, "tests", "callboard_pagechecks", "template.toml"), "rb") as fh:
+                per["PageChecks"] = [f"test_{c}" for c in tomllib.load(fh).get("checks", {})]
+        except (OSError, ValueError):
+            pass
     n = 0
     for t in tests:
         parts = t.split(".")[2:] if t.startswith("tests.test_plexcache") else []
@@ -854,8 +882,10 @@ class Detail:
         """The docker options that mount the folder into a container for part ``name``."""
         return ["-v", f"{self.folder}:/detail", "-e", f"CALLBOARD_DETAIL=/detail/{name}.json"] if self.folder else []
 
-    def write(self, tag: str, picks: list[Pick], built: bool | None, results: dict[str, tuple[int, str]], note: str = "") -> None:
-        """The run's page written: the channels' choices, the build and each part's result."""
+    def write(self, tag: str, picks: list[Pick], built: bool | None, results: dict[str, tuple[int, str]], note: str = "",
+              rerun: Callable[[str], str] | None = None) -> None:
+        """The run's page written: the channels' choices, the build and each part's result (each failure with the command
+        that runs it again where it ran: ``rerun``, rerun_there's)."""
         if not self.folder:
             return
         parts = {}
@@ -865,13 +895,16 @@ class Detail:
                     parts[name] = json.load(fh)
             except (OSError, ValueError):
                 parts[name] = None
+            for f in ((parts[name] or {}).get("failures") or []):
+                if rerun is not None and str(f.get("test", "")).startswith("tests."):
+                    f["rerun"] = rerun(f"python3 -m unittest {f['test']}")
         from dataclasses import asdict
         detail({"kind": "future", "python": tag, "picks": [asdict(p) for p in picks], "build": {"ok": built, "steps": BUILD_STEPS[0]},
                 "parts": parts, "results": {name: {"rc": rc, "last": last} for name, (rc, last) in results.items()}, "note": note})
         shutil.rmtree(self.folder, ignore_errors=True)
 
 
-def parallel_route(tag: str, args: list[str], picks: list[Pick], node_pick: Pick | None, exclude: list[str] | None) -> int:
+def parallel_route(tag: str, args: list[str], picks: list[Pick], node_pick: Pick | None, exclude: list[str] | None, stable: bool = False) -> int:
     """On callboard's board, the whole suite: the image built and, meanwhile, every test that doesn't need its tools
     (IMAGE_CLASSES do) run on the plain Python image; those in the image once it's built. One bar for the three
     (OneBar), each failure said as it comes (tests/run.py's), the result line the image's run's (its tools' versions)."""
@@ -886,6 +919,7 @@ def parallel_route(tag: str, args: list[str], picks: list[Pick], node_pick: Pick
     mount: list[str] = []
     results: dict[str, tuple[int, str]] = {}
     page = Detail()
+    rerun = rerun_there(tag, stable)   # (each failure's command: that test run again in the image, not on this machine)
 
     given_up = threading.Event()   # (the image didn't build: the run's result is known, the plain part stopped)
     named = f"plex-cache-future-{os.getpid()}"
@@ -903,8 +937,8 @@ def parallel_route(tag: str, args: list[str], picks: list[Pick], node_pick: Pick
                 if rec is not None and rec.get("bar") == "tests":   # (its bar: into the one bar)
                     one.suite(name, rec)
                     continue
-                with OUT:
-                    sys.stdout.write(line)
+                with OUT:   # (its failures and issues said with what they ran on, and how they're run again there)
+                    sys.stdout.write(placed(line, where_run(tag, image), rerun))
                     sys.stdout.flush()
                 if rec is None and line.strip():
                     last = line.strip()
@@ -928,7 +962,7 @@ def parallel_route(tag: str, args: list[str], picks: list[Pick], node_pick: Pick
     except FetchFailed as e:
         early_run.join()
         ONE[0] = None
-        page.write(tag, picks, None, results, f"a download the build needs failed ({e})")
+        page.write(tag, picks, None, results, f"a download the build needs failed ({e})", rerun)
         print(f"\nNot run: a download the build needs failed ({e}). Nothing is known about python:{tag} from this — run it again.")
         return policy.NOTRUN
     except DockerBroken as e:   # (nothing runs in Docker now: the plain part stopped too, its result not the run's)
@@ -936,14 +970,14 @@ def parallel_route(tag: str, args: list[str], picks: list[Pick], node_pick: Pick
         subprocess.run(["docker", "kill", f"{named}-plain"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         early_run.join(timeout=60)
         ONE[0] = None
-        page.write(tag, picks, None, results, docker_broken_why(str(e)))
+        page.write(tag, picks, None, results, docker_broken_why(str(e)), rerun)
         return docker_broken_report(str(e), tag)
     if not built:   # (a failure whatever the plain part finds: said now, not once every test has run on it)
         given_up.set()
         subprocess.run(["docker", "kill", f"{named}-plain"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         early_run.join(timeout=60)
         ONE[0] = None
-        page.write(tag, picks, False, results, "")
+        page.write(tag, picks, False, results, "", rerun)
         said(result(""))
         print(f"\nThe image doesn't build on python:{tag} (no such tag yet, or the build fails there): the build's log is above."
               " The tests that need no tools were stopped, as the run fails either way.")
@@ -955,7 +989,7 @@ def parallel_route(tag: str, args: list[str], picks: list[Pick], node_pick: Pick
         part("image", IMAGE, [*(exclude or []), *(c for c in classes if c not in in_image)])   # (what the run leaves out, left out here too)
     early_run.join()
     ONE[0] = None
-    page.write(tag, picks, built, results, "" if zstd or not built else "the image's Python lacks the stdlib zstd")
+    page.write(tag, picks, built, results, "" if zstd or not built else "the image's Python lacks the stdlib zstd", rerun)
     said(result((results.get("image") or results.get("plain") or (1, ""))[1]))
     if not built:
         print(f"\nThe image doesn't build on python:{tag} (no such tag yet, or the build fails there).")
@@ -994,7 +1028,7 @@ def image_route(python: str, tag: str | None, tests: list[str], verbose: bool, s
         print(table(picks))
     TESTS[0] = count_tests(tests, exclude)   # (the bar's total from the start: the build's steps and these)
     if feeding() and tests == ["tests.test_plexcache"] and not verbose:   # (on the board: the parts at once)
-        return parallel_route(tag, args, picks, node_pick, exclude)
+        return parallel_route(tag, args, picks, node_pick, exclude, stable)
     try:
         built = build_image(tag, args, verbose)
     except FetchFailed as e:
@@ -1042,14 +1076,14 @@ def image_route(python: str, tag: str | None, tests: list[str], verbose: bool, s
     if feeding():   # (on the board: the suite's output passed on as it comes, its result line kept for the block's)
         last = ""
         with subprocess.Popen(run, stdout=subprocess.PIPE, text=True, errors="replace") as proc:
-            for line in proc.stdout or []:
-                sys.stdout.write(line)
+            for line in proc.stdout or []:   # (its failures and issues said with what they ran on, and how they're run again there)
+                sys.stdout.write(placed(line, where_run(tag, IMAGE), rerun_there(tag, stable)))
                 sys.stdout.flush()
                 rec = record(line)
                 if rec is None and line.strip():
                     last = line.strip()
         got = proc.returncode
-        page.write(tag, picks, True, {"image": (got, last)})
+        page.write(tag, picks, True, {"image": (got, last)}, rerun=rerun_there(tag, stable))
         said(result(last))   # (the suite's result line, what it ran on with it: tests/run.py's ran_on)
     else:
         got = subprocess.run(run).returncode
@@ -1170,6 +1204,9 @@ def main() -> int:
     ap.add_argument("--python", default=f"{major}.{minor + 1}", help=f"the Python to try (default: the one after the image's, {major}.{minor + 1})")
     ap.add_argument("--tag", help="the python image tag to build with (default: the newest <python> prerelease on Docker Hub, e.g. 3.16.0a1-slim-trixie)")
     ap.add_argument("--stable", action="store_true", help="the next Python only: the tools at the Dockerfile's pins, node from Debian")
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import cli  # (dev/cli.py: what every dev script's command line does the same)
+    ap.add_argument("--version", action="version", version=f"%(prog)s {cli.version()}")
     ap.add_argument("--fresh", action="store_true", help="ask upstream again for the channels rather than using the day's answers")
     ap.add_argument("--local", action="store_true", help="run on an interpreter of this machine instead of inside the image")
     ap.add_argument("--syncthing", action="store_true", help="instead: download Syncthing's newest pre-release, start it, and run the live tests against it")

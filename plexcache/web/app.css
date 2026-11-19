@@ -250,6 +250,8 @@ h2 .info{vertical-align:2px}
 .infopop[hidden]{display:none}
 .infopop[popover]{inset:auto;margin:0}  /* as a popover (the top layer): placed where the page puts it, as before */
 .infopop .mono{font-family:var(--mono);font-size:12px}
+.infopop .ipara{margin:0}  /* a bubble's parts (app.js infoParas): a blank line between them, as before */
+.infopop * + .ipara{margin-top:1.5em}
 .chk > .info,.convtype > .info{align-self:center;margin-left:0;margin-right:-8px}  /* the ⓘ first in every row, in one column; the box right after it */
 .chk > .info::before,.convtype > .info::before{inset:-13px -3px}  /* (its touch target kept off the box beside it) */
 .convtype > .info{margin-right:4px}  /* the row's gap is 4px, not 18px: a clear 8px between the ⓘ and its box */

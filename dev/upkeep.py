@@ -1162,6 +1162,9 @@ def main() -> int:
     """``python3 dev/upkeep.py``: each dependency against its newest release, the pins moved where they can be."""
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     ap.add_argument("--fresh", action="store_true", help="ask upstream again rather than using the day's answers")
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import cli  # (dev/cli.py: what every dev script's command line does the same)
+    ap.add_argument("--version", action="version", version=f"%(prog)s {cli.version()}")
     ap.add_argument("--report", action="store_true", help="look, but move no pin")
     ap.add_argument("--callboard", action="store_true", help="the result as callboard's box: a first line it reads, then the box (moves pins on dev, as without it)")
     ap.add_argument("--tnsync", dest="callboard", action="store_true", help=argparse.SUPPRESS)   # (the flag's old name: a .tnsync that still says it)

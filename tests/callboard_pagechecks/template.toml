@@ -1,0 +1,30 @@
+# A shared test (a MyStandards template): what Callboard needs to copy it into a project and keep the copy in step.
+# Every one of these is in each of my projects; a project leaves one out only in its callboard.toml, with the reason:
+#     [templates.pagechecks]          opt_out = "why the whole of it doesn't apply here"
+#     [templates.pagechecks.checks]   <check> = "why that check doesn't apply here"
+
+title = "Page checks"
+version = 2
+about = "How each page behaves for the person using it, drawn in Chromium by Playwright."
+folder = "tests/callboard_pagechecks"           # (where the copy goes in a project)
+files = ["pagechecks.js", "test_pagechecks.py", "template.toml"]
+empty = ["__init__.py"]                          # (made empty in the copy: it's a Python package)
+settings = "tests/pagechecks.json"               # (the project's own: which pages, how to start them; never in the copy)
+settings_start = '{"pages": [], "servers": {}}'
+tool = "pages"                                   # (the DHTML tool it belongs to)
+
+# Each check is a test of its own in the project's suite (test_<check>), and can be left out on its own, with a reason.
+[checks]
+steady_clicks = "A control that opens or closes something stays where it was on the screen when clicked."
+stays_open = "What's opened stays open while the page updates itself."
+survives_reload = "What's open, the tab picked and the place scrolled to come back after a reload."
+keeps_typing = "What's typed in a field is still there after the page updates itself, and after a reload."
+search_holds = "A search box keeps its text, its cursor and the focus while the page updates as it's typed in."
+focus_holds = "The field in use keeps the focus while the page updates itself."
+no_surprise_scroll = "What's on screen doesn't move while the page updates itself and nobody's touching it."
+keeps_selection = "Text selected (to copy it) stays selected while the page updates itself."
+info_buttons = "Each setting has a button that tells what it is (info, help, ?)."
+info_popovers = "An info button opens a popover of the browser's own (the popover attribute)."
+info_paragraphs = "An info button's bubble says each of its parts in a paragraph of its own, led by its label in bold and a colon."
+revert_buttons = "Each setting has a button that puts it back (revert, reset, ↺)."
+no_default_words = "A setting's own words don't say what its default is: its revert button does."

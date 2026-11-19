@@ -40,6 +40,7 @@ import subprocess
 import sys
 import time
 
+__version__ = "0.16.22"   # (the release it came with: plexcache/__init__.py's, which dev/release.py bump keeps it at)
 CHUNK = 1024 * 1024
 OPEN_FILES_TTL = 30  # seconds between re-scans of which files are open
 MOUNTINFO = "/proc/self/mountinfo"
@@ -225,13 +226,14 @@ def rewrite(path: str, st: os.stat_result, dir_st: os.stat_result, pacer: Pacer,
 def main() -> int:
     """The command: a dataset's or folder's files reported, or rewritten with --apply."""
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
+    ap.add_argument("--version", action="version", version=f"rewrite_blocks.py {__version__}")
     ap.add_argument("target", help="dataset name (tank/plexfiles) or folder (/mnt/tank/plexfiles/Movies)")
     ap.add_argument("--apply", action="store_true", help="rewrite the files (without it, only reports)")
     ap.add_argument("--block", help="block size to aim for, e.g. 1M (default: the dataset's recordsize)")
     ap.add_argument("--mb-per-sec", type=float, default=80, help="pace of reads plus writes (default 80; 0 = no limit)")
     ap.add_argument("--no-verify", action="store_true", help="skip re-reading both copies to compare them")
     ap.add_argument("--min-free-gb", type=float, default=50, help="stop when free space drops below this (default 50)")
-    ap.add_argument("--yes", action="store_true", help="don't ask before starting")
+    ap.add_argument("-y", "--yes", action="store_true", help="don't ask before starting")
     args = ap.parse_args()
 
     folder, dataset = resolve(args.target)

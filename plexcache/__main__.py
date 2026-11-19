@@ -1,5 +1,6 @@
 """Entry point: ``python -m plexcache``."""
 
+import argparse
 import html
 import logging
 import os
@@ -8,6 +9,7 @@ import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from . import version_label
 from .app import App
 from .i18n import M
 from .server import serve
@@ -121,5 +123,16 @@ def main() -> int:
     return 0
 
 
+def cli(argv: list[str] | None = None) -> int:
+    """The command line, ``python -m plexcache``: --help and --version answered, anything else refused (exit 2: the
+    app's settings are the environment's, none is an option), and with nothing asked, the app run."""
+    ap = argparse.ArgumentParser(prog="python -m plexcache", description=(
+        "Run Dionysus. Its settings are the environment's (PLEXCACHE_CONFIG, PLEXCACHE_HOST, PLEXCACHE_PORT and the rest: "
+        "the README lists them), so it takes no options but these."))
+    ap.add_argument("--version", action="version", version=f"plexcache {version_label()}")
+    ap.parse_args(argv)
+    return main()
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(cli())

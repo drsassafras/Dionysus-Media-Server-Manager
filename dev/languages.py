@@ -27,4 +27,6 @@ def main():
     print(f"{len(rows)} codes")
 
 if __name__ == "__main__":
-    sys.exit(main())
+    import cli  # (dev/cli.py: what every dev script's command line does the same)
+    _answered = cli.front(sys.argv[1:], __doc__, "python3 dev/languages.py")
+    sys.exit(main() if _answered is None else _answered)

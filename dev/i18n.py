@@ -707,4 +707,6 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv))
+    import cli  # (dev/cli.py: what every dev script's command line does the same)
+    _answered = cli.front(sys.argv[1:], __doc__, "python3 dev/i18n.py", options=('--callboard', '--tnsync', '--complete', '--release'), commands=('check', 'keys', 'quality', 'leftovers', 'status', 'sync', 'missing', 'merge'))
+    sys.exit(main(sys.argv) if _answered is None else _answered)

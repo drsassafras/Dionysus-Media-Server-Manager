@@ -221,6 +221,10 @@ def snapshot(names):
 
 
 if __name__ == "__main__":
+    import cli  # (dev/cli.py: what every dev script's command line does the same)
+    _answered = cli.front(sys.argv[1:], __doc__, "python3 dev/make_fixtures.py", options=("--snapshot",))
+    if _answered is not None:
+        sys.exit(_answered)
     names = ["feature-rich.mkv", "anime.mkv", "plain.mkv"]
     if "--snapshot" not in sys.argv:
         with tempfile.TemporaryDirectory() as work:

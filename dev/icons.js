@@ -28,6 +28,10 @@
 "use strict";
 const fs = require("fs");
 const path = require("path");
+require("./cli.js").front(process.argv.slice(2), "node dev/icons.js", "The app's icons, each drawn by Chromium from the logo the app shows at that size.",
+  ["node dev/icons.js           # make them (plexcache/web's icons and the reel's tab icons)",
+    "node dev/icons.js check     # whether they're what would be made now (exit 1 where one isn't)"],
+  { commands: ["check"] });
 const { chromium } = require("playwright");
 
 const WEB = path.join(__dirname, "..", "plexcache", "web");

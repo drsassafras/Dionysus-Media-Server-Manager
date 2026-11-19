@@ -153,12 +153,12 @@ function seg(choices, now, set) {
 const preferred = p => (p.default || {}).auditor || p.auditors[0];
 const effortOf = p => String((p.default || {}).thoroughness || Object.keys(p.efforts)[0] || "");
 function put(el, ...kids) { el.replaceChildren(...kids.flat(Infinity).filter(k => k != null && k !== false)); }
-const GONE_SAID = "Lost the page's server. Reconnecting… If it doesn't come back within a minute, start it again with python3 dev/audit.py gui (or a on callboard's board): this tab picks it up by itself.";
+const GONE_SAID = "Lost the page's server. Reconnecting… If it doesn't come back within a minute, start it again with python3 dev/audit.py ui (or a on callboard's board): this tab picks it up by itself.";
 let stale = null;   // (the server runs older code than is on disk: a banner says to start it again)
 function old() {
   if (stale) return;
   stale = h("div", {class: "card offline", role: "alert"}, h("b", {}, "This page is out of date. "),
-    "Its server started before its code last changed, so it can show things wrongly. Close this tab and start it again with python3 dev/audit.py gui.");
+    "Its server started before its code last changed, so it can show things wrongly. Close this tab and start it again with python3 dev/audit.py ui.");
   document.querySelector("main, body").prepend(stale);
 }
 let offline = null;   // (the server's gone: a banner says so, and it's asked again every few seconds until it's back)

@@ -17,6 +17,8 @@
 // time more looks have all their pictures (dev/style.py review shows those while the rest are taken), and last
 // {"shots": {"<id>": [{"label", "before", "after", "same", "diff"}, ...]}}: the pictures of each look, two by two.
 "use strict";
+require("./cli.js").front(process.argv.slice(2), "node dev/style-sample.js", "The style sample's pictures (dev/style.py sample runs this; not run by hand).",
+  ["node dev/style-sample.js <out dir>     # reads <out dir>/plan.json (dev/style.py writes it)"]);
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -64,25 +66,51 @@ async function open(browser, look, page, width, side, judge, media) {
   return { ctx, p };
 }
 
-// Marks the first element on the page that wears the look, and is drawn; false if there's none.
-async function find(p, f) {
-  return p.evaluate((f) => {
+// Marks the first element on the page that wears the look, and is drawn; false if there's none. A look in a part the
+// page draws only once it's opened (f.open: dev/style.py OPENS) is looked for with that part open — an info bubble,
+// opened from each ⓘ on the page in turn until one shows the look — and the bubble itself is marked, so its picture is
+// the whole bubble (and the mark lasts: the page's refresh writes the bubble's words again). want: the ⓘ the other side
+// opened ({id, index}), opened here too, its bubble marked whether it wears the look or not (the Before may not have
+// it at all). Then {opened: {id, index}}, the part left open for the pictures (shut closes it).
+async function find(p, f, want) {
+  return p.evaluate(([f, want]) => {
     const seen = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
-    let els = [];
-    if (f.how === "selector") {
-      for (const s of f.selectors) { try { els = els.concat([...document.querySelectorAll(s)]); } catch { /* a selector the browser can't take */ } }
-    } else if (f.how === "animation") {   // (an @keyframes: the first element running it)
-      els = [...document.querySelectorAll("*")].filter((el) => getComputedStyle(el).animationName.split(/,\s*/).includes(f.name));
-    } else if (f.how === "style") {
-      const re = new RegExp(f.pattern);
-      els = [...document.querySelectorAll("[style]")].filter((el) => re.test((el.getAttribute("style") || "").replace(/\s*([:;,])\s*/g, "$1")));
-    }
-    const el = els.find(seen);
+    const wearing = () => {
+      let els = [];
+      if (f.how === "selector") {
+        for (const s of f.selectors) { try { els = els.concat([...document.querySelectorAll(s)]); } catch { /* a selector the browser can't take */ } }
+      } else if (f.how === "animation") {   // (an @keyframes: the first element running it)
+        els = [...document.querySelectorAll("*")].filter((el) => getComputedStyle(el).animationName.split(/,\s*/).includes(f.name));
+      } else if (f.how === "style") {
+        const re = new RegExp(f.pattern);
+        els = [...document.querySelectorAll("[style]")].filter((el) => re.test((el.getAttribute("style") || "").replace(/\s*([:;,])\s*/g, "$1")));
+      }
+      return els.find(seen);
+    };
     document.querySelectorAll("[data-style-sample]").forEach((x) => x.removeAttribute("data-style-sample"));
+    if (f.open === "info") {
+      const pop = document.getElementById("infopop");
+      const btns = [...document.querySelectorAll(".info[data-info]")].filter(seen);
+      const tries = want ? [btns.find((b) => b.dataset.info === want.id) || btns[want.index]].filter(Boolean) : btns;
+      for (const b of tries) {
+        b.click();   // (pinned open: app.js showInfo)
+        if (pop && seen(pop) && (want || wearing())) {
+          pop.setAttribute("data-style-sample", "");
+          return { opened: { id: b.dataset.info, index: btns.indexOf(b) } };
+        }
+      }
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));   // (none shows it: shut again)
+      return false;
+    }
+    const el = wearing();
     if (!el) return false;
     el.setAttribute("data-style-sample", "");
     return true;
-  }, f);
+  }, [f, want || null]);
+}
+// What find opened, shut again: the next look is looked for, and photographed, on the page as it's drawn.
+async function shut(p) {
+  await p.evaluate(() => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })));
 }
 
 // What a still can't show by itself, put in front of the camera (dev/style.py finder): the states a look's selector
@@ -431,11 +459,13 @@ async function drained() {
       for (const side of SIDES) open_[side] = await open(browser, look, pg, Number(width), side, judge, media);
       const got = [];
       for (const it of list) {
-        const ss = {};
-        let caught = true;
-        for (const side of SIDES) {
+        const ss = Object.fromEntries(SIDES.map((sd) => [sd, null]));
+        let caught = true, opened = null;
+        // (its own side first: a part it opened there — an info bubble's ⓘ — is opened on the other side too)
+        for (const side of [it.side, ...SIDES.filter((sd) => sd !== it.side)].filter((sd) => SIDES.includes(sd))) {
           const p = open_[side].p;
-          const there = await find(p, it.find);
+          const there = await find(p, it.find, opened);
+          opened = opened || (there && there.opened) || null;
           if (there && !(await force(p, it.find, true))) caught = false;   // (its states: on where it's drawn)
           ss[side] = { p, box: there ? await box(p) : null };
         }
@@ -467,6 +497,7 @@ async function drained() {
           got.push({ it, pg, g, label, part, caught: caught && shows && (at === null || moving > 0) });
         }
         for (const side of SIDES) await force(ss[side].p, it.find, false);
+        if (opened) for (const side of SIDES) await shut(ss[side].p);
       }
       for (const side of SIDES) await open_[side].ctx.close();
       say({ page: lookName(look) + ": " + pg });
@@ -486,7 +517,12 @@ async function drained() {
     plan.pages.forEach((pg, at) => queue(at + 0.5, async () => {
       const { ctx, p } = await open(browser, first, pg, 1280, side);
       const ids = [];
-      for (const it of items) if (it.side === side && await find(p, it.find)) ids.push(it.id);
+      for (const it of items) {
+        if (it.side !== side) continue;
+        const there = await find(p, it.find);
+        if (there) ids.push(it.id);
+        if (there && there.opened) await shut(p);
+      }
       await ctx.close();
       say({ page: "finding the looks: " + pg + (side === "before" ? " (before)" : "") });
       found[at][side] = ids;

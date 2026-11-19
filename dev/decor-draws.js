@@ -6,6 +6,8 @@
 // reads sizes and puts drawings in.
 //   node dev/decor-draws.js [plexcache/web/decor.js]  → {"<where>": "<what's drawn there>", ...} on stdout
 "use strict";
+require("./cli.js").front(process.argv.slice(2), "node dev/decor-draws.js", "What plexcache/web/decor.js draws, for the style guide (dev/style.py): every drawing and style, as JSON on stdout.",
+  ["node dev/decor-draws.js [<decor.js>]     # the app's own, with none given"]);
 const fs = require("fs"), path = require("path"), vm = require("vm");
 
 const SRC = process.argv[2] || path.join(__dirname, "..", "plexcache", "web", "decor.js");

@@ -1,0 +1,29 @@
+# A shared test (a MyStandards template): what Callboard needs to copy it into a project and keep the copy in step.
+# Every one of these is in each of my projects; a project leaves one out only in its callboard.toml, with the reason:
+#     [templates.clichecks]          opt_out = "why the whole of it doesn't apply here"
+#     [templates.clichecks.checks]   <check> = "why that check doesn't apply here"
+
+title = "Command line checks"
+version = 1
+about = "Everything in the project that's run from a shell (its commands, and each script), held to what every command line is expected to do: GNU's option names, POSIX's short options, and clig.dev's subcommands."
+folder = "tests/callboard_clichecks"            # (where the copy goes in a project)
+files = ["clichecks.py", "test_clichecks.py", "template.toml"]
+empty = ["__init__.py"]                          # (made empty in the copy: it's a Python package)
+settings = "tests/clichecks.json"                # (the project's own: its commands and how each is run; never in the copy)
+settings_start = '{"commands": []}'
+
+# Each check is a test of its own in the project's suite (test_<check>), and can be left out on its own, with a reason.
+# The names themselves (which flag is the standard one, what else it has been called) are in clichecks.py, the same
+# in every project, so two of my commands can't come to call one thing by two names.
+[checks]
+help_flag = "-h and --help each print the usage on stdout and exit 0, with nothing on stderr (GNU, clig.dev)."
+help_command = "A command with subcommands answers `help` as it does --help (git, docker, gh)."
+version_flag = "--version prints the version on stdout and exits 0 (GNU)."
+unknown_option = "An option the command doesn't have is refused: exit 2, said on stderr, nothing on stdout."
+unknown_command = "A subcommand the command doesn't have is refused: exit 2, said on stderr, nothing on stdout."
+long_flags = "Every long option is two dashes and lowercase words joined by hyphens: no underscores, no capitals (GNU)."
+flag_names = "An idea GNU has an option name for is called by it: --dry-run, --force, --output, --yes, --quiet, --verbose, --no-browser, never another spelling."
+short_flags = "A short option means what it means everywhere: -n is --dry-run, -f --force, -o --output, -y --yes, -q --quiet, -v --verbose, -h --help, -V --version (POSIX, GNU)."
+command_names = "Subcommands are lowercase words joined by hyphens, and the shared ones have one name in every project: ui, init, version."
+lookalike_commands = "No two subcommands are one letter apart as a singular and its plural (test and tests): a slip of the finger would run the other."
+all_listed = "Everything in the project that can be run from a shell (a Python file with a main block, a script node runs that reads its command line, a Go program, an executable script) is one of the commands these checks are made on."

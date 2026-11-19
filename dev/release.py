@@ -290,7 +290,7 @@ def check_audits() -> Result:
     line = lines[-1] if lines else f"exit {got.returncode}"
     if got.returncode in (policy.PASS, policy.INFO):
         return Result(name, True, line)
-    return Result(name, False, line, lines[:-1][:15] + ["python3 dev/audit.py gui, and work through what the release rules still need."])
+    return Result(name, False, line, lines[:-1][:15] + ["python3 dev/audit.py ui, and work through what the release rules still need."])
 
 
 def check_looks() -> Result:
@@ -349,6 +349,14 @@ def bump() -> str:
     text = re.sub(r'^(__version__\s*=\s*["\'])[^"\']+(["\'])', lambda m: f"{m.group(1)}{new}{m.group(2)}", text, count=1, flags=re.M)
     with open(VERSION_FILE, "w", encoding="utf-8") as fh:
         fh.write(text)
+    # the one script that's run on its own, away from the package (the README's rewrite_blocks.py), says its release itself
+    alone = os.path.join(os.path.dirname(VERSION_FILE), "tools", "rewrite_blocks.py")
+    if os.path.isfile(alone):
+        with open(alone, encoding="utf-8") as fh:
+            text = fh.read()
+        text = re.sub(r'^(__version__\s*=\s*["\'])[^"\']+(["\'])', lambda m: f"{m.group(1)}{new}{m.group(2)}", text, count=1, flags=re.M)
+        with open(alone, "w", encoding="utf-8") as fh:
+            fh.write(text)
     return new
 
 
@@ -523,7 +531,7 @@ def step(cmd: str, args: list[str]) -> int:
         return 0
     if cmd == "hotfix":
         if not args:
-            print("usage: python3 dev/release.py hotfix <name>")
+            print("usage: python3 dev/release.py hotfix <name>", file=sys.stderr)
             return 2
         base = cfg.release_branch() or "main"
         name = f"hotfix/{args[0]}"
@@ -536,7 +544,7 @@ def step(cmd: str, args: list[str]) -> int:
         return 0
     if cmd == "tick":
         if not args:
-            print("usage: python3 dev/release.py tick <item> [--undo]")
+            print("usage: python3 dev/release.py tick <item> [--undo]", file=sys.stderr)
             return 2
         print(notes.tick(_repo(), notes_dir(), version, args[0], "--undo" not in args))
         return 0
@@ -544,4 +552,6 @@ def step(cmd: str, args: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    import cli  # (dev/cli.py: what every dev script's command line does the same)
+    _answered = cli.front(sys.argv[1:], __doc__, "python3 dev/release.py", options=('--callboard', '--tnsync', '--undo'), commands=('notes', 'bump', 'start', 'candidate', 'hotfix', 'tick'))
+    sys.exit(main() if _answered is None else _answered)

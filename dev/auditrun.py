@@ -17,6 +17,7 @@ main's beside it, and can only read; its answer is checked and recorded. Either 
 halves; who and how thoroughly in the private one). Nothing is committed: the new files wait in both repos for you.
 
     python3 dev/audit.py run --target uncommitted --auditor <id> --thoroughness 3   # an AI auditor's (the page lists them)
+    python3 dev/auditrun.py --target TARGET --auditor ID --thoroughness 1-5 [--author] [PATH…]   # the same, run directly
 """
 
 import datetime
@@ -607,16 +608,16 @@ def main(args: list[str]) -> int:
             paths.append(a)
     found = [(p, p.auditors()) for p in plugins() if not p.found()]
     if not opts.get("auditor") or not opts.get("thoroughness", "").isdigit():
-        print("usage: dev/audit.py run --target TARGET --auditor ID --thoroughness 1-5 [--author] [PATH…]")
-        print("  an AI auditor installed here: " + ("; ".join(f"{p.label} ({', '.join(ids)})" for p, ids in found) or "none found"))
-        print("  targets: " + ", ".join(f"{k} ({v.lower()})" for k, v in audit.TARGETS.items()))
-        print("  (a person's audit: the audits page, python3 dev/audit.py gui; or record)")
+        print("usage: dev/audit.py run --target TARGET --auditor ID --thoroughness 1-5 [--author] [PATH…]", file=sys.stderr)
+        print("  an AI auditor installed here: " + ("; ".join(f"{p.label} ({', '.join(ids)})" for p, ids in found) or "none found"), file=sys.stderr)
+        print("  targets: " + ", ".join(f"{k} ({v.lower()})" for k, v in audit.TARGETS.items()), file=sys.stderr)
+        print("  (a person's audit: the audits page, python3 dev/audit.py ui; or record)", file=sys.stderr)
         return 2
     run = Runner()
     target = opts.get("target") or ("chosen" if paths else "uncommitted")
     try:
         if opts["auditor"].startswith("human:"):
-            raise ValueError("a person's audit is the audits page's (python3 dev/audit.py gui), or record's")
+            raise ValueError("a person's audit is the audits page's (python3 dev/audit.py ui), or record's")
         kind, scope, lines, why = run.plan(target, paths)
         if why:
             raise ValueError(why)
@@ -637,4 +638,6 @@ def main(args: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    import cli  # (dev/cli.py: what every dev script's command line does the same)
+    _answered = cli.front(sys.argv[1:], __doc__, "python3 dev/auditrun.py", options=('--target=', '--auditor=', '--thoroughness=', '--author'))
+    sys.exit(main(sys.argv[1:]) if _answered is None else _answered)

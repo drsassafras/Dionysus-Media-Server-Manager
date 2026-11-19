@@ -583,7 +583,7 @@ def worker(module: str) -> int:
         def addSubTest(self, test, subtest, err):
             super().addSubTest(test, subtest, err)
             if err is not None:   # (a subtest that failed: a failure of its own, said now; the test is counted once it stops)
-                flavour = "FAIL" if issubclass(err[0], test.failureException) else "ERROR"
+                flavour = "FAIL" if err[0] is not None and issubclass(err[0], test.failureException) else "ERROR"
                 text = f"{self.separator1}\n{flavour}: {self.getDescription(subtest)}\n{self.separator2}\n{self._exc_info_to_string(err, test)}"  # pyright: ignore[reportAttributeAccessIssue] — unittest's own way of saying a failure, not in its stubs
                 say(t="test", id=None, name=_name(test), text=text)
 
@@ -670,7 +670,7 @@ def main() -> int:
     try:
         jobs_n = max(1, int(jobs)) if jobs else 2 * (os.cpu_count() or 1)  # (two per core: most tests wait more than they compute)
     except ValueError:
-        print(f"    -j takes a number of workers, not {jobs!r}")
+        print(f"    -j takes a number of workers, not {jobs!r}", file=sys.stderr)
         return 2
     started = time.time()
     if measure:   # (the workers' each into this folder; this process's own, for a run here)
@@ -723,4 +723,6 @@ def _run(module: str, jobs_n: int, excluded: set[str], started: float) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    from dev import cli  # (dev/cli.py: what every script's command line does the same)
+    _answered = cli.front(sys.argv[1:], __doc__, "python3 tests/run.py", options=("--coverage", "-j=", "--jobs=", "--exclude=", "--worker="))
+    sys.exit(main() if _answered is None else _answered)

@@ -8,6 +8,8 @@
 //
 // The demo runs its fake Plex and TrueNAS on 127.0.0.1; the pictures show a typical home
 // address instead (192.168.1.10), like a real install would.
+require("./cli.js").front(process.argv.slice(2), "node dev/screenshots.js", "Screenshots for the README, taken from the demo app (two demos started first: see the top of this file).",
+  ["node dev/screenshots.js     # into docs/screenshots (MAIN and NO_L2: the demos' addresses, http://127.0.0.1:8650 and :8651)"]);
 const { chromium } = require("playwright");
 const path = require("path");
 const { SHOT, fontsFirst, settle } = require("./still.js");   // (taken still: the same picture each time, dev/style-sample.js too)

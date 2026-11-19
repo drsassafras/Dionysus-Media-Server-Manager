@@ -15,6 +15,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 sys.path.insert(0, HERE)
 
+if __name__ == "__main__":   # (asked for its help or its version, or given an option it doesn't have: answered before anything is started)
+    from dev import cli as _cli  # (dev/cli.py: what every script's command line does the same)
+    _answered = _cli.front(sys.argv[1:], __doc__, "python3 tests/demo.py")
+    if _answered is not None:
+        sys.exit(_answered)
+
 import fakes  # noqa: E402
 
 tmp = tempfile.mkdtemp(prefix="plexcache-demo-")

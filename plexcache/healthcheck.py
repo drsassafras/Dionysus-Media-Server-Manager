@@ -1,10 +1,13 @@
 """The image's health check (``python -m plexcache.healthcheck``), for both of the app's services:
 the web app answers on PLEXCACHE_PORT (8642), the optimizer on PLEXCACHE_OPTIMIZER_PORT (8643)."""
 
+import argparse
 import os
 import sys
 import urllib.error
 import urllib.request
+
+from . import version_label
 
 
 def main() -> int:
@@ -22,5 +25,16 @@ def main() -> int:
     return 1
 
 
+def cli(argv: list[str] | None = None) -> int:
+    """The command line, ``python -m plexcache.healthcheck``: --help and --version answered, anything else refused
+    (exit 2: the ports are the environment's), and with nothing asked, the check made."""
+    ap = argparse.ArgumentParser(prog="python -m plexcache.healthcheck", description=(
+        "The container's health check: exit 0 where the app (PLEXCACHE_PORT, 8642) or the optimizer "
+        "(PLEXCACHE_OPTIMIZER_PORT, 8643) answers, 1 where neither does."))
+    ap.add_argument("--version", action="version", version=f"plexcache.healthcheck {version_label()}")
+    ap.parse_args(argv)
+    return main()
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(cli())

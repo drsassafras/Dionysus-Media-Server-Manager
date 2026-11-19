@@ -14,6 +14,7 @@ so they change with it, build by build. Offline, the build keeps the committed f
 It says what changed; the tests check every pattern still works in Python.
 """
 
+import argparse
 import os
 import re
 import sys
@@ -45,10 +46,26 @@ def parse(text: str, header: str = "") -> list[tuple[str, str]]:
     return out
 
 
+def _version() -> str:
+    """The project's version (plexcache/__init__.py's __version__), read, never imported."""
+    try:
+        with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "plexcache", "__init__.py"), encoding="utf-8") as fh:
+            m = re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']', fh.read(), re.M)
+    except OSError:
+        m = None
+    return m.group(1) if m else "unknown"
+
+
 def main(argv: list[str]) -> int:
     """``python3 dev/codecs.py``: plexcache/codec_names.py written from a MKVToolNix release's list (the one installed, with --installed)."""
-    args = argv[1:]
-    if args and args[0] == "--installed":
+    # (argparse, not dev/cli.py as the other dev scripts: the image build runs this file alone, with nothing else of dev/)
+    ap = argparse.ArgumentParser(prog="codecs.py", description="plexcache/codec_names.py written from MKVToolNix's list of codec names.")
+    ap.add_argument("--installed", action="store_true", help="the release `mkvmerge --version` says (the image build)")
+    ap.add_argument("--version", action="version", version=f"%(prog)s {_version()}")
+    ap.add_argument("source", nargs="*", help="a release (102.0), or codec.cpp and codec.h; none: MKVToolNix's main branch")
+    a = ap.parse_args(argv[1:])
+    args = a.source
+    if a.installed:
         import subprocess
         try:
             out = subprocess.run(["mkvmerge", "--version"], capture_output=True, text=True, timeout=30).stdout

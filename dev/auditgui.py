@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""The audits page: security audits without the commands (python3 dev/audit.py gui, or a on callboard's board).
+"""The audits page: security audits without the commands (python3 dev/audit.py ui, or a on callboard's board).
+
+    python3 dev/auditgui.py [--no-browser] [--port=N]   # the page served (dev/audit.py ui does the same)
 
     Overview     what the Security Audit block says, what waits to be audited before a push, the files waiting for you
                  to commit
@@ -532,7 +534,7 @@ def check_rules(text: str) -> list[str]:
 # ---------------------------------------------------------------- the server
 def serve(data: Data, open_browser: bool = True, port: int = 0, ready=None, keep: bool = False) -> int:
     """The audits page, served by callboard/devpage.py's server (its session, token and beats are the dev pages' shared ones),
-    for as long as it's open and IDLE after. With ``keep`` (dev/audit.py gui), its address and keys are kept (_kept_path)
+    for as long as it's open and IDLE after. With ``keep`` (dev/audit.py ui), its address and keys are kept (_kept_path)
     so that, started again, it comes back on the same ones: a tab still open reconnects by itself, and no new one opens
     unless none does. A tab's beat hears when the page's code has changed since the server started (_code)."""
     old = _kept() if keep else None
@@ -567,10 +569,12 @@ def serve(data: Data, open_browser: bool = True, port: int = 0, ready=None, keep
 
 
 def main(args: list[str]) -> int:
-    """``python3 dev/audit.py gui``: the page served, and opened in the browser unless --no-browser."""
+    """``python3 dev/audit.py ui``: the page served, and opened in the browser unless --no-browser."""
     port = next((int(a.split("=", 1)[1]) for a in args if a.startswith("--port=")), 0)
     return serve(Data(), open_browser="--no-browser" not in args, port=port, keep=True)
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    import cli  # (dev/cli.py: what every dev script's command line does the same)
+    _answered = cli.front(sys.argv[1:], __doc__, "python3 dev/auditgui.py", options=('--no-browser', '--port='))
+    sys.exit(main(sys.argv[1:]) if _answered is None else _answered)

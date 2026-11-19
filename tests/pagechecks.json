@@ -195,10 +195,5 @@
   }
  ],
  "wait_for": "h1",
- "settle": 1500,
- "probes": [
-  "info_buttons",
-  "info_popovers",
-  "info_paragraphs"
- ]
+ "settle": 1500
 }
