@@ -1017,6 +1017,11 @@ def verdict(state: str) -> int:
     from callboard import checks
     from callboard.progress import status
     r = checks.levels("upkeep")
+
+    def by(rules) -> int:   # (the box's state as those rules hold it: this run's exit code, and every gate's light)
+        return 0 if state == "current" else policy.exit_code([rules.level(state) if state in ("behind", "cves") else "info"])
+    if r is not None and hasattr(policy, "lit"):
+        policy.lit(r.id, by, by(r), r)
     if state == "current":
         return 0
     level = (r.level(state) if r and state in ("behind", "cves") else "info") if r is not None else "warn"

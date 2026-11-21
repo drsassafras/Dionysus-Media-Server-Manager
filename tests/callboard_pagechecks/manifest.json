@@ -9,8 +9,8 @@
  },
  "files": {
   "__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-  "pagechecks.js": "3e0999ad8c1e268e99af59422c2ca14f8c257091c48a7d899e1a0b755493e939",
+  "pagechecks.js": "e14a1e137e38fc4e7b11772aff3efbeee4bdc16b5816f02385a6bfb094d59af6",
   "template.toml": "443bd8ed055ca962e899eb708459d683aae32fdfdb453d0167dd17b16f67b91f",
-  "test_pagechecks.py": "7426294e6a7989c48b7db16f3dac3a6dd7f18ee7cacb185470a64b0b9a28ee50"
+  "test_pagechecks.py": "4898ea84a7f49c5c325540c60796b0209f4fece2b36c99a662d7267e6c2f170b"
  }
 }

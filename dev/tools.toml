@@ -25,7 +25,7 @@ upstream = "npm"
 [ruff]
 name = "Ruff"
 config = "ruff.toml"
-version = "0.17.5"
+version = "0.17.6"
 get = "pip"
 package = "ruff"
 upstream = "pypi"

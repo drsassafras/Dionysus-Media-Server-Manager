@@ -15,7 +15,7 @@ ARG DEBIAN_TAG=trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b337
 # them and reads cover art, which ffmpeg's own demuxers and decoders do — the static builds around carry every codec
 # library, 260 MB of image, and Debian's package pulls in 500 MB of dependencies.
 ARG MKVTOOLNIX=103.0
-ARG FFMPEG=9.0.2
+ARG FFMPEG=9.1
 ARG OXIPNG=10.2.1
 ARG LIBJPEG_TURBO=3.2.1
 # dev/future.py builds ffmpeg from its git snapshot instead: FFMPEG_SOURCE the tarball's URL (any compression tar knows),
@@ -32,8 +32,8 @@ ARG NODE_TAG=26-slim@sha256:e6bedef217677b276c591795e169840edd9096dbf13f29df8ef8
 # FFMPEG_GH_SHA256 is the GitHub mirror's tarball of the same release — another file, so a hash of its own; while it's
 # empty the mirror isn't fallen back to (dev/upkeep.py pins an empty one by itself at its next run on dev or main). A snapshot build (FFMPEG_SOURCE) has no release to pin and isn't checked.
 ARG LIBJPEG_TURBO_SHA256=c27ad72a68da151177929aa969ae773a2da5ac2af9ce946079314fdac8cece7f
-ARG FFMPEG_SHA256=8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e
-ARG FFMPEG_GH_SHA256=6e374ed621e48faa40639307dff48ba6fe574a509977956d2cce9669b7cc27e9
+ARG FFMPEG_SHA256=1a4d394ae63d190a526cd052eb4415c156b5c5e2df37efab41a7de0b8fde2433
+ARG FFMPEG_GH_SHA256=0ac7c9b9806b58eda00a528dcba316a2f33d291d949438900efa811d04b051bd
 ARG OXIPNG_SHA256_AMD64=46e3c4beb9aae57290ad809dd3374b07153579d3322a3778c53900633618b7c6
 ARG OXIPNG_SHA256_ARM64=f51bb7c9836202da52a8181549641940662aa87ec2e3ae68115d822d893015b3
 # Moritz Bunkus's repository-signing key, as mkvtoolnix.download/authenticity.html publishes it

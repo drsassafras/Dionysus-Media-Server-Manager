@@ -1908,11 +1908,13 @@ def main(argv: list[str]) -> int:
             if os.environ.get("CALLBOARD_RECHECK") != "1":   # (checked again after the review: its line stands, what was approved)
                 said(result(tally(len(now), "look", "approved")))
             then(0)
-        if not found:
-            return 0
         from callboard import checks, policy
         r = checks.levels("style")
-        level = r.level("waiting") if r else "warn"
+        level = (r.level("waiting") if r else "warn") if found else "off"
+        if r is not None and hasattr(policy, "lit"):   # (every gate's light on these same looks: callboard's lights)
+            policy.lit(r.id, lambda rules: policy.exit_code([rules.level("waiting")] if found else []), policy.exit_code([level]), r)
+        if not found:
+            return 0
         from callboard.progress import status
         status("looks waiting")
         return policy.exit_code([level])

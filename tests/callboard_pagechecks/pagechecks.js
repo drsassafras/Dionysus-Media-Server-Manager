@@ -150,11 +150,14 @@ async function run(plan, opts = {}) {
         await p.evaluate(([x]) => { const el = window.__cb.find("toggle", x); if (el) el.scrollIntoView({ block: "center" }); }, [f]);
         const was = await top(p, "toggle", f);
         if (was === null) continue;
+        const y0 = await p.evaluate(() => scrollY);
         await p.evaluate(([x]) => window.__cb.find("toggle", x).click(), [f]);
         await p.waitForTimeout(400);
         if (p.url() !== url) { await p.goBack().catch(() => {}); await drawn(p); continue; }
         const now = await top(p, "toggle", f);
-        if (now !== null && Math.abs(now - was) > MOVED) say("steady_clicks", `${name(f)} (${Math.round(now - was)}px)`, label);
+        // (which it was, so the finding says where to look: the page scrolled under it, or what's above it changed height)
+        const scrolled = Math.round((await p.evaluate(() => scrollY)) - y0);
+        if (now !== null && Math.abs(now - was) > MOVED) say("steady_clicks", `${name(f)} (${Math.round(now - was)}px: ${scrolled ? `the page scrolled ${scrolled}px` : "what's above it changed height"})`, label);
       }
     },
     async stays_open(p, label) {

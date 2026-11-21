@@ -58,7 +58,7 @@ import dev  # noqa: E402, F401 — (puts the callboard install on the path: dev/
 
 from callboard import coverage, policy  # noqa: E402 — (--coverage: what the tests ran, for callboard/coverage.py; policy: what the run is held to)
 from callboard.progress import FEED as FEED_MARK  # noqa: E402 — (a record's mark: run's FEED says whether there's a board)
-from callboard.progress import OFF, RED, Progress, detail, drawn, feeding, short_version, tell, tested, timed  # noqa: E402 — the bar the dev tools share (dev/upkeep.py's too)
+from callboard.progress import OFF, RED, Progress, detail, drawn, feeding, issue, short_version, tell, tested, timed  # noqa: E402 — the bar the dev tools share (dev/upkeep.py's too)
 from callboard.progress import result as result_line  # noqa: E402 — (``result`` is run's: the result line every dev tool says)
 
 FEED = feeding()  # (read before main() takes PLEXCACHE_PROGRESS out of the tests' environment)
@@ -101,6 +101,9 @@ SCHEMA = policy.Schema("tests", "Tests", {
     "skipped": policy.Setting("level", "a test skipped"),
 }, "A run of the test suite.")
 SKIPPED = [0]   # (the tests skipped this run: the verdict's)
+MISSING: dict[str, list[str]] = {}   # (the tests skipped as missing what they need, by the need — "pages (tool)": kept at the end of a whole run, so callboard setup puts it here)
+WHOLE = [False]   # (whether this run is the whole suite: only then is what it was missing kept)
+SKIPS: list[tuple[str, str]] = []   # (each of them and why it was: said at the end, so a count of skipped tests is never all there is)
 
 
 # A block of the checks' kind that runs tests: its findings' rules, a failed test held as an
@@ -108,11 +111,34 @@ SKIPPED = [0]   # (the tests skipped this run: the verdict's)
 CHECKS_AS = {"failures": "errors", "warnings": "warnings", "skipped": "information"}
 
 
+def missed(name: str, why: str) -> None:
+    """A skip noted when it's one for want of something (callboard/needs.py's reason, read back the one way)."""
+    from callboard import needs
+    got = needs.missing(why)
+    if got:
+        MISSING.setdefault(f"{got[0]} ({got[1]})", []).append(name)
+
+
+def skip_fix(why: str) -> str:
+    """What puts right a skip for want of something callboard fetches or installs: callboard setup ("" for any other)."""
+    from callboard import needs
+    return "callboard setup" if needs.missing(why) else ""
+
+
 def verdict(failed: int, warned: int, skipped: int) -> int:
     """The run's exit code, from what it's held to (callboard/policy.py's: 0 passed, 1 a failure, 3 only notes, 4 warnings held
     as such); without a callboard.toml, 1 when anything failed. Says the note the board shows (progress.status)."""
     from callboard.progress import counted, status
+    for name, why in SKIPS:   # (on the board: its Issues, a notice each; off it, a line each)
+        if FEED:
+            issue("notice", f"{name} skipped: {why}", fix=skip_fix(why), feed=True)
+        else:
+            print(f"    skipped: {name}: {why}")
+    del SKIPS[:]
     id_ = CONTEXT.get("CALLBOARD_INTEGRATION", "") or "unit"
+    if WHOLE[0] and id_ == "unit":   # (what the whole suite was missing here, kept as callboard's own runner keeps it: the Environment block and callboard setup read it)
+        from callboard.unittests import keep_missing
+        keep_missing(MISSING)
     if not CONFIG:
         return 1 if failed else 0
     try:
@@ -123,9 +149,25 @@ def verdict(failed: int, warned: int, skipped: int) -> int:
     except policy.ConfigError as e:
         print(f"    callboard.toml: {e}")
         return 2
-    held = {k: r.level(CHECKS_AS.get(k, k) if r.schema.kind == "checks" else k) for k in ("failures", "warnings", "skipped")}
-    levels = [held["failures"]] * failed + [held["warnings"]] * warned + [held["skipped"]] * skipped
+    def levels_by(rules) -> tuple[dict, list]:
+        held = {k: rules.level(CHECKS_AS.get(k, k) if rules.schema.kind == "checks" else k) for k in ("failures", "warnings", "skipped")}
+        return held, [held["failures"]] * failed + [held["warnings"]] * warned + [held["skipped"]] * skipped
+    held, levels = levels_by(r)
     rc = policy.exit_code(levels)
+    # how every gate holds this same run (callboard's lights: the board's letters, the UI's dots): the counts above,
+    # judged again with each gate's rules. (hasattr: a callboard from before the lights has none to tell)
+    if FEED and hasattr(policy, "lit"):
+        mine = {k: CONTEXT[k] for k in ("CALLBOARD_CODE", "CALLBOARD_CONFIG") if CONTEXT.get(k)}
+        was = {k: os.environ.get(k) for k in mine}
+        os.environ.update(mine)
+        try:
+            board_says(policy.lit, id_, lambda rules: policy.exit_code(levels_by(rules)[1]), rc, r)
+        finally:
+            for k, v in was.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
     worst = policy.worst([lv for lv in levels if lv != "off"])
     if worst in ("warn", "info"):
         said = [counted(n, w) for n, w, lv in ((failed, "failure", held["failures"]), (warned, "warning", held["warnings"]), (skipped, "skipped test", held["skipped"])) if n and lv == worst]
@@ -210,7 +252,7 @@ class ProgressResult(unittest.TextTestResult):
 
     def _draw(self, test):
         self.drawn.add(test.id())
-        self.progress.draw(_name(test), len(self.failures) + len(self.errors), WARNED[0])
+        self.progress.draw(_name(test), len(self.failures) + len(self.errors), WARNED[0], len(self.skipped))   # (a skip: counted as skipped, never as passed)
 
     def stopTest(self, test):
         super().stopTest(test)
@@ -278,7 +320,7 @@ def run_here(module: str, suite, total: int, tty: bool, started: float) -> int:
         bad = len(result.failures) + len(result.errors)
         if bad:
             result.printErrors()
-        print(f"\n    {result_line('stopped', tested(result.done, bad, WARNED[0], total, feed=FEED), f'{total - result.done} not run')}")
+        print(f"\n    {result_line('stopped', tested(result.done, bad, WARNED[0], total, feed=FEED, skipped=len(result.skipped)), f'{total - result.done} not run')}")
         sys.stdout.flush()
         _cleanup_module(module)
         os._exit(130)
@@ -295,12 +337,15 @@ def run_here(module: str, suite, total: int, tty: bool, started: float) -> int:
     bad = len(result.failures) + len(result.errors)
     blocks = [f"{result.separator1}\nFAIL: {result.getDescription(t)}\n{result.separator2}\n{text}" for t, text in result.failures]
     blocks += [f"{result.separator1}\nERROR: {result.getDescription(t)}\n{result.separator2}\n{text}" for t, text in result.errors]
-    detailed(result.testsRun - bad, blocks, WARNED[0], total, took, 1, skipped=len(result.skipped))
+    detailed(result.testsRun - bad - len(result.skipped), blocks, WARNED[0], total, took, 1, skipped=len(result.skipped))
+    SKIPS.extend((t.id().split(".", 1)[-1], str(why)) for t, why in result.skipped)
+    for t, why in result.skipped:
+        missed(t.id().split(".", 1)[-1], str(why))
     if bad:
         result.printErrors()
-        print(f"\n    {RED if tty else ''}{result_line(tested(result.testsRun, bad, WARNED[0], feed=FEED), *ran_on())}{OFF if tty else ''}{timed(f'{took:.0f} s', feed=FEED)}")
+        print(f"\n    {RED if tty else ''}{result_line(tested(result.testsRun, bad, WARNED[0], feed=FEED, skipped=len(result.skipped)), *ran_on())}{OFF if tty else ''}{timed(f'{took:.0f} s', feed=FEED)}")
         return verdict(bad, WARNED[0], len(result.skipped))
-    print(f"    {result_line(tested(result.testsRun, 0, WARNED[0], feed=FEED), *ran_on())}{timed(f'{took:.0f} s', feed=FEED)}")
+    print(f"    {result_line(tested(result.testsRun, 0, WARNED[0], feed=FEED, skipped=len(result.skipped)), *ran_on())}{timed(f'{took:.0f} s', feed=FEED)}")
     return verdict(0, WARNED[0], len(result.skipped))
 
 
@@ -411,7 +456,7 @@ def detailed(passed: int, failed: list[str], warned: int, total: int, took: floa
              times: dict | None = None, skipped: int = 0) -> None:
     """The run's page in the callboard UI (callboard/progress.py's detail): the counts, each failure as unittest printed it, what
     the suite ran on, and the slowest classes (the times run_parallel keeps for its sharing-out)."""
-    board_says(detail, {"kind": "tests", "passed": passed, "failed": len(failed), "warnings": warned, "skipped": skipped, "total": total, "not_run": max(0, total - passed - len(failed)),
+    board_says(detail, {"kind": "tests", "passed": passed, "failed": len(failed), "warnings": warned, "skipped": skipped, "total": total, "not_run": max(0, total - passed - len(failed) - skipped),
             "took": round(took, 1), "workers": workers, "stopped": stopped, "ran_on": ran_on(),
             "failures": [{"kind": failure_name(t)[0], "test": failure_name(t)[1], "text": t} for t in failed],
             "times": sorted(((k, v) for k, v in (times or {}).items()), key=lambda kv: -kv[1])[:25]})
@@ -456,13 +501,13 @@ def run_parallel(module: str, units: list, total: int, jobs: int, tty: bool, sta
             for block in failures:
                 print(block)
         took = time.time() - started
-        detailed(progress.done - bad, failures, progress.warned, total, took, started_workers, stopped, times, SKIPPED[0])
+        detailed(progress.done - bad - SKIPPED[0], failures, progress.warned, total, took, started_workers, stopped, times, SKIPPED[0])
         if stopped:
-            print(f"\n    {result_line('stopped', tested(progress.done, bad, progress.warned, total, feed=FEED), f'{total - progress.done} not run')}")
+            print(f"\n    {result_line('stopped', tested(progress.done, bad, progress.warned, total, feed=FEED, skipped=SKIPPED[0]), f'{total - progress.done} not run')}")
         elif bad:
-            print(f"\n    {RED if tty else ''}{result_line(tested(progress.done, bad, progress.warned, feed=FEED), *ran_on())}{OFF if tty else ''}{timed(f'{took:.0f} s', f'{started_workers} workers', feed=FEED)}")
+            print(f"\n    {RED if tty else ''}{result_line(tested(progress.done, bad, progress.warned, feed=FEED, skipped=SKIPPED[0]), *ran_on())}{OFF if tty else ''}{timed(f'{took:.0f} s', f'{started_workers} workers', feed=FEED)}")
         else:
-            print(f"    {result_line(tested(progress.done, 0, progress.warned, feed=FEED), *ran_on())}{timed(f'{took:.0f} s', f'{started_workers} workers', feed=FEED)}")
+            print(f"    {result_line(tested(progress.done, 0, progress.warned, feed=FEED, skipped=SKIPPED[0]), *ran_on())}{timed(f'{took:.0f} s', f'{started_workers} workers', feed=FEED)}")
         sys.stdout.flush()
         if stopped:
             return code
@@ -498,7 +543,7 @@ def run_parallel(module: str, units: list, total: int, jobs: int, tty: bool, sta
                         failed(f"{'=' * 70}\nERROR: {w.unit[0]}\n{'-' * 70}\nThe worker running it ended (exit code {code}) "
                                         f"with {len(lost)} of its tests not finished:\n  " + "\n  ".join(lost) + "\n")
                         for t in lost:
-                            progress.draw(t.rsplit(".", 2)[-2] + "." + t.rsplit(".", 1)[-1], len(failures), progress.warned)
+                            progress.draw(t.rsplit(".", 2)[-2] + "." + t.rsplit(".", 1)[-1], len(failures), progress.warned, SKIPPED[0])
                         w.unit = None
                         if queue and respawns:
                             respawns -= 1
@@ -511,6 +556,12 @@ def run_parallel(module: str, units: list, total: int, jobs: int, tty: bool, sta
                     msg = json.loads(line)
                     progress.warned += msg.get("w", 0)   # (the warnings it has printed since it last said)
                     SKIPPED[0] += msg.get("skipped", 0)
+                    if msg.get("skipped"):   # (said as it comes on the board, its Issues; off it, at the end)
+                        missed(str(msg.get("name") or ""), str(msg.get("why") or ""))
+                        if FEED:
+                            issue("notice", f"{msg.get('name') or ''} skipped: {msg.get('why') or ''}", fix=skip_fix(str(msg.get("why") or "")), feed=True)
+                        else:
+                            SKIPS.append((str(msg.get("name") or ""), str(msg.get("why") or "")))
                     if msg["t"] == "want":
                         if w.unit is not None:
                             times[w.unit[0]] = round(time.time() - unit_started[w.unit[0]], 2)
@@ -527,10 +578,13 @@ def run_parallel(module: str, units: list, total: int, jobs: int, tty: bool, sta
                         if msg.get("id"):
                             w.reported.add(msg["id"])
                             running.pop(w, None)
-                            progress.draw(msg["name"], len(failures), progress.warned)
+                            progress.draw(msg["name"], len(failures), progress.warned, SKIPPED[0])
                             if running:   # (another still under way: named again, its seconds from when it started)
                                 name, since = max(running.values(), key=lambda r: r[1])
                                 progress.show(name, ticking=True, since=since)
+                        elif msg.get("text"):   # (an error that isn't a test's — a module's or a class's set-up or tear-down: counted as one more, so a run that fails never shows nothing failed)
+                            progress.total += 1
+                            progress.draw(next((ln.split(": ", 1)[1].split(" (")[0] for ln in msg["text"].splitlines() if ln.startswith(("ERROR: ", "FAIL: "))), msg["name"]), len(failures), progress.warned, SKIPPED[0])
     except KeyboardInterrupt:
         return finish(130, stopped=True)
     _save_times(times)
@@ -571,14 +625,14 @@ def worker(module: str) -> int:
             if isinstance(test, unittest.TestCase):
                 say(t="start", name=_name(test))
 
-        def _said(self, test, flavour=None, err=None, skipped: int = 0):
+        def _said(self, test, flavour=None, err=None, skipped: int = 0, why: str = ""):
             text = None
             if err is not None:
                 text = f"{self.separator1}\n{flavour}: {self.getDescription(test)}\n{self.separator2}\n{self._exc_info_to_string(err, test)}"  # pyright: ignore[reportAttributeAccessIssue] — unittest's own way of saying a failure, not in its stubs
             counted = isinstance(test, unittest.TestCase)  # (a setUpClass/tearDownModule error isn't a test)
             if counted:
                 self.said_ids.add(test.id())
-            say(t="test", id=test.id() if counted else None, name=_name(test), text=text, skipped=skipped)
+            say(t="test", id=test.id() if counted else None, name=_name(test), text=text, skipped=skipped, **({"why": why} if why else {}))
 
         def addSubTest(self, test, subtest, err):
             super().addSubTest(test, subtest, err)
@@ -608,7 +662,7 @@ def worker(module: str) -> int:
 
         def addSkip(self, test, reason):
             super().addSkip(test, reason)
-            self._said(test, skipped=1)
+            self._said(test, skipped=1, why=str(reason))
 
         def addExpectedFailure(self, test, err):
             super().addExpectedFailure(test, err)
@@ -666,6 +720,7 @@ def main() -> int:
             jobs = a[2:]
         else:
             rest.append(a)
+    WHOLE[0] = not rest
     module = rest[0] if rest else "tests.test_plexcache"
     try:
         jobs_n = max(1, int(jobs)) if jobs else 2 * (os.cpu_count() or 1)  # (two per core: most tests wait more than they compute)

@@ -6,7 +6,7 @@ release needs.
 
     python3 dev/release.py           # each check, a line each; what to do for one that fails; the exit code callboard/policy.py's
     python3 dev/release.py --callboard  # callboard's Release block, every run: the same checks as an overall readiness —
-                                     # "4 of 7 ready", what's still to go — grey between releases (exit 3), red (1)
+                                     # what's still to go (how many are ready is its bar) — grey between releases (exit 3), red (1)
                                      # where the gate holds them as failures
     python3 dev/release.py start     # tag the code a preview (v0.17.0-beta.1: callboard.toml's [tags]); push the tag to start it
     python3 dev/release.py candidate # tag a release candidate (v0.17.0-rc.1): the freeze, and the release pull request
@@ -466,7 +466,7 @@ def main(argv: list[str] | None = None) -> int:
     if strict or not board:
         facts = [summary(results)]
     else:
-        facts = [f"{ready} of {len(results)} ready" + (f" · to go: {togo}" if togo else " · ready to release")]
+        facts = [f"to go: {togo}" if togo else "ready to release"]   # (how many are ready: the bar's count, not said again)
     # each requirement its own check, so the bar counts them: met, or missed at its level (the shared checks code)
     return checks.run([Check(r.name, unit(r, keys.get(r.name, ""), levels.get(keys.get(r.name, ""), "info"))) for r in results],
                       bar="release", rules=rules, more=page, met="requirements met", facts=facts,

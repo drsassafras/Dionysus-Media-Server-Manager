@@ -84,11 +84,13 @@ def _launch() -> dict:
         pages = None   # (pagechecks.js says what's wrong with it)
     if needs is not None and checks is not None:
         needs(command="node")()
-        if pages and not os.path.isfile(os.path.join(ROOT, "node_modules", "playwright", "package.json")):   # (none of the project's own: callboard's, at its pin)
+        folder = checks.own_packages("playwright", ROOT) if pages else ""   # (the project's own, in its root or its dev folder)
+        if pages and not folder:   # (none of the project's own: callboard's, at its pin)
             needs(tool="pages")()
             folder, why = checks.packages("pages")
             if folder is None:
                 return {"fail": f"the page checks didn't run: {why}"}
+        if folder:
             env["NODE_PATH"] = os.pathsep.join(p for p in (os.path.join(folder, "node_modules"), env.get("NODE_PATH", "")) if p)
     elif not shutil.which("node"):
         return {"skip": "the page checks need Node"}

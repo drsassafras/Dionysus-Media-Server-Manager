@@ -4780,7 +4780,7 @@ class TestRunnerTests(unittest.TestCase):
         self.assertIn("share_probe_tests.Dies.test_b_ends_the_process", got.stdout)
         self.assertNotIn("Kept", got.stdout)
         self.assertIn("said on purpose", got.stderr)
-        self.assertEqual(got.stdout.count("4 passed · 2 failed · 1 warning · 6 total"), 2, got.stdout)   # (its line at 100%, then its result line)
+        self.assertEqual(got.stdout.count("1 skipped · 3 passed · 2 failed · 1 warning · 6 total"), 2, got.stdout)   # (its line at 100%, then its result line)
         # the next run takes the slowest class first: how long each took is kept
         with open(os.path.join(folder, "plex-cache", "test-times.json"), encoding="utf-8") as fh:
             self.assertLessEqual({"share_probe_tests.Kept", "share_probe_tests.Fails.test_wrong"}, set(json.load(fh)))
@@ -4877,7 +4877,7 @@ class TestRunnerTests(unittest.TestCase):
             got = subprocess.run([sys.executable, runner, "-j", jobs, "--exclude", "Left", "feed_probe_tests"], capture_output=True, text=True, timeout=60,
                                  env=dict(os.environ, PYTHONPATH=folder, XDG_CACHE_HOME=folder, PLEXCACHE_PROGRESS="feed"))
             self.assertEqual(got.returncode, 0, got.stdout + got.stderr)
-            recs = [r for r in map(record, got.stdout.split("\n")) if r is not None]
+            recs = [r for r in map(record, got.stdout.split("\n")) if r is not None and "bar" in r]   # (its bar's records: not its lights)
             self.assertEqual(sorted({(r["bar"], r["done"], r["total"]) for r in recs if r["done"] and not r["ticking"]}), [("tests", 1, 2), ("tests", 2, 2)], jobs)
             self.assertTrue({"Kept.test_1", "Kept.test_2"} & {r["label"] for r in recs if r["ticking"]}, jobs)   # (the test under way named)
             self.assertNotIn("2 tests passed", got.stdout)   # (the bar's count, 2/2: not said again under it)
@@ -5367,7 +5367,8 @@ class TestRunnerTests(unittest.TestCase):
         drawn = [re.sub(r"\033\[[0-9;]*m", "", x) for x in s.lines(100)]
         self.assertEqual(s.state, "running")
         self.assertIn("IN REVIEW", drawn[0])
-        self.assertIn(" 6 / 6   looks · review page open", drawn[1])
+        self.assertIn("  looks · review page open", drawn[1])
+        self.assertTrue(drawn[1].endswith(" 6 / 6 "), drawn[1])
         with mock.patch.object(sys, "stdout", io.StringIO()) as out, mock.patch("shutil.get_terminal_size", return_value=os.terminal_size((101, 40))):
             b.frame()
         self.assertIn("[Enter] Skip review", out.getvalue())
@@ -5828,7 +5829,7 @@ class DevToolsUITests(unittest.TestCase):
         self.assertEqual((ruff["name"], ruff["config"], ruff["get"]), ("Ruff", "ruff.toml", "pip"))   # (this project's dev/tools.toml: each tool, and the file it reads)
         self.assertEqual([(i["id"], i["letter"], i["enabled"] and i["ready"]) for i in got["integrations"]],
                          [("unit", "u", True), ("coverage", "c", True), ("release", "e", True), ("style", "w", True)])   # (Wardrobe: its first letter)
-        self.assertEqual([g["id"] for g in got["gates"]], ["push", "merge", "release"])
+        self.assertEqual([g["id"] for g in got["gates"]], ["push", "merge", "release", "dev"])   # (the checkpoints, then the development gate)
         self.assertIn("every_line: fail under 98%", got["said"]["coverage"]["release"])
         self.assertIn("every_line: off", got["said"]["coverage"]["merge"])
         self.assertIn("changed: fail under 90%", got["said"]["coverage"]["merge"])   # (a pull request's: only what changed)
@@ -16033,9 +16034,9 @@ class IntegrationStandardTests(unittest.TestCase):
 
 class LiveSyncthingTests(unittest.TestCase):
     """The client against a real Syncthing, when one is given (SYNCTHING_LIVE_URL and SYNCTHING_LIVE_KEY: dev/future.py
-    --syncthing downloads the newest pre-release and starts it): every call of CALLS answers, a folder added for the run is
-    read, changed and scanned as the app does it. The suite stays offline: its runs leave this class out (callboard.toml, the
-    GitHub build), and callboard's Previews (dev/future.py) runs it after the suite, against Syncthing's newest pre-release."""
+    --syncthing downloads the newest pre-release ahead of its release, else that release, and starts it): every call of
+    CALLS answers, a folder added for the run is read, changed and scanned as the app does it. The suite stays offline: its runs leave this class out (callboard.toml, the
+    GitHub build), and callboard's Previews (dev/future.py) runs it after the suite, against that same Syncthing."""
 
     def setUp(self):
         self.url, self.key = os.environ.get("SYNCTHING_LIVE_URL"), os.environ.get("SYNCTHING_LIVE_KEY")
@@ -16614,9 +16615,139 @@ class FutureTests(unittest.TestCase):
                 failures = json.load(fh)["parts"]["image"]["failures"]
         self.assertEqual([f.get("rerun") for f in failures], ["python3 dev/future.py --tag 3.16.0a1-slim-trixie tests.test_plexcache.A.test_b", None])
 
+    @staticmethod
+    def _fake_syncthing(folder: str, help_text: str, generate: str) -> str:
+        """A syncthing that lists ``help_text`` for any command's --help and runs ``generate`` (sh) for generate."""
+        path = os.path.join(folder, "syncthing")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(f'#!/bin/sh\ncase "$*" in *--help*) printf %s "{help_text}";; generate*) {generate};; esac\n')
+        os.chmod(path, 0o755)  # (the fake binary: executable)
+        return path
+
+    def test_syncthing_is_set_up_with_the_flags_its_version_takes(self):
+        """The live run passes Syncthing only the flags its --help lists, by the name this version has: v2.1's
+        --no-port-probing and no --no-default-folder (it has none, and makes no default folder), --no-upgrade where it
+        has it (a candidate release upgrades itself and exits); an older one's
+        --skip-port-probing and --no-default-folder; none from a binary that won't say."""
+        from dev import future
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "new"))
+            os.makedirs(os.path.join(d, "old"))
+            new = self._fake_syncthing(os.path.join(d, "new"), "  --no-port-probing  Don't try to find free ports ($STNOPORTPROBING)\\n  --no-upgrade  Disable automatic upgrades", "exit 0")
+            old = self._fake_syncthing(os.path.join(d, "old"), "  --no-default-folder  Don't create the default folder\\n  --skip-port-probing  Don't probe", "exit 0")
+            self.assertEqual(future.syncthing_flags(new, "generate"), ["--no-port-probing"])
+            self.assertEqual(future.syncthing_flags(new, "serve"), ["--no-port-probing", "--no-upgrade"])   # (a candidate release would upgrade itself away)
+            self.assertEqual(future.syncthing_flags(old, "generate"), ["--skip-port-probing", "--no-default-folder"])
+            self.assertEqual(future.syncthing_flags(old, "serve"), ["--skip-port-probing"])
+            self.assertEqual(future.syncthing_flags(os.path.join(d, "none"), "generate"), [])
+
+    def _syncthing_route_on(self, work: str, releases: list[tuple[str, bool, bool]], generate: str, download: bool = True,
+                            tests: Any = None) -> tuple[int, str, list[str], bool]:
+        """syncthing_route against GitHub's ``releases`` ((tag, pre-release, has a linux-amd64 build), newest first), each
+        build a fake syncthing that runs ``generate`` (and, after it, any other branch of its case), downloaded unless
+        ``download`` is False, its health answered, and ``tests`` in place of the live tests' run: its exit code, what it
+        printed, the URLs it fetched, and whether it took ports to serve on. Its temporary folder is work/tmp, left
+        empty (checked)."""
+        import tarfile
+
+        from dev import future
+        self._fake_syncthing(work, "", generate)
+        archive = os.path.join(work, "st.tar.gz")
+        with tarfile.open(archive, "w:gz") as t:
+            t.add(os.path.join(work, "syncthing"), "syncthing-linux-amd64/syncthing")
+        rels = [{"tag_name": tag, "prerelease": pre, "draft": False,
+                 "assets": [{"name": f"syncthing-{'linux-amd64' if built else 'freebsd-amd64'}-{tag}.tar.gz", "browser_download_url": f"https://example.invalid/{tag}"}]}
+                for tag, pre, built in releases]
+        fetched: list[str] = []
+
+        def answer(url, *a, **k):
+            if not isinstance(url, str):   # (another test's thread still at work, asking for something of its own: no network for it, as ever)
+                raise urllib.error.URLError("not this test's to answer")
+            if url == future.SYNCTHING_RELEASES:
+                return io.BytesIO(json.dumps(rels).encode())
+            if url.endswith("/rest/noauth/health"):
+                return io.BytesIO(b'{"status": "OK"}')
+            fetched.append(url)
+            if not download:
+                raise urllib.error.URLError("no network")
+            with open(archive, "rb") as fh:
+                return io.BytesIO(fh.read())
+        real_run = subprocess.run
+
+        def run(cmd, *a, **k):   # (the live tests' run: ``tests``)
+            return tests(cmd) if tests and "unittest" in cmd else real_run(cmd, *a, **k)
+        out, tmp = io.StringIO(), os.path.join(work, "tmp")
+        os.makedirs(tmp)
+        with mock.patch.object(urllib.request, "urlopen", side_effect=answer), mock.patch.object(sys, "platform", "linux"), \
+                mock.patch("platform.machine", return_value="x86_64"), mock.patch.object(future, "free_port", return_value=1) as ports, \
+                mock.patch.object(sys, "stdout", out), mock.patch.object(future.subprocess, "run", side_effect=run), mock.patch.object(tempfile, "tempdir", tmp):
+            try:
+                rc = future.syncthing_route(False)
+            finally:
+                self.assertEqual(os.listdir(tmp), [], "the download or Syncthing's home left behind")
+        return rc, out.getvalue(), fetched, ports.called
+
+    def test_syncthing_is_its_pre_release_only_when_ahead_of_its_release(self):
+        """The live run's Syncthing is chosen as every GitHub project the run takes is (pick_github): its newest pre-release
+        when that's ahead of its newest release and has a build for this machine, else that release — never an rc of a
+        version already released."""
+        with tempfile.TemporaryDirectory() as d:
+            for name, releases, taken, said in (
+                    ("rc behind the release", [("v2.1.7", False, True), ("v2.1.7-rc.4", True, True)], "v2.1.7", "stable: 2.1.7-rc.4 (pre-release) is behind"),
+                    ("rc ahead", [("v2.1.8-rc.1", True, True), ("v2.1.7", False, True)], "v2.1.8-rc.1", "pre-release: ahead of 2.1.7"),
+                    ("rc ahead, no build here", [("v2.1.8-rc.1", True, False), ("v2.1.7", False, True)], "v2.1.7", "stable: 2.1.8-rc.1 has no build for the image")):
+                with self.subTest(name):
+                    rc, out, fetched, _ = self._syncthing_route_on(tempfile.mkdtemp(dir=d), releases, "exit 1")
+                    self.assertEqual(fetched, [f"https://example.invalid/{taken}"], out)
+                    self.assertIn(f"Syncthing {taken} ({said}): syncthing-linux-amd64-{taken}.tar.gz", out)
+
+    def test_a_syncthing_that_wont_set_up_is_said_as_a_failure(self):
+        """A Syncthing whose generate fails (a flag it no longer takes) or makes no usable config: a failure said with what
+        Syncthing said and where the live run needs changing — never a traceback, and nothing started."""
+        from dev import future
+        with tempfile.TemporaryDirectory() as d:
+            for name, generate, said in (("refuses", "echo 'syncthing: error: unknown flag --x' >&2; exit 80", "syncthing: error: unknown flag --x"),
+                                         ("no config", "exit 0", "exit 0, nothing said")):
+                with self.subTest(name):
+                    rc, out, _, served = self._syncthing_route_on(tempfile.mkdtemp(dir=d), [("v9.9.9-rc.1", True, True)], generate)
+                    self.assertEqual(rc, future.policy.FAIL, out)
+                    self.assertIn(f"Syncthing v9.9.9-rc.1 wouldn't set up for the live tests (syncthing generate: {said})", out)
+                    self.assertIn("syncthing_route", out)
+                    self.assertFalse(served)   # (no Syncthing served: its ports are taken just before)
+
+    def test_the_live_run_leaves_nothing_behind(self):
+        """The live run's download and Syncthing's home are removed however it ends — the tests run, Syncthing that won't
+        set up, a download that failed, something unforeseen — and Syncthing is stopped before its home goes."""
+        from dev import future
+        with tempfile.TemporaryDirectory() as d:
+            work = tempfile.mkdtemp(dir=d)
+            pidfile = os.path.join(work, "pid")
+            config = "<configuration><gui><address>x</address><apikey>k</apikey></gui><options/></configuration>"
+            serving = f"printf '%s' '{config}' > \"$3/config.xml\";; serve*) echo $$ > '{pidfile}'; exec sleep 60"
+            seen = {}
+
+            def tests(cmd):   # (while they run: Syncthing up, its home there)
+                self.assertTrue(wait_for(lambda: os.path.exists(pidfile) and os.path.getsize(pidfile)))
+                with open(pidfile, encoding="utf-8") as fh:
+                    seen["pid"] = int(fh.read())
+                seen["home"] = [x for x in os.listdir(os.path.join(work, "tmp")) if x.startswith("syncthing-future-")]
+                return subprocess.CompletedProcess(cmd, 0)
+            rc, out, _, _ = self._syncthing_route_on(work, [("v2.1.7", False, True)], serving, tests=tests)
+            self.assertEqual(rc, 0, out)
+            self.assertEqual(len(seen["home"]), 1)
+            with self.assertRaises(ProcessLookupError):   # (stopped, and waited for)
+                os.kill(seen["pid"], 0)
+            rc, out, _, _ = self._syncthing_route_on(tempfile.mkdtemp(dir=d), [("v2.1.7", False, True)], "exit 1")
+            self.assertEqual(rc, future.policy.FAIL, out)
+            rc, out, _, _ = self._syncthing_route_on(tempfile.mkdtemp(dir=d), [("v2.1.7", False, True)], "exit 0", download=False)
+            self.assertEqual(rc, future.policy.NOTRUN, out)
+            with mock.patch.object(future, "syncthing_flags", side_effect=RuntimeError("unforeseen")), self.assertRaises(RuntimeError):
+                self._syncthing_route_on(tempfile.mkdtemp(dir=d), [("v2.1.7", False, True)], "exit 0")
+
     def test_the_live_syncthing_tests_run_after_the_suite(self):
         """A run of the whole suite (callboard's Previews) leaves LiveSyncthingTests out of it — it has no Syncthing to reach —
-        and runs them after it, on this machine, against Syncthing's newest pre-release: the run's result is both (a
+        and runs them after it, on this machine, against Syncthing's newest pre-release ahead of its release, else that
+        release: the run's result is both (a
         failure in either fails it; Syncthing not downloaded is said, not a failure). A suite that couldn't run runs no live
         tests; named tests, or --syncthing alone, run as asked."""
         import io
@@ -19274,7 +19405,7 @@ class ReleaseTests(unittest.TestCase):
 
     def test_the_board_block_is_a_readiness(self):
         """dev/release.py --callboard, callboard's Release checks block: between releases (development's code: [release]
-        level info) an overall readiness that only tells (exit 3, "N of M ready"); for a release's code ([release.release]:
+        level info) an overall readiness that only tells (exit 3, what's still to go); for a release's code ([release.release]:
         fail) the blocking check it always was — the rules decide, from callboard.toml."""
         from dev import release
 
@@ -19287,12 +19418,12 @@ class ReleaseTests(unittest.TestCase):
         with mock.patch.object(release, "CHECKS", checks), contextlib.redirect_stdout(out), \
                 mock.patch.dict(os.environ, quiet):
             self.assertEqual(release.main(["--callboard"]), 3)
-        self.assertIn("1 of 3 ready · to go: coverage, looks", out.getvalue())
-        self.assertIn(FEED + json.dumps({"said": "1 of 3 ready · to go: coverage, looks"}), out.getvalue())   # (its block's line)
+        self.assertIn("To go: coverage, looks", out.getvalue())
+        self.assertIn(FEED + json.dumps({"said": "To go: coverage, looks"}), out.getvalue())   # (its block's line)
         # each requirement its own unit: the bar ends at those met, out of all (the misses held as info: its grey rest)
         bars = [json.loads(line[len(FEED):]) for line in out.getvalue().split("\n") if line.startswith(FEED) and '"bar"' in line]
-        self.assertEqual({k: bars[-1][k] for k in ("done", "total", "bad", "warned", "unit")},
-                         {"done": 1, "total": 3, "bad": 0, "warned": 0, "unit": "requirements met"})
+        self.assertEqual({k: bars[-1][k] for k in ("done", "total", "bad", "warned", "skipped", "passed", "unit")},   # (the bar full: all three looked at; one met, two only noted)
+                         {"done": 3, "total": 3, "bad": 0, "warned": 0, "skipped": 2, "passed": 1, "unit": "requirements met"})
         out = io.StringIO()
         with mock.patch.object(release, "CHECKS", checks), contextlib.redirect_stdout(out), \
                 mock.patch.dict(os.environ, _policy_env("release", PLEXCACHE_PROGRESS="feed")):
@@ -19304,7 +19435,7 @@ class ReleaseTests(unittest.TestCase):
         with mock.patch.object(release, "CHECKS", checks[:1]), contextlib.redirect_stdout(out), \
                 mock.patch.dict(os.environ, quiet):
             self.assertEqual(release.main(["--callboard"]), 0)
-        self.assertIn("1 of 1 ready · ready to release", out.getvalue())
+        self.assertIn("Ready to release", out.getvalue())
 
     def test_runs_each_check_and_says_them(self):
         from dev import release

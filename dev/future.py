@@ -13,10 +13,11 @@ gates a build.
     python3 dev/future.py -v           # the build's and the tools' full output (quiet otherwise: one progress line)
     python3 dev/future.py --local      # the suite on a 3.16 interpreter of this machine instead (python3.16, or uv)
     python3 dev/future.py --python 3.17 --tag 3.17-rc-slim-trixie
-    python3 dev/future.py --syncthing  # only the live Syncthing tests, against Syncthing's newest pre-release
+    python3 dev/future.py --syncthing  # only the live Syncthing tests, against Syncthing's newest pre-release ahead of its
+                                       # release, else that release
 
 A run of the whole suite (callboard's Previews) runs the live Syncthing tests after it, on this machine, against
-Syncthing's newest pre-release (syncthing_route): they're left out of the suite itself, which has no Syncthing to reach.
+Syncthing's newest pre-release when it's ahead of its release, else that release (syncthing_route): they're left out of the suite itself, which has no Syncthing to reach.
 
 The channels (CHANNELS below): Python's alphas, betas and rcs as Docker Hub tags them; Node's nightlies and rcs from
 nodejs.org (the page tests need node; the image serves no pages through it, so it's fetched for the run, cached, and
@@ -60,7 +61,7 @@ import dev  # noqa: E402 — (puts the callboard install on the path: dev/__init
 from dev import upkeep  # noqa: E402 — the exit codes; the pins, the stable releases and the version arithmetic are its
 
 from callboard import policy  # noqa: E402 — the exit codes; the pins, the stable releases and the version arithmetic are its
-from callboard.progress import Progress, detail, feeding, placed, record, result, said, status, timed  # noqa: E402 — the bar the dev tools share (on callboard's board: sent to it)
+from callboard.progress import Progress, detail, feeding, issue, placed, record, result, said, status, timed  # noqa: E402 — the bar the dev tools share (on callboard's board: sent to it)
 from callboard.progress import tell as tell_above  # noqa: E402 — a failure in full, above the board (this file's tell: a word on the way)
 
 WARN = ["-X", "dev", "-W", "error::DeprecationWarning", "-W", "error::PendingDeprecationWarning", "-W", "error::SyntaxWarning"]
@@ -646,23 +647,26 @@ class OneBar:
     def update(self, name: str, label: str, ticking: bool = True, **got) -> None:
         """A part's counts updated and the bar redrawn, labelled ``label``."""
         with self.lock:
-            part = self.parts.setdefault(name, {"done": 0, "total": 0, "bad": 0, "warned": 0, "workers": 0, "running": True})
+            part = self.parts.setdefault(name, {"done": 0, "total": 0, "bad": 0, "warned": 0, "skipped": 0, "workers": 0, "running": True})
             part.update({k: v for k, v in got.items() if v is not None})
             build = self.parts.get("build", {})
             steps = max(build.get("total", 0), build.get("done", 0))   # (BuildKit never says how many: those so far)
             tested = sum(p["done"] for n, p in self.parts.items() if n != "build")
             self.bar.bad = sum(p["bad"] for p in self.parts.values())
             self.bar.warned = sum(p["warned"] for p in self.parts.values())
+            self.bar.skipped = sum(p.get("skipped", 0) for p in self.parts.values())   # (the tests skipped: counted, never as passed)
             self.bar.workers = sum(p["workers"] for p in self.parts.values() if p["running"]) or None
             self.bar.at(build.get("done", 0) + tested, steps + self.tests, label, ticking=ticking)
+            SUITE.update(done=self.bar.done, total=self.bar.total, bad=self.bar.bad, warned=self.bar.warned, skipped=self.bar.skipped)
 
     def suite(self, name: str, rec: dict) -> None:
         """A record of a part's run of the suite (its own bar): its counts into this bar's."""
         self.update(name, str(rec.get("label") or ""), bool(rec.get("ticking")), done=int(rec.get("done") or 0),
-                    bad=int(rec.get("bad") or 0), warned=int(rec.get("warned") or 0),
+                    bad=int(rec.get("bad") or 0), warned=int(rec.get("warned") or 0), skipped=int(rec.get("skipped") or 0),
                     workers=rec.get("workers") if isinstance(rec.get("workers"), int) else None)
 
 
+SUITE: dict[str, int] = {}   # (the board's bar of the suite as it last stood — done, total, bad, warned — for the live run counted on it after)
 ONE: list[OneBar | None] = [None]   # (the board's one bar, while image_route runs the parts at once)
 
 
@@ -1080,6 +1084,8 @@ def image_route(python: str, tag: str | None, tests: list[str], verbose: bool, s
                 sys.stdout.write(placed(line, where_run(tag, IMAGE), rerun_there(tag, stable)))
                 sys.stdout.flush()
                 rec = record(line)
+                if rec is not None and rec.get("bar") == "tests":
+                    SUITE.update({k: rec[k] for k in ("done", "total", "bad", "warned", "skipped") if isinstance(rec.get(k), int)})
                 if rec is None and line.strip():
                     last = line.strip()
         got = proc.returncode
@@ -1110,11 +1116,38 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
+# what the live run asks of Syncthing's commands, each by its names over the versions, newest first: no port probing
+# (v2.1 renamed --skip-port-probing), no default folder (gone in v2.1, which makes none), and no upgrade (a candidate
+# release upgrades itself to a newer release at once and exits: the version under test is the one downloaded)
+SYNCTHING_FLAGS = {"generate": (("--no-port-probing", "--skip-port-probing"), ("--no-default-folder",)),
+                   "serve": (("--no-port-probing", "--skip-port-probing"), ("--no-upgrade",))}
+
+
+def syncthing_flags(binary: str, command: str) -> list[str]:
+    """The flags of SYNCTHING_FLAGS[command] that this Syncthing's ``command`` takes, by the names its --help lists: the
+    newest it has of each, none of one it no longer has (a pre-release drops or renames them)."""
+    try:
+        got = subprocess.run([binary, command, "--help"], capture_output=True, text=True, errors="replace", timeout=30)
+        listed = got.stdout + got.stderr
+    except (OSError, subprocess.SubprocessError):
+        listed = ""
+    return [name for names in SYNCTHING_FLAGS[command]
+            for name in [next((n for n in names if re.search(rf"(?<![\w-]){re.escape(n)}(?![\w-])", listed)), "")] if name]
+
+
 def syncthing_route(verbose: bool) -> int:
-    """Syncthing's newest pre-release (else its newest release) downloaded from GitHub, started with a home of its own on free
+    """Syncthing's newest pre-release when it's ahead of its newest release, else that release (pick_github: the choice
+    every GitHub project the run takes has) downloaded from GitHub, started with a home of its own on free
     ports — no discovery, no relays, no default folder — and the live tests (tests LiveSyncthingTests) run against it: every
-    call the app makes, tried on the Syncthing that's coming. 0 all answered; 1 the tests failed; 3 the download failed (run
-    it again)."""
+    call the app makes, tried on the Syncthing that's coming. 0 all answered; 1 the tests failed, or Syncthing wouldn't set
+    up for them (said, with what it said); not run when the download failed (run it again). Its download and home are
+    one temporary folder, gone however it ends (Syncthing stopped first: live_syncthing's own finally)."""
+    with tempfile.TemporaryDirectory(prefix="syncthing-future-", ignore_cleanup_errors=True) as scratch:
+        return live_syncthing(verbose, scratch)
+
+
+def live_syncthing(verbose: bool, scratch: str) -> int:
+    """syncthing_route's run, its download and Syncthing's home in ``scratch``."""
     import json
     import platform
     import tarfile
@@ -1126,10 +1159,17 @@ def syncthing_route(verbose: bool) -> int:
     try:
         with urllib.request.urlopen(SYNCTHING_RELEASES, timeout=30) as r:
             rels = json.load(r)
-        rel = next((x for x in rels if x.get("prerelease") and not x.get("draft")), None) or next(x for x in rels if not x.get("draft"))
-        asset = next(a for a in rel["assets"] if a["name"].startswith(f"syncthing-{system}-{arch}-") and a["name"].endswith((".tar.gz", ".zip")))
-        print(f"Syncthing {rel['tag_name']} ({'pre-release' if rel.get('prerelease') else 'release'}): {asset['name']}")
-        d = tempfile.mkdtemp(prefix="syncthing-future-")  # (a download: a folder of its own, nothing else in it)
+        listed = {x["tag_name"].lstrip("v"): x for x in rels if not x.get("draft")}
+
+        def build(version: str) -> dict | None:   # (that release's archive for this machine)
+            return next((a for a in listed[version]["assets"] if a["name"].startswith(f"syncthing-{system}-{arch}-") and a["name"].endswith((".tar.gz", ".zip"))), None)
+        # (the channels' choice, as for every GitHub project the run takes: its pre-release only when it's ahead of its release)
+        pick = pick_github("Syncthing", rels, lambda v: v, lambda v: build(v) is not None)
+        rel, asset = listed[pick.version], build(pick.version)
+        if asset is None:
+            raise ValueError(f"{listed[pick.version]['tag_name']} has no {system}-{arch} build")
+        print(f"Syncthing {rel['tag_name']} ({pick.channel}: {pick.why}): {asset['name']}")
+        d = tempfile.mkdtemp(prefix="download-", dir=scratch)  # (a download: a folder of its own, nothing else in it)
         archive = os.path.join(d, asset["name"])
         with urllib.request.urlopen(asset["browser_download_url"], timeout=120) as r, open(archive, "wb") as fh:
             shutil.copyfileobj(r, fh)
@@ -1147,18 +1187,30 @@ def syncthing_route(verbose: bool) -> int:
         print("\nNot run: the archive holds no syncthing binary.")
         return policy.NOTRUN
     os.chmod(binary, 0o755)  # noqa: S103 — (the binary it runs: executable)
-    home = tempfile.mkdtemp(prefix="syncthing-home-")
-    subprocess.run([binary, "generate", "--home", home, "--no-default-folder", "--skip-port-probing"], check=True, stdout=None if verbose else subprocess.DEVNULL, stderr=subprocess.STDOUT)
+    home = tempfile.mkdtemp(prefix="home-", dir=scratch)
     cfg = os.path.join(home, "config.xml")
-    tree = ET.parse(cfg)
-    root = tree.getroot()
+    # its key and config made, with the flags this version takes (syncthing_flags); one it won't make, or a config without
+    # what's set below, is said as a failure with what Syncthing said: the live run no longer fits the Syncthing that's
+    # coming, which needs a look (not a traceback)
+    made = subprocess.run([binary, "generate", "--home", home, *syncthing_flags(binary, "generate")], capture_output=True, text=True, errors="replace")
+    if verbose:
+        print(made.stdout + made.stderr, end="")
+    try:
+        root = ET.parse(cfg).getroot() if made.returncode == 0 else None
+    except (OSError, ET.ParseError):
+        root = None
+    gui, opts = (root.find("gui"), root.find("options")) if root is not None else (None, None)
+    if root is None or gui is None or opts is None or gui.find("address") is None or gui.find("apikey") is None:
+        said_there = (made.stdout + made.stderr).strip() or f"exit {made.returncode}, nothing said"
+        print(f"\nSyncthing {rel['tag_name']} wouldn't set up for the live tests (syncthing generate: {said_there}). "
+              "The live run in dev/future.py (syncthing_route) needs changing for it.")
+        return policy.FAIL
+    for folder in root.findall("folder"):   # (a default folder an older version made: none to sync)
+        root.remove(folder)
+    tree = ET.ElementTree(root)
     gui_port, sync_port = free_port(), free_port()
-    gui = root.find("gui")
-    assert gui is not None
     gui.find("address").text = f"127.0.0.1:{gui_port}"  # type: ignore[union-attr]
     api_key = gui.find("apikey").text  # type: ignore[union-attr]
-    opts = root.find("options")
-    assert opts is not None
     for la in opts.findall("listenAddress"):
         opts.remove(la)
     ET.SubElement(opts, "listenAddress").text = f"tcp://127.0.0.1:{sync_port}"
@@ -1168,7 +1220,7 @@ def syncthing_route(verbose: bool) -> int:
             el = ET.SubElement(opts, tag)
         el.text = val
     tree.write(cfg)
-    proc = subprocess.Popen([binary, "serve", "--home", home, "--no-browser", "--no-restart", "--skip-port-probing"], stdout=None if verbose else subprocess.DEVNULL, stderr=subprocess.STDOUT)
+    proc = subprocess.Popen([binary, "serve", "--home", home, "--no-browser", "--no-restart", *syncthing_flags(binary, "serve")], stdout=None if verbose else subprocess.DEVNULL, stderr=subprocess.STDOUT)
     url = f"http://127.0.0.1:{gui_port}"
     try:
         deadline = time.time() + 60
@@ -1195,6 +1247,7 @@ def syncthing_route(verbose: bool) -> int:
             proc.wait(10)
         except subprocess.TimeoutExpired:
             proc.kill()
+            proc.wait()   # (gone before its home is removed)
 
 
 def main() -> int:
@@ -1209,7 +1262,7 @@ def main() -> int:
     ap.add_argument("--version", action="version", version=f"%(prog)s {cli.version()}")
     ap.add_argument("--fresh", action="store_true", help="ask upstream again for the channels rather than using the day's answers")
     ap.add_argument("--local", action="store_true", help="run on an interpreter of this machine instead of inside the image")
-    ap.add_argument("--syncthing", action="store_true", help="instead: download Syncthing's newest pre-release, start it, and run the live tests against it")
+    ap.add_argument("--syncthing", action="store_true", help="instead: download Syncthing's newest pre-release ahead of its release (else that release), start it, and run the live tests against it")
     ap.add_argument("-v", "--verbose", action="store_true", help="the build's and the tools' full output (quiet otherwise: one progress line, the log kept)")
     ap.add_argument("--exclude", action="append", metavar="CLASS", help="the whole suite but this class (callboard: the style guide, in a section of its own); again for another")
     ap.add_argument("tests", nargs="*", default=["tests.test_plexcache"], help="what to run (default: the whole suite)")
@@ -1217,14 +1270,26 @@ def main() -> int:
     if args.syncthing:
         return syncthing_route(args.verbose)
     # the whole suite: the live Syncthing tests left out of it (no Syncthing there: they'd only skip) and run after it, here,
-    # against Syncthing's newest pre-release (syncthing_route) — the run's result is both. Not when the suite couldn't be run.
+    # against Syncthing's newest pre-release ahead of its release, else that release (syncthing_route) — the run's result is both. Not when the suite couldn't be run.
     live = args.tests == ["tests.test_plexcache"] and "LiveSyncthingTests" not in (args.exclude or [])
     exclude = [*(args.exclude or []), "LiveSyncthingTests"] if live else args.exclude
     rc = image_route(args.python, args.tag, args.tests, args.verbose, args.stable, args.fresh, exclude) if not args.local else local_route(args, exclude)
     if not live or rc in (policy.NOTRUN, policy.BROKEN):
         return rc
     print("\nThe live Syncthing tests, on this machine:", flush=True)
-    return combined([rc, syncthing_route(args.verbose)])
+    there = syncthing_route(args.verbose)
+    if feeding() and there not in (policy.NOTRUN, policy.BROKEN):
+        # On callboard's board the live run is counted on the suite's bar, one more test done after its own, so a failure
+        # there is in the block's failed count, named under the bar, and listed in the board's Issues: a block that fails
+        # never shows nothing failed.
+        bar = Progress(SUITE.get("total", 0) + 1, bar="tests", tests=True)
+        bar.done, bar.bad, bar.warned, bar.skipped = SUITE.get("done", 0), SUITE.get("bad", 0), SUITE.get("warned", 0), SUITE.get("skipped", 0)
+        bar.draw("live Syncthing tests", bad=bar.bad + (1 if there else 0))
+        if there:
+            said(result("the live Syncthing tests fail: its API moved"))
+            issue("error", "The live Syncthing tests fail on the Syncthing that's coming: its API moved; see plexcache/syncthing.py CALLS",
+                  fix="python3 dev/future.py --syncthing")
+    return combined([rc, there])
 
 
 def local_route(args: argparse.Namespace, exclude: list[str] | None) -> int:
