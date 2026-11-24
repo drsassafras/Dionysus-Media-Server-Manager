@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Page checks: how each page of the project behaves for the person using it, drawn in Chromium by Playwright.
-// callboard-template: pagechecks 2
+// callboard-template: pagechecks 3
 // This file is a copy of a template (MyStandards' templates/pagechecks/, else callboard's callboard/templates/pagechecks/),
 // kept in step with it: callboard says when the two differ. Say what's this project's in its settings file (the
 // project's tests/pagechecks.json), never here.
@@ -57,6 +57,8 @@ async function startServer(name, spec, root) {
 //   focus_holds         the field in use keeps the focus while the page updates itself
 //   no_surprise_scroll  what's on screen doesn't move while the page updates itself and nobody's touching it
 //   keeps_selection     text selected (to copy it) stays selected while the page updates itself
+//   all_pages           every page the project's own menu reaches (a link in a <nav> to the same server) is one the
+//                       checks draw: named in pagechecks.json, so none goes unchecked (a tool page added later too)
 //   info_buttons        each setting has a button that tells what it is (info, help, ?)
 //   info_popovers       an info button opens a popover of the browser's own (the popover attribute: the top layer, so
 //                       nothing covers or clips it; older browsers get it from a polyfill, or the page's own bubble)
@@ -70,7 +72,8 @@ const PROBE_SAYS = {
   steady_clicks: "moved on the screen when clicked", stays_open: "closed by itself while the page updated",
   survives_reload: "was lost on a reload", keeps_typing: "lost what was typed", search_holds: "was cut off while typing",
   focus_holds: "lost the focus while the page updated", no_surprise_scroll: "moved while nobody touched the page",
-  keeps_selection: "lost the selection while the page updated", info_buttons: "has no info button",
+  keeps_selection: "lost the selection while the page updated",
+  all_pages: "is reached from the menu but isn't in pagechecks.json, so no check draws it", info_buttons: "has no info button",
   info_popovers: "has an info button that doesn't open a browser popover (the popover attribute)",
   info_paragraphs: "has an info bubble that doesn't say each part in a paragraph of its own, led by its label and a colon",
   revert_buttons: "has no revert button", no_default_words: "says its default in its own words",
@@ -95,7 +98,9 @@ function inPage(leave) {
     && (el.tagName === "TEXTAREA" || ["", "text", "search", "email", "url", "tel", "number"].includes((el.getAttribute("type") || "").toLowerCase())));
   const isSearch = (el) => el.type === "search" || el.getAttribute("role") === "searchbox" || /search|find|filter/i.test((el.placeholder || "") + " " + (el.getAttribute("aria-label") || ""));
   window.__cb = {
-    shown, words, key, togglers, typing, isSearch,
+    shown, words, key, togglers, typing, isSearch, over,
+    // (the pages the menu reaches: each link in a <nav>, as the browser resolves it)
+    menu: () => [...document.querySelectorAll("nav a[href], [role=navigation] a[href]")].filter((a) => !over(a)).map((a) => a.href),
     list: (what) => { const all = what === "toggle" ? togglers() : typing(); return all.map((el) => fp(el, all)); },
     find: (what, f) => { const all = what === "toggle" ? togglers() : typing(); return all.filter((el) => same(el, f))[f.n] || null; },
     // a bubble or menu that opens for a moment (an info button's, a picker's list): what a reload brings back is what's
@@ -142,8 +147,19 @@ async function run(plan, opts = {}) {
   };
   const top = (p, what, f) => p.evaluate(([w, x]) => { const el = window.__cb.find(w, x); return el ? el.getBoundingClientRect().top : null; }, [what, f]);
   const name = (f) => f.w ? `"${f.w}"` : `a ${f.tag.toLowerCase()}`;
+  // (a page as the checks know it: its server's origin, its path and its #place; a ?query is the same page)
+  const where = (url) => { const u = new URL(url); return u.origin + u.pathname + u.hash; };
+  const listed = new Set();
 
   const CHECKS = {
+    async all_pages(p, label) {
+      const here = new URL(p.url()).origin;
+      for (const href of await p.evaluate(() => window.__cb.menu())) {
+        if (!/^https?:/.test(href) || new URL(href).origin !== here || listed.has(where(href))) continue;
+        const u = new URL(href);
+        say("all_pages", `"${u.pathname + u.hash}"`, label);
+      }
+    },
     async steady_clicks(p, label) {
       for (const f of (await p.evaluate(() => window.__cb.list("toggle"))).slice(0, 10)) {
         const url = p.url();
@@ -161,17 +177,24 @@ async function run(plan, opts = {}) {
       }
     },
     async stays_open(p, label) {
-      const shut = [];
-      for (const f of (await p.evaluate(() => window.__cb.list("toggle"))).slice(0, 5)) {
-        const opened = await p.evaluate(([x]) => { const el = window.__cb.find("toggle", x); if (!el) return false; if (!window.__cb.open(el)) el.click(); return true; }, [f]);
-        if (opened) { await p.waitForTimeout(200); if (await p.evaluate(([x]) => { const el = window.__cb.find("toggle", x); return !!el && window.__cb.open(el); }, [f])) shut.push(f); }
-      }
-      // (what's still open once all are opened: one that a later one closed, as a bubble that's one at a time, is no fault)
       const isOpen = (f) => p.evaluate(([x]) => { const el = window.__cb.find("toggle", x); return !!el && window.__cb.open(el); }, [f]);
-      const still = [];
-      for (const f of shut) if (await isOpen(f)) still.push(f);
+      // (opened by the click: open as soon as it's clicked, or a moment after where the page opens it itself; one the page
+      // shuts again before that moment is opened all the same, and is what this check is for)
+      const open = (f) => p.evaluate(([x]) => { const el = window.__cb.find("toggle", x); if (!el) return false; if (!window.__cb.open(el)) el.click(); return window.__cb.open(el); }, [f]);
+      const opened = [];
+      for (const f of (await p.evaluate(() => window.__cb.list("toggle"))).slice(0, 5)) {
+        if (await open(f)) opened.push(f);
+        else { await p.waitForTimeout(200); if (await isOpen(f)) opened.push(f); }
+      }
       await p.waitForTimeout(live);
-      for (const f of still) if (!(await isOpen(f))) say("stays_open", name(f), label);
+      // (one a later one shut, as boxes that open one at a time, is no fault: each one found shut is opened again on its
+      // own and watched while the page updates, nothing else clicked)
+      for (const f of opened) {
+        if (await isOpen(f)) continue;
+        if (!(await open(f))) { await p.waitForTimeout(200); if (!(await isOpen(f))) continue; }
+        await p.waitForTimeout(live);
+        if (!(await isOpen(f))) say("stays_open", name(f), label);
+      }
     },
     async survives_reload(p, label) {
       // a tab first, then something opened on what it shows (opened first, a tab could hide it); a tab that's a link to
@@ -348,6 +371,7 @@ async function run(plan, opts = {}) {
   }
   try {
     for (const [n, spec] of Object.entries(plan.servers || {})) servers[n] = await startServer(n, spec, root);
+    for (const job of plan.pages || []) listed.add(where(job.url || `${servers[job.server].url}${job.path}`));
     for (const job of plan.pages || []) {
       const label = job.label || job.url || job.path;
       const run = [...Object.keys(CHECKS).filter((k) => want.has(k)).map((k) => [k, CHECKS[k]]),

@@ -359,7 +359,7 @@ The tests draw every page the way the browser does — `tests/render.js` runs `a
 
 **The CSS, the scripts and the pages.** They work in every browser version out in the last five years (now Safari 15.2 and iOS 15.2, Chrome and Edge 96, Firefox 95 and later): one age for all of them, a window that moves on by itself. `plexcache/web/app.css` is written without browser prefixes (`-webkit-` and the rest): it may use newer standard CSS that the image build rewrites for older browsers with postcss-preset-env; the build adds the prefixes the target browsers need with Autoprefixer and minifies it with cssnano, the scripts with Terser and the pages with html-minifier-terser. Stylelint checks the CSS, ESLint the scripts and html-validate the pages, each with a check that nothing used is missing from a target browser. The suite runs them all (`npm ci --prefix dev` once). See [`dev/README.md`](dev/README.md#the-css-the-scripts-and-the-pages).
 
-**The style guide: no new looks without the maintainer's OK.** Every look the app wears (each CSS rule, inline style, drawing, decoration, theme colour, font and image) is listed in `dev/style-guide.json`, and the suite fails on one that's new, changed or gone. `python3 dev/style.py sample` shows each one Before (as approved) and After (now), side by side, in Classic and Dionysus, light and dark, and only where it looks different (`dev/style-sample/index.html`); only the maintainer approves them, at a terminal, with `python3 dev/style.py review` (it makes the sample when it's out of date and has the Approve buttons). See [`dev/README.md`](dev/README.md#the-style-guide).
+**The style guide: no new looks without the maintainer's OK.** Every look the app wears (each CSS rule, inline style, drawing, decoration, theme colour, font and image) is listed in `dev/style-guide.json`, and the suite fails on one that's new, changed or gone. `callboard tool style sample` shows each one Before (as approved) and After (now), side by side, in Classic and Dionysus, light and dark, and only where it looks different (`dev/style-sample/index.html`); only the maintainer approves them, at a terminal, with `callboard tool style review` (it makes the sample when it's out of date and has the Approve buttons). See [`dev/README.md`](dev/README.md#the-style-guide).
 
 To try changes on your own TrueNAS before pushing, see [`dev/README.md`](dev/README.md): a test copy of the app plus `callboard`, which runs the tests, copies your code to the NAS and restarts the test app in one command.
 
@@ -368,7 +368,7 @@ python3 tests/run.py      # progress bar, two workers per core (-j 1: one at a t
 callboard tool coverage   # the same, with test coverage per file (Python 3.12+)
 python3 tests/demo.py     # UI demo at http://127.0.0.1:8642 with sample data
 node dev/screenshots.js   # README screenshots (see the file for how to run it)
-python3 dev/style.py check   # every look in the style guide? (sample: pictures of what isn't; approve: the maintainer only)
+callboard tool style check   # every look in the style guide? (sample: pictures of what isn't; approve: the maintainer only)
 node tests/render.js system < state.json   # a page as the browser draws it from one /api/state answer (the tests use it)
 docker build -t plex-cache .
 ```
@@ -377,23 +377,23 @@ docker build -t plex-cache .
 
 Each language has a catalog in `plexcache/web/i18n/<code>.json`, keyed by the English text. Texts are marked in the code with `T()`, `H()`, `P()` and `N()` in JavaScript, `data-i18n` attributes in HTML and `M()` in Python. You translate in place: a text with no translation yet is in the catalog as `null`, and the app shows the English until it's filled in.
 
-**When to translate:** only when a release is being made, and only when the maintainer asks for the release. Day to day, a change that adds or changes texts leaves the catalogs alone: a new text isn't in them yet (the app shows the English) and an old one lingers until the release. The release checks (callboard on `main`, or the code tagged a release candidate: `callboard.toml`'s release rules) check that it's been done, with the version ([`dev/README.md`](dev/README.md)). Making the release, run `python3 dev/i18n.py sync` to bring every catalog in step (new texts as `null`, unused ones dropped), then translate.
+**When to translate:** only when a release is being made, and only when the maintainer asks for the release. Day to day, a change that adds or changes texts leaves the catalogs alone: a new text isn't in them yet (the app shows the English) and an old one lingers until the release. The release checks (callboard on `main`, or the code tagged a release candidate: `callboard.toml`'s release rules) check that it's been done, with the version ([`dev/README.md`](dev/README.md)). Making the release, run `callboard tool i18n sync` to bring every catalog in step (new texts as `null`, unused ones dropped), then translate.
 
 ```sh
-python3 dev/i18n.py status      # how much of each language is translated
-python3 dev/i18n.py sync        # for a release: add new texts as null, drop unused ones
-python3 dev/i18n.py check       # placeholders, HTML tags and plural forms match the English
-python3 dev/i18n.py check --release   # ...and every catalog in step with the code
-python3 dev/i18n.py check --complete  # ...and every text translated, every plural with all its CLDR forms
-python3 dev/i18n.py quality     # plurals short of their CLDR forms, and translations to look at
-python3 dev/i18n.py leftovers   # English in app.js that isn't marked for translation
+callboard tool i18n status      # how much of each language is translated
+callboard tool i18n sync        # for a release: add new texts as null, drop unused ones
+callboard tool i18n check       # placeholders, HTML tags and plural forms match the English
+callboard tool i18n check --release   # ...and every catalog in step with the code
+callboard tool i18n check --complete  # ...and every text translated, every plural with all its CLDR forms
+callboard tool i18n quality     # plurals short of their CLDR forms, and translations to look at
+callboard tool i18n leftovers   # English in app.js that isn't marked for translation
 ```
 
 Keep every `{placeholder}` and HTML tag from the English. A plural is an object with the forms its language uses, e.g. `{"one": "{n} file", "other": "{n} files"}`; Russian, Ukrainian and Polish also use `few` and `many`, and Japanese, Korean and Chinese only `other`. French, Spanish, Italian and Portuguese also have a `many` for exact millions ("1 million de fichiers"): without it the app uses `other`, and a release adds it. The forms are the [Unicode CLDR plural rules](https://cldr.unicode.org/index/cldr-spec/plural-rules), the ones the browser's `Intl.PluralRules` uses; the tests hold `plexcache/i18n.py`'s copy of them to the browser's. `en-US.json` and `en-GB.json` only list the texts whose spelling differs from the Canadian original. The tests always fail if a translation doesn't match its English. They fail on a catalog out of step with the code only for a release: with `PLEXCACHE_I18N_RELEASE=1`, which CI sets for `main`, version tags and pull requests into `main`, or under `callboard release` / `callboard beta`.
 
 #### The standards the catalogs are held to
 
-Besides how much is translated, callboard's Translations block (`dev/i18n.py --callboard`) holds the catalogs to these standards, each a rule in `callboard.toml`'s `[i18n]` that a gate sets to `fail`, `warn` or `info` (and that a local or My Standards file can only make stricter):
+Besides how much is translated, callboard's Translations block (`callboard tool i18n --callboard`) holds the catalogs to these standards, each a rule in `callboard.toml`'s `[i18n]` that a gate sets to `fail`, `warn` or `info` (and that a local or My Standards file can only make stricter):
 
 - `codes`: every language code a well-formed [BCP 47](https://www.rfc-editor.org/info/bcp47) tag (`pt-BR`, not `pt_BR` or `pt-br`) whose language is an ISO 639 code, and every catalog one the app offers. Every gate.
 - `plurals`: every translated plural with all of its language's CLDR forms, and none it hasn't. At a release.

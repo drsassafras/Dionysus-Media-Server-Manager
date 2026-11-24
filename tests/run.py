@@ -58,12 +58,12 @@ import dev  # noqa: E402, F401 — (puts the callboard install on the path: dev/
 
 from callboard import coverage, policy  # noqa: E402 — (--coverage: what the tests ran, for callboard/coverage.py; policy: what the run is held to)
 from callboard.progress import FEED as FEED_MARK  # noqa: E402 — (a record's mark: run's FEED says whether there's a board)
-from callboard.progress import OFF, RED, Progress, detail, drawn, feeding, issue, short_version, tell, tested, timed  # noqa: E402 — the bar the dev tools share (dev/upkeep.py's too)
+from callboard.progress import OFF, RED, Progress, detail, drawn, feeding, issue, short_version, tell, tested, timed  # noqa: E402 — the bar the dev tools share (callboard tool upkeep's too)
 from callboard.progress import result as result_line  # noqa: E402 — (``result`` is run's: the result line every dev tool says)
 
 FEED = feeding()  # (read before main() takes PLEXCACHE_PROGRESS out of the tests' environment)
 # How this run talks to the board (callboard/board.py sets them for the block): its bars as records, and where its page's
-# detail goes. Taken here and out of the environment (_run), as CONTEXT is — a test that runs dev/upkeep.py, a check tool or
+# detail goes. Taken here and out of the environment (_run), as CONTEXT is — a test that runs a callboard tool, a check tool or
 # tests/run.py itself would otherwise send the board its own records ("upstream not reached: x" in the board's Issues, the
 # Unit Tests block's line a test's), and a test of what a tool prints with no board would see records instead. This run's
 # own (its result's note, its page) are sent with them put back: board_says.

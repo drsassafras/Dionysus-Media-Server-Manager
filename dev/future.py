@@ -26,8 +26,7 @@ libjpeg-turbo's and oxipng's GitHub pre-releases; dev/package.json's packages (b
 ahead of latest (next, beta, rc…), installed for Linux in a container (WEB_VOLUME) and mounted over the checkout's,
 with Playwright's Chromium (BROWSERS_VOLUME); MKVToolNix has
 releases only. A pre-release counts only while it's
-ahead of the stable release; the choice is kept for a day (like dev/upkeep.py's look, whose report says what this run is
-on), and upstream not reached means the pin.
+ahead of the stable release; the choice is kept for a day (like the look of callboard's Dependencies), and upstream not reached means the pin.
 
 The image route needs only Docker with a running engine (Docker Engine or Docker Desktop; on a Mac: brew install docker colima,
 then colima start). An engine that isn't running is started (docker_up: Docker Desktop, OrbStack or colima, whichever is
@@ -58,17 +57,47 @@ from dataclasses import dataclass
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 import dev  # noqa: E402 — (puts the callboard install on the path: dev/__init__.py)
-from dev import upkeep  # noqa: E402 — the exit codes; the pins, the stable releases and the version arithmetic are its
 
-from callboard import policy  # noqa: E402 — the exit codes; the pins, the stable releases and the version arithmetic are its
+from callboard import policy, upkeep  # noqa: E402 — the exit codes; the stable releases and the version arithmetic are callboard's Dependencies'
 from callboard.progress import Progress, detail, feeding, issue, placed, record, result, said, status, timed  # noqa: E402 — the bar the dev tools share (on callboard's board: sent to it)
 from callboard.progress import tell as tell_above  # noqa: E402 — a failure in full, above the board (this file's tell: a word on the way)
 
 WARN = ["-X", "dev", "-W", "error::DeprecationWarning", "-W", "error::PendingDeprecationWarning", "-W", "error::SyntaxWarning"]
 IMAGE = "plex-cache:future"
 LOG = os.path.join(tempfile.gettempdir(), "plex-cache-future-build.log")  # the build's full output, kept for a failure
-CACHE = os.path.join(os.path.dirname(upkeep.CACHE), "future.json")  # the day's choices
-NODE_DIR = os.path.join(os.path.dirname(upkeep.CACHE), "node")  # the node tarball fetched for the run (one kept)
+KEPT = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "plex-cache")   # what a run keeps for the next
+CACHE = os.path.join(KEPT, "future.json")  # the day's choices
+NODE_DIR = os.path.join(KEPT, "node")  # the node tarball fetched for the run (one kept)
+DOCKERFILE = os.path.join(ROOT, "Dockerfile")
+DEBIAN = ("bullseye", "bookworm", "trixie", "forky", "duke")   # the Debian code names a Python image's tag may end in
+
+
+def _arg(name: str) -> str:
+    """A pin in the Dockerfile: ARG <name>=<version>."""
+    return upkeep._pin(DOCKERFILE, rf"ARG {name}=(\S+)")
+
+
+def debian_of_tag() -> str:
+    """The Debian the image is built on, from PYTHON_TAG (3.15-slim-trixie → trixie)."""
+    m = re.search(r"-(\w+)$", upkeep._pin(DOCKERFILE, r"ARG PYTHON_TAG=([^@\s]+)"))
+    if not m or m.group(1) not in DEBIAN:
+        raise ValueError("PYTHON_TAG doesn't end in a Debian codename")
+    return m.group(1)
+
+
+def ffmpeg_latest() -> str:
+    """FFmpeg's newest version, from its releases page."""
+    return upkeep.page_latest("https://ffmpeg.org/releases/", r"ffmpeg-(\d+(?:\.\d+)+)\.tar\.xz")()
+
+
+def mkvtoolnix_latest() -> str:
+    """MKVToolNix's newest version, from its NEWS."""
+    return upkeep.page_latest("https://mkvtoolnix.download/doc/NEWS.md", r"^# Version (\d+(?:\.\d+)+)")()
+
+
+def web_packages() -> dict[str, str]:
+    """Every package dev/package.json pins, either section: name → version."""
+    return upkeep.packages_of(os.path.join(ROOT, "dev", "package.json"))
 # the web's packages at the channels' choices, and Playwright's Chromium: installed in a container, for Linux and this
 # machine's architecture (the checkout's node_modules are the host's, a Mac's binaries: TypeScript's, esbuild's…), in
 # Docker volumes kept between runs, mounted over the checkout's for the suite (install_web)
@@ -508,15 +537,15 @@ def resolve(python: str, debian: str, arch: str) -> list[Pick]:
     except (OSError, ValueError, KeyError, TypeError) as e:
         picks.append(Pick("Python", f"{python} (rc tag)", "pin", f"Docker Hub not listed: {getattr(e, 'reason', e)}", f"python:{python}-rc-slim-{debian}"))
     take(lambda: pick_node(node_index("nightly"), node_index("rc"), node_index("dist"), arch), "Node", "")
-    take(lambda: pick_ffmpeg(upkeep.ffmpeg_latest(), upkeep._exists(FFMPEG_SNAPSHOT)), "ffmpeg", upkeep._arg("FFMPEG")())
-    take(lambda: Pick("MKVToolNix", upkeep.mkvtoolnix_latest(), "stable", "releases only upstream", upkeep.mkvtoolnix_latest()), "MKVToolNix", upkeep._arg("MKVTOOLNIX")())
+    take(lambda: pick_ffmpeg(ffmpeg_latest(), upkeep._exists(FFMPEG_SNAPSHOT)), "ffmpeg", _arg("FFMPEG"))
+    take(lambda: Pick("MKVToolNix", mkvtoolnix_latest(), "stable", "releases only upstream", mkvtoolnix_latest()), "MKVToolNix", _arg("MKVTOOLNIX"))
     take(lambda: pick_github("oxipng", github_releases("oxipng/oxipng"),
                              lambda v: f"https://github.com/oxipng/oxipng/releases/download/v{v}/oxipng-{v}-x86_64-unknown-linux-gnu.tar.gz", upkeep._exists),
-         "oxipng", upkeep._arg("OXIPNG")())
+         "oxipng", _arg("OXIPNG"))
     take(lambda: pick_github("libjpeg-turbo", github_releases("libjpeg-turbo/libjpeg-turbo"),
                              lambda v: f"https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/{v}/libjpeg-turbo-{v}.tar.gz", upkeep._exists),
-         "libjpeg-turbo", upkeep._arg("LIBJPEG_TURBO")())
-    for package, pin in upkeep.web_packages().items():  # (dev/package.json's, both sections)
+         "libjpeg-turbo", _arg("LIBJPEG_TURBO"))
+    for package, pin in web_packages().items():  # (dev/package.json's, both sections)
         try:
             picks.append(pick_npm(package, npm_tags(package)))
         except (OSError, ValueError, KeyError, TypeError) as e:
@@ -534,7 +563,7 @@ def channels(python: str, debian: str, arch: str, fresh: bool = False) -> list[P
         cached = {}
     kept = cached.get("picks") or []
     if (not fresh and cached.get("key") == key and time.time() - cached.get("at", 0) < upkeep.A_DAY and not any(p["channel"] == "pin" for p in kept)
-            and {p["name"] for p in kept if p.get("kind") == "npm"} == set(upkeep.web_packages())):  # (a package added or gone: asked again)
+            and {p["name"] for p in kept if p.get("kind") == "npm"} == set(web_packages())):  # (a package added or gone: asked again)
         return [Pick(**p) for p in cached["picks"]]
     picks = resolve(python, debian, arch)
     os.makedirs(os.path.dirname(CACHE), exist_ok=True)
@@ -793,7 +822,7 @@ def build_image(tag: str, args: list[str], verbose: bool) -> bool:
     buildkit = has_buildkit()
     cmd = ["docker", "buildx", "build", "--load", "--progress=plain"] if buildkit else ["docker", "build"]
     debian = re.search(r"-(\w+)$", tag)   # (the tools' stages on the same Debian as this Python: DEBIAN_TAG)
-    if debian and debian.group(1) in upkeep.DEBIAN:
+    if debian and debian.group(1) in DEBIAN:
         args = ["--build-arg", f"DEBIAN_TAG={debian.group(1)}-slim", *args]
     cmd += ["--pull", "--build-arg", f"PYTHON_TAG={tag}", *args, "-t", IMAGE, ROOT]
     if not buildkit:
@@ -918,8 +947,8 @@ def parallel_route(tag: str, args: list[str], picks: list[Pick], node_pick: Pick
     # each run's workers two per core Docker has (its VM's, set to half the machine's: cores_hint), not the machine's: the
     # rest of the machine runs the other blocks' tests meanwhile, and too many workers starve them
     jobs = 2 * (docker_cpus() or os.cpu_count() or 1)
-    pins = {"Python": upkeep._arg("PYTHON_TAG")().split("-")[0], "Node": upkeep._arg("NODE_TAG")().split("-")[0],
-            "MKVToolNix": upkeep._arg("MKVTOOLNIX")(), "ffmpeg": upkeep._arg("FFMPEG")()}
+    pins = {"Python": _arg("PYTHON_TAG").split("-")[0], "Node": _arg("NODE_TAG").split("-")[0],
+            "MKVToolNix": _arg("MKVTOOLNIX"), "ffmpeg": _arg("FFMPEG")}
     mount: list[str] = []
     results: dict[str, tuple[int, str]] = {}
     page = Detail()
@@ -1016,7 +1045,7 @@ def image_route(python: str, tag: str | None, tests: list[str], verbose: bool, s
     if why:   # (nothing is known of the next Python from this: not run, not failed)
         print(f"\nNot run: {why}.".replace("..", "."))
         return policy.NOTRUN
-    debian = upkeep.debian_of_tag()
+    debian = debian_of_tag()
     picks: list[Pick] = []
     args: list[str] = []
     node_pick = None
@@ -1051,7 +1080,7 @@ def image_route(python: str, tag: str | None, tests: list[str], verbose: bool, s
     # the page tests need node, which the image doesn't carry (it serves no pages through it): the channel's build, fetched
     # here and mounted in (Debian's package when it can't be had), added to the container for this run only, as root. The
     # suite runs through tests/run.py (its progress bar on a terminal: -t) unless particular tests are named; CI=1: the
-    # dependency check, dev/upkeep.py, is for a run by hand in the checkout, not this one.
+    # dependency check, callboard's Dependencies (callboard tool upkeep), is for a run by hand in the checkout, not this one.
     leave = "".join(f" --exclude {c}" for c in exclude or [])   # (classes another section runs: callboard's style guide)
     # its workers two per core Docker has (its VM's, set to half the machine's: cores_hint), not the machine's: the rest
     # of the machine runs the other blocks' tests meanwhile, and too many workers starve them (a test that waits on a
@@ -1070,10 +1099,10 @@ def image_route(python: str, tag: str | None, tests: list[str], verbose: bool, s
     elif not tty and os.environ.get("PLEXCACHE_PROGRESS") == "bar":
         tty = ["-e", "PLEXCACHE_PROGRESS=bar", "-e", f"COLUMNS={os.environ.get('COLUMNS') or 100}"]
     print(f"    Adding node {node_pick.version if tarball and node_pick else '(Debian’s)'}, rsync and git to the container, then running the suite:", flush=True)
-    # the app image's pins (the Dockerfile's, dev/upkeep.py moves them): on the board the suite's line names only what's
+    # the app image's pins (the Dockerfile's, callboard's Dependencies (callboard tool upkeep) moves them): on the board the suite's line names only what's
     # ahead of them (tests/run.py's ran_on), not what this image shares with the app's
-    pins = {"Python": upkeep._arg("PYTHON_TAG")().split("-")[0], "Node": upkeep._arg("NODE_TAG")().split("-")[0],
-            "MKVToolNix": upkeep._arg("MKVTOOLNIX")(), "ffmpeg": upkeep._arg("FFMPEG")()}
+    pins = {"Python": _arg("PYTHON_TAG").split("-")[0], "Node": _arg("NODE_TAG").split("-")[0],
+            "MKVToolNix": _arg("MKVTOOLNIX"), "ffmpeg": _arg("FFMPEG")}
     page = Detail()
     run = ["docker", "run", "--rm", *tty, "-e", "CI=1", "-e", f"PLEXCACHE_BAR_BEFORE={BUILD_STEPS[0]}", "-e", f"PLEXCACHE_PINS={json.dumps(pins)}", *WEB_TARGETS, *suite_context(), "--user", "0", "-v", f"{ROOT}:/src:ro", *install_mount(), *mount, *page.mount("image"), "-w", "/src", "--entrypoint", "sh", IMAGE, "-c",
            f"{node}; exec {suite}"]

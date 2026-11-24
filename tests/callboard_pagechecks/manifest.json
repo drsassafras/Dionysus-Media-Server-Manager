@@ -2,15 +2,15 @@
  "about": "Page checks: a copy of a shared test from your MyStandards, written by callboard. Never edit this folder by hand: say what's this project's in pagechecks.json, and leave a check out only in callboard.toml, with the reason.",
  "kind": "template",
  "name": "pagechecks",
- "version": 2,
+ "version": 3,
  "format": 2,
  "from": {
   "repo": "MyStandards"
  },
  "files": {
   "__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-  "pagechecks.js": "e14a1e137e38fc4e7b11772aff3efbeee4bdc16b5816f02385a6bfb094d59af6",
-  "template.toml": "443bd8ed055ca962e899eb708459d683aae32fdfdb453d0167dd17b16f67b91f",
+  "pagechecks.js": "27e5fffc65a183f940567bf59a3e6232948b0759765be62e54da4d6d8c88d476",
+  "template.toml": "71061f32adb495aa26841f8ce2e827078ffa06b036a57137db219f5f86d4c31f",
   "test_pagechecks.py": "4898ea84a7f49c5c325540c60796b0209f4fece2b36c99a662d7267e6c2f170b"
  }
 }

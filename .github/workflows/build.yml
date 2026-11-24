@@ -55,7 +55,7 @@ jobs:
       # order, security…), each at zero and kept there; Ruff's findings are annotated on their lines
       - name: Python validation
         if: ${{ !cancelled() }}
-        run: callboard tool typecheck   # (each tool at its version in dev/tools.toml, moved by dev/upkeep.py)
+        run: callboard tool typecheck   # (each tool at its version in dev/tools.toml, moved by callboard's Dependencies)
       # the build validation (callboard tool buildcheck), as callboard's Build Validation block runs it: ShellCheck on the shell scripts,
       # actionlint on these workflows (and ShellCheck on each step's script), hadolint on the Dockerfile; kept at zero
       - name: Build validation
@@ -115,13 +115,13 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7
         with:
           python-version: "3.15"
-      # the CVEs to act on (dev/cves.py, as callboard's Dependencies block says them): in this image (Trivy), the
+      # the CVEs to act on (callboard's Dependencies, as its block says them): in this image (Trivy), the
       # web's npm packages (OSV) and the tools the image is built with (NVD). Each one a warning on the run, never a
       # failure: what someone else is already fixing isn't said
       - name: CVEs to act on
         if: ${{ !cancelled() }}
         continue-on-error: true   # (whatever happens here, the image is still pushed)
-        run: python dev/upkeep.py --cves plex-cache:test
+        run: callboard tool upkeep --cves plex-cache:test
       - name: Push
         id: push
         env:

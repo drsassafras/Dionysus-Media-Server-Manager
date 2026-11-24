@@ -57,29 +57,30 @@ after = ["unit"]
 [integrations.audit]
 title = "Security Audit"
 kind = "audit"
-cmd = "python3 dev/audit.py"
-needs = ["dev/audit.toml"]
+cmd = "callboard tool audit"
+requires = ["ghostlight"]
+needs = ["ghostlight.toml"]
 
 [integrations.i18n]
 title = "Translations"
 kind = "i18n"
-cmd = "python3 dev/i18n.py --callboard"
+cmd = "callboard tool i18n --callboard"
 
 [integrations.release]
 title = "Release checks"
 kind = "release"
-cmd = "python3 dev/release.py --callboard"
+cmd = "callboard tool release --callboard"
 after = ["unit"]
 
 [integrations.upkeep]
 title = "Dependencies"
 kind = "upkeep"
-cmd = "python3 dev/upkeep.py --callboard"
+cmd = "callboard tool upkeep --callboard"
 
 [integrations.style]
 title = "Wardrobe"
 kind = "style"
-cmd = "python3 dev/style.py check"
+cmd = "callboard tool style check"
 
 [unit.push]
 failures = "fail"
@@ -244,6 +245,11 @@ config = "fail"
 unknown = "warn"
 release_rules = "fail"
 
+[i18n]
+# (the script whose English must all go through T()/H(): callboard tool i18n leftovers)
+leftover_scripts = ["plexcache/web/app.js"]
+variants = ["en-US", "en-GB"]   # (spelling variants of the English, in the order the page lists them)
+
 [i18n.push]
 targets = {"*" = 0}
 present = "warn"
@@ -271,13 +277,16 @@ codes = "fail"
 
 [release]
 notes_dir = "changes"
+# (this project's own two: dev/mqtt_checks.py; each gate holds them as its ``own`` says)
+own_checks = ["MQTT settings: python3 dev/mqtt_checks.py settings", "MQTT docs: python3 dev/mqtt_checks.py docs"]
+# (the one script run on its own, away from the package, says its release itself)
+version_also = ["plexcache/tools/rewrite_blocks.py"]
 manual_items = ["Read the release notes through", "Check the README's screenshots still match"]
 
 [release.push]
 version = "info"
 translations = "info"
-mqtt_settings = "info"
-mqtt_docs = "info"
+own = "info"
 coverage = "info"
 audits = "info"
 looks = "info"
@@ -288,8 +297,7 @@ manual = "info"
 github = true
 version = "info"
 translations = "info"
-mqtt_settings = "info"
-mqtt_docs = "info"
+own = "info"
 coverage = "info"
 audits = "info"
 looks = "info"
@@ -299,8 +307,7 @@ manual = "info"
 [release.merge.into.main]
 version = "fail"
 translations = "fail"
-mqtt_settings = "fail"
-mqtt_docs = "fail"
+own = "fail"
 looks = "fail"
 change_notes = "fail"
 manual = "fail"
@@ -309,8 +316,7 @@ manual = "fail"
 github = true
 version = "fail"
 translations = "fail"
-mqtt_settings = "fail"
-mqtt_docs = "fail"
+own = "fail"
 coverage = "fail"
 audits = "fail"
 looks = "fail"
@@ -323,6 +329,17 @@ dormant_days = 365
 debian_grace_days = 8
 review_days = 182
 move = "all"
+# What Dependencies can't find by itself (it finds the Dockerfile's base images, dev/tools.toml's check tools and
+# dev/package.json's packages): a line each, where its pin is and where its releases are (callboard tool upkeep --help).
+also = [
+  "MKVToolNix: ARG MKVTOOLNIX from page:https://mkvtoolnix.download/debian/dists/trixie/main/binary-amd64/Packages /^Version: (\\d+(?:\\.\\d+)+)-/; major=0; cve=cpe:bunkus:mkvtoolnix; todo=ARG MKVTOOLNIX in the Dockerfile, once mkvtoolnix.download has the release for the image's Debian.",
+  "ffmpeg: ARG FFMPEG from page:https://ffmpeg.org/releases/ /ffmpeg-(\\d+(?:\\.\\d+)+)\\.tar\\.xz/; built=https://ffmpeg.org/releases/ffmpeg-{version}.tar.xz; sum=FFMPEG_SHA256@https://ffmpeg.org/releases/ffmpeg-{version}.tar.xz; sum=FFMPEG_GH_SHA256@https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n{version}.tar.gz; cve=cpe:ffmpeg:ffmpeg; repo=FFmpeg/FFmpeg; tag=n{version}; todo=ARG FFMPEG in the Dockerfile; the optimizer tests inside the image then say whether the swap checks still pass.",
+  "oxipng: ARG OXIPNG from github:oxipng/oxipng; built=https://github.com/oxipng/oxipng/releases/download/v{version}/oxipng-{version}-x86_64-unknown-linux-gnu.tar.gz; sum=OXIPNG_SHA256_AMD64@https://github.com/oxipng/oxipng/releases/download/v{version}/oxipng-{version}-x86_64-unknown-linux-gnu.tar.gz; sum=OXIPNG_SHA256_ARM64@https://github.com/oxipng/oxipng/releases/download/v{version}/oxipng-{version}-aarch64-unknown-linux-gnu.tar.gz; cve=osv:crates.io:oxipng; todo=ARG OXIPNG in the Dockerfile; CoverArtTests inside the image say whether it still compresses as expected.",
+  "libjpeg-turbo: ARG LIBJPEG_TURBO from github:libjpeg-turbo/libjpeg-turbo; built=https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/{version}/libjpeg-turbo-{version}.tar.gz; sum=LIBJPEG_TURBO_SHA256@https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/{version}/libjpeg-turbo-{version}.tar.gz; cve=cpe:libjpeg-turbo:libjpeg-turbo; tag={version}; todo=ARG LIBJPEG_TURBO in the Dockerfile; CoverArtTests inside the image say whether jpegtran still does.",
+  "Home Assistant (MQTT discovery): plexcache/homeassistant.py /HA_CHECKED = \"([^\"]+)\"/ from pypi:homeassistant; major=0; check=python3 dev/ha_keys.py {version}; todo=Change the discovery messages (plexcache/homeassistant.py: entities and _publish_discovery, and DISCOVERY_KEYS) for that release's MQTT rules (home-assistant.io/integrations/mqtt), then HA_CHECKED.",
+]
+# The image each branch publishes: looked at for CVEs when this copy's own can't be built here.
+images = ["main: ghcr.io/drsassafras/plex-cache:latest", "dev: ghcr.io/drsassafras/plex-cache:dev"]
 
 [upkeep.push]
 behind = "warn"
@@ -348,6 +365,37 @@ move = "minor"
 behind = "warn"
 cves = "warn"
 
+# Wardrobe: what the app is, for the style guide (callboard tool style; callboard/style.py has each setting).
+[style]
+web = "plexcache/web"
+stylesheets = ["app.css"]
+scripts = ["app.js", "decor.js", "i18n.js", "login.js"]
+pages = ["index.html", "login.html"]
+not_looks = ["i18n"]   # (the translations: words, not looks)
+draws = ["decor.js: node dev/decor-draws.js {file}"]   # all decoration: a look for what it draws, not for how it's written
+guide = "dev/style-guide.json"
+sample = "dev/style-sample"
+# the themes, each photographed in turn
+themes = ["classic/light: Classic light", "classic/dark: Classic dark", "dionysus/light: Dionysus light", "dionysus/dark: Dionysus dark"]
+theme_first = "dionysus/light"
+theme_file = "plexcache/themes.py"
+theme_marks = ["css", "script"]
+theme_store = "pc-theme"
+theme_urls = ["/theme.css", "/theme.js"]
+# the demo the pictures are taken of
+demo = "python3 tests/demo.py {port}"
+demo_env = ["DEMO_SHOWCASE=1"]
+before_env = ["DEMO_INLINE_STYLES=1"]   # (approved look files from before F-1-2026-058 wrote style="…": drawn as they were)
+demo_ready = "/api/state"
+demo_static = "/static/"
+demo_data = "/api/"
+demo_tree = ["plexcache", "tests", "dev/cli.py"]
+sample_pages = ["health", "tools", "merge", "system"]
+page_names = 'app.js /(?:var|let|const) PAGES = \{(.*?)\};/ /([a-z]+):\s*page[A-Z]/'
+opens = ["info: #infopop opened by .info[data-info] id data-info"]
+made_from = ["tests/demo.py", "tests/fakes.py", "tests/fixtures", "dev/decor-draws.js", "dev/package-lock.json"]
+packages = "dev"
+
 [style.push]
 waiting = "warn"
 
@@ -361,3 +409,12 @@ waiting = "warn"
 
 [templates.pagechecks.leave_out]
 "[data-secret]" = "The Plex, TrueNAS and Syncthing key fields empty themselves once the key is saved, so browser password managers never store it"
+
+# The Tour: the app's code copied to the TrueNAS test app, and the app restarted (see dev/compose.dev.yaml). The TrueNAS
+# address and SSH user are this computer's (callboard.local.toml, or ~/.config/callboard/config).
+[tour]
+app = "plex-cache-dev"
+web_port = 8643
+dest = "/mnt/ssd/AppConfigs/plex-cache-dev/src"   # the test app mounts <dest>/plexcache over its built-in copy
+paths = ["plexcache"]
+exclude = [".git", ".DS_Store", "__pycache__", "*.pyc"]

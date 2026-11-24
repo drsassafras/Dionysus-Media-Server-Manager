@@ -4,8 +4,8 @@ name: Release
 # preview) starts the release process: the release gate (callboard gate: the blocks held as the tag's phase holds them —
 # a candidate the freeze, a beta the preview's warnings; nothing runs unless [github] enabled and [gates.release]
 # github say so), then the image at that version, then a GitHub Release whose notes are the change notes written
-# since the last release (python3 dev/release.py notes), a pre-release for a candidate or a preview. After a release
-# proper, a pull request that moves __version__ on to the next X.Y.0 (python3 dev/release.py bump).
+# since the last release (callboard tool release notes), a pre-release for a candidate or a preview. After a release
+# proper, a pull request that moves __version__ on to the next X.Y.0 (callboard tool release bump).
 
 on:
   push:
@@ -129,7 +129,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
-          python3 dev/release.py notes > notes.md
+          callboard tool release notes > notes.md
           if [[ "$TAG" == *-* ]]; then pre="--prerelease"; else pre=""; fi
           # shellcheck disable=SC2086
           gh release create "$TAG" --title "$TAG" --notes-file notes.md --generate-notes $pre
@@ -161,10 +161,10 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          next="$(python3 dev/release.py bump)"
+          next="$(callboard tool release bump)"
           branch="next-version/$next"
           git checkout -b "$branch"
           git commit -am "Next version: $next (after $TAG)"
           git push -u origin "$branch"
           gh pr create --base dev --head "$branch" --title "Next version: $next" \
-            --body "After the release $TAG: dev's work goes on as $next (python3 dev/release.py bump)."
+            --body "After the release $TAG: dev's work goes on as $next (callboard tool release bump)."

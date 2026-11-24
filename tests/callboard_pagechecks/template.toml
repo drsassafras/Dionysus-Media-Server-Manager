@@ -4,7 +4,7 @@
 #     [templates.pagechecks.checks]   <check> = "why that check doesn't apply here"
 
 title = "Page checks"
-version = 2
+version = 3
 about = "How each page behaves for the person using it, drawn in Chromium by Playwright."
 folder = "tests/callboard_pagechecks"           # (where the copy goes in a project)
 files = ["pagechecks.js", "test_pagechecks.py", "template.toml"]
@@ -23,6 +23,7 @@ search_holds = "A search box keeps its text, its cursor and the focus while the 
 focus_holds = "The field in use keeps the focus while the page updates itself."
 no_surprise_scroll = "What's on screen doesn't move while the page updates itself and nobody's touching it."
 keeps_selection = "Text selected (to copy it) stays selected while the page updates itself."
+all_pages = "Every page the project's own menu reaches is named in pagechecks.json, so every check draws it."
 info_buttons = "Each setting has a button that tells what it is (info, help, ?)."
 info_popovers = "An info button opens a popover of the browser's own (the popover attribute)."
 info_paragraphs = "An info button's bubble says each of its parts in a paragraph of its own, led by its label in bold and a colon."

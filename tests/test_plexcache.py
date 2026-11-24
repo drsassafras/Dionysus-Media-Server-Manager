@@ -4790,67 +4790,6 @@ class TestRunnerTests(unittest.TestCase):
         self.assertIn("2 passed · 0 failed · 0 warnings · 2 total", got.stdout, got.stdout + got.stderr)
         self.assertNotIn("workers", got.stdout)
 
-    def test_the_dependencies_block_says_what_moved_from_and_to(self):
-        """dev/upkeep.py on the board: the box in a line under its bar (dev/progress.said) — what moved and what's new
-        upstream, each from → to; all current; or upstream not reached."""
-        import io
-
-        from dev import upkeep
-
-        from callboard import board
-        from callboard.progress import FEED, said
-        out = io.StringIO()
-        with mock.patch.dict(os.environ, {"PLEXCACHE_PROGRESS": "feed"}):
-            said("postcss-preset-env 11.6.1 → 11.6.2", out)
-        with mock.patch.dict(os.environ, {"PLEXCACHE_PROGRESS": ""}):
-            said("not on the board", out)
-        self.assertEqual(out.getvalue().count(FEED), 1)
-        s = board.Section({"id": "upkeep", "title": "Dependencies", "cmd": "true", "upkeep": True}, tempfile.mkdtemp(dir=TMP))
-        self.addCleanup(lambda s=s: s.out.close())
-        s.state = "running"
-        s.line("behind")
-        s.line(out.getvalue().rstrip("\n"))
-        s.finished(0)
-        self.assertIn("postcss-preset-env 11.6.1 → 11.6.2", s.lines(80)[2])
-        r = upkeep.Report(moved=["Node 24.1.0 → 24.2.0"], bumped=["Node: Dockerfile: 24.1.0 → 24.2.0"],
-                          news=[("pyright", "1.1.400", "2.0.0", "major", "by hand")])
-        # how many of each first (an error, a warning, a notice: upkeep.found), then what moved and what's new
-        self.assertEqual(upkeep.summary(r), "1 warning · 1 notice · moved Node 24.1.0 → 24.2.0 · pyright 1.1.400 → 2.0.0 (major)")
-        self.assertEqual(upkeep.found(r), [("notice", "moved Node 24.1.0 → 24.2.0: test it, then commit", ""),
-                                           ("warning", "pyright 1.1.400 → 2.0.0 (major)", "")])
-        self.assertEqual(upkeep.summary(upkeep.Report()), f"{len(upkeep.DEPS)} dependencies up to date")
-        self.assertEqual(upkeep.summary(None, "timed out"), "1 error · upstream not reached · timed out")
-        self.assertEqual(upkeep.found(None, "timed out"), [("error", "upstream not reached: timed out", "python3 dev/upkeep.py")])
-        stylelint = upkeep.Report(news=[("stylelint", "17.16.0", "18.0.0", "major", "by hand")])   # (a package: its fix the npm command)
-        self.assertEqual(upkeep.found(stylelint), [("warning", "stylelint 17.16.0 → 18.0.0 (major)", "npm install --prefix dev --save-exact stylelint@18.0.0")])
-        # its page in the callboard UI (upkeep.page, written on a --callboard run): the box's word and lines, each
-        # dependency as a row, what moved and what's new, the CVEs as judged, the Issues as the board has them
-        from dev.cves import Judged
-        r.deps = [{"name": "Node", "have": "24.2.0", "newest": "24.2.0", "state": "moved", "level": "minor", "where": "Dockerfile", "package": ""}]
-        r.cves = Judged(act=[("CVE-1 in x", "move it")], shown=1, notes=["Trivy not run"])
-        got = upkeep.page(r, "dev", step="move")
-        self.assertEqual((got["kind"], got["state"], got["where"], got["step"], got["stale"], got["error"]), ("upkeep", "behind", "dev", "move", False, ""))
-        self.assertEqual(got["head"], "NEW VERSIONS UPSTREAM  -  1 MOVED, 1 FOR YOU, 1 CVE")
-        self.assertEqual((got["deps"], got["moved"], got["bumped"]), (r.deps, r.moved, r.bumped))
-        self.assertEqual(got["news"], [{"name": "pyright", "have": "1.1.400", "newest": "2.0.0", "level": "major", "todo": "by hand"}])
-        self.assertEqual((got["cves"]["act"], got["cves"]["shown"], got["cves"]["notes"]), ([["CVE-1 in x", "move it"]], 1, ["Trivy not run"]))
-        self.assertEqual(got["issues"][0], {"level": "notice", "text": "moved Node 24.1.0 → 24.2.0: test it, then commit", "fix": ""})
-        self.assertEqual([i["level"] for i in got["issues"]], ["notice", "warning", "warning", "notice"])
-        self.assertEqual(json.loads(json.dumps(got))["lines"][:2], ["", "Moved here (dev): run the tests, then commit them."])
-        gone = upkeep.page(None, None, "timed out", "look")
-        self.assertEqual((gone["state"], gone["error"], gone["deps"], gone["cves"], gone["issues"][0]["level"]), ("unknown", "timed out", [], None, "error"))
-        # a --callboard run writes it (CALLBOARD_DETAIL), the look's and then the move's in the same place
-        folder = tempfile.mkdtemp(dir=TMP)
-        path = os.path.join(folder, "upkeep.json")
-        with mock.patch.object(upkeep, "check", return_value=r), mock.patch.object(upkeep, "branch", return_value="dev"), \
-                mock.patch.object(upkeep, "_progress", return_value=None), mock.patch.object(sys, "argv", ["upkeep.py", "--callboard"]), \
-                mock.patch.dict(os.environ, _policy_env(CALLBOARD_DETAIL=path, CALLBOARD_UPKEEP="look", PLEXCACHE_PROGRESS="")), \
-                contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(upkeep.main(), 4)   # (behind: a warning, as [upkeep] behind says)
-        with open(path, encoding="utf-8") as fh:
-            written = json.load(fh)
-        self.assertEqual((written["step"], written["deps"]), ("look", r.deps))
-
     def test_run_py_sends_its_bar_to_the_board_and_can_leave_a_class_out(self):
         """tests/run.py on the board (PLEXCACHE_PROGRESS=feed): its bar as records (bar "tests"), its summary as text;
         --exclude <Class> leaves that class out (callboard runs WebCheckTests' checks in a section of its own: DHTML), in this process or
@@ -4963,7 +4902,7 @@ class TestRunnerTests(unittest.TestCase):
         failure."""
         import subprocess
         folder = tempfile.mkdtemp(dir=TMP)
-        told = r"""printf '\036{"then": 1}\n\036{"said": "6 looks need your approval: python3 dev/style.py review"}\n'; exit 1"""
+        told = r"""printf '\036{"then": 1}\n\036{"said": "6 looks need your approval: callboard tool style review"}\n'; exit 1"""
         for then, state, said in (("echo made", "warn", "Style Approval: LOOKS WAITING (6 looks need your approval"),
                                   ("echo the sample broke; exit 1", "warn", "Style Approval: LOOKS WAITING: NO SAMPLE (6 looks")):
             plan = [{"id": "style", "title": "Style Approval", "cmd": told, "warn": {"rc": 1, "note": "looks waiting"},
@@ -4984,13 +4923,13 @@ class TestRunnerTests(unittest.TestCase):
         self.assertIn("LOOKS WAITING: MAKING SAMPLE", s.lines(100)[0])
 
     def test_the_review_stops_once_its_page_is_closed(self):
-        """dev/style.py review stops by itself once its page is closed: each open tab beats (/alive) and says goodbye as it
+        """callboard/style.py review stops by itself once its page is closed: each open tab beats (/alive) and says goodbye as it
         goes (/bye); it stops a moment after the last goodbye (a reload comes back sooner), or once no tab has beaten for a
         while — and says so. A beat isn't a use of it: the hour's limit is on what's done on the page."""
         import importlib.util
         import re as _re
         import threading
-        spec = importlib.util.spec_from_file_location("style_tool_bye", os.path.join(ROOT, "dev", "style.py"))
+        spec = importlib.util.spec_from_file_location("style_tool_bye", os.path.join(DEVLIB, "style.py"))
         assert spec and spec.loader
         s = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(s)
@@ -5107,12 +5046,12 @@ class TestRunnerTests(unittest.TestCase):
         self.assertEqual(sorted(found), sorted(self.BROWSER_TESTS), "a test in BROWSER_TESTS no longer drives a browser: take it off")
 
     def test_one_style_sample_at_a_time(self):
-        """dev/style.py sample while another is being made (callboard's board makes one; r, or a terminal, another): it waits
+        """callboard/style.py sample while another is being made (callboard's board makes one; r, or a terminal, another): it waits
         for that one, and once it's done, and shows what waits, makes none of its own."""
         import fcntl
         import importlib.util
         import threading
-        spec = importlib.util.spec_from_file_location("style_tool_lock", os.path.join(ROOT, "dev", "style.py"))
+        spec = importlib.util.spec_from_file_location("style_tool_lock", os.path.join(DEVLIB, "style.py"))
         assert spec and spec.loader
         s = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(s)
@@ -5133,12 +5072,12 @@ class TestRunnerTests(unittest.TestCase):
             self.assertIn("A sample is already being made", said.getvalue())
 
     def test_the_review_shows_what_the_style_check_flags(self):
-        """The board's r key (dev/style.py review --board) and the check agree on what waits for approval — one function,
+        """The board's r key (callboard/style.py review --board) and the check agree on what waits for approval — one function,
         pending, for both: when the sample in dev/style-sample doesn't show every look the check flags (made before a new
         image, say), the review makes it again — its page open at once, the sample made while it's open — rather than serving
         the old page that says all of it is approved."""
         import importlib.util
-        spec = importlib.util.spec_from_file_location("style_tool_r", os.path.join(ROOT, "dev", "style.py"))
+        spec = importlib.util.spec_from_file_location("style_tool_r", os.path.join(DEVLIB, "style.py"))
         assert spec and spec.loader
         s = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(s)
@@ -5168,12 +5107,13 @@ class TestRunnerTests(unittest.TestCase):
                 self.assertEqual(s.main(["style.py", "review", "--board"]), 0)
                 self.assertEqual(made, [1])   # (not made again)
             # what it's made from: the app, the demo and its fakes, the tools that draw it, the Python, the Before's source
-            for top in ("plexcache", "tests/demo.py", "tests/fakes.py", "dev/style.py", "dev/style-sample.js", "dev/still.js"):
+            for top in ("plexcache", "tests/demo.py", "tests/fakes.py", "dev/decor-draws.js"):   # (the app, and callboard.toml's [style] made_from)
                 self.assertIn(top, s.MADE_FROM)
-            self.assertEqual(s.MADE_WITH, (os.path.join(DEVLIB, "devpage.py"),))   # (the dev pages' code: the callboard install's)
+            # (the tools that draw and show it: the callboard install's)
+            self.assertEqual(s.MADE_WITH, tuple(os.path.join(DEVLIB, f) for f in ("devpage.py", "style.py", "style-sample.js", "still.js")))
             self.assertEqual(s.made_from(), s.made_from())
             self.assertNotEqual(s.made_from(), s.made_from(before=tmp))
-            for rel in ("plexcache/web/app.js", "tests/demo.py", "dev/still.js"):   # a byte changed in any of them: another sample
+            for rel in ("plexcache/web/app.js", "tests/demo.py", "dev/decor-draws.js"):   # a byte changed in any of them: another sample
                 tree = os.path.join(tmp, "tree")
                 for top in s.MADE_FROM:
                     src, dst = os.path.join(ROOT, top), os.path.join(tree, top)
@@ -5214,7 +5154,7 @@ class TestRunnerTests(unittest.TestCase):
         some(s.helper).wait(5)
         s.helped()
         self.assertIn("RUNNING: THE REVIEW PAGE HAS CLOSED", s.lines(80)[0])
-        s.line(FEED + json.dumps({"said": "3 looks need your approval: python3 dev/style.py review"}))
+        s.line(FEED + json.dumps({"said": "3 looks need your approval: callboard tool style review"}))
         s.finished(1)
         self.assertTrue(s.keyed)
         self.assertIn("LOOKS WAITING", s.lines(80)[0])   # (its key: the header's, and its last line)
@@ -5246,13 +5186,13 @@ class TestRunnerTests(unittest.TestCase):
         s.key_said = ""
         s.live = False                                     # (the board done: the command again, and no key)
         self.assertFalse(s.keyed)
-        self.assertIn("3 looks need your approval: python3 dev/style.py review", s.lines(80)[2])
+        self.assertIn("3 looks need your approval: callboard tool style review", s.lines(80)[2])
         from callboard import plan, policy
         req = {"want": "check", "code": "local", "src": ROOT, "root": ROOT, "config": os.path.join(ROOT, "callboard.toml"), "tty": True,
                "env": _policy_env("development"), "label": "Local Copy"}
         sec = next(x for x in plan.build(req, policy.Config(req["config"]))[0]["sections"] if x["id"] == "style")   # (the block as callboard plans it)
-        self.assertEqual((sec["key"]["key"], sec["key"]["cmd"], sec["key"]["cwd"]), ("r", "python3 dev/style.py review --board", ROOT))
-        self.assertEqual((sec["then"]["cmd"], sec["finale"]["cmd"], sec["finale"]["env"]), ("python3 dev/style.py sample", "python3 dev/style.py review --step", {"CALLBOARD_SAMPLE": "0", "CALLBOARD_RECHECK": "1"}))
+        self.assertEqual((sec["key"]["key"], sec["key"]["cmd"], sec["key"]["cwd"]), ("r", "callboard tool style review --board", ROOT))
+        self.assertEqual((sec["then"]["cmd"], sec["finale"]["cmd"], sec["finale"]["env"]), ("callboard tool style sample", "callboard tool style review --step", {"CALLBOARD_SAMPLE": "0", "CALLBOARD_RECHECK": "1"}))
         self.assertNotIn("key", plan.build(req | {"tty": False}, policy.Config(req["config"]))[0]["sections"][-1])   # (no keys read: no key)
 
     @unittest.skipUnless(shutil.which("rsync") and shutil.which("bash"), "no rsync here (callboard copies with it)")
@@ -5262,7 +5202,7 @@ class TestRunnerTests(unittest.TestCase):
         import subprocess
 
         from callboard.progress import record
-        got = subprocess.run([sys.executable, os.path.join(ROOT, "dev", "style.py"), "check"], cwd=ROOT, capture_output=True, text=True, timeout=120,
+        got = subprocess.run([sys.executable, os.path.join(DEVLIB, "style.py"), "check"], cwd=ROOT, capture_output=True, text=True, timeout=120,
                              env=dict(os.environ, PLEXCACHE_PROGRESS="feed", CALLBOARD_SAMPLE="0"))
         bars = [r for r in map(record, got.stdout.split("\n")) if r and "bar" in r]
         self.assertEqual([(b["label"], b["workers"], b["done"] == b["total"]) for b in bars], [("looks · against the style guide", 1, True)])
@@ -5290,7 +5230,7 @@ class TestRunnerTests(unittest.TestCase):
             fh.write('#!/bin/bash\nwhile [ $# -gt 0 ]; do case "$1" in -o|-p|-l) shift 2 ;; -O) exit 0 ;; -*) shift ;; *) break ;; esac; done\n'
                      'shift; [ $# -eq 0 ] && exit 0; exec bash -c "$*"\n')
         style = os.path.join(fake, "style")
-        with open(style, "w", encoding="utf-8") as fh:   # (dev/style.py as callboard sees it: check, sample, review)
+        with open(style, "w", encoding="utf-8") as fh:   # (callboard/style.py as callboard sees it: check, sample, review)
             fh.write(f'#!/bin/bash\ncase "$1" in check) [ -n "$CALLBOARD_RECHECK" ] && [ -f {folder}/reviewed ] && exit 0; '
                      f'echo "2 looks not in the style guide, for the maintainer to look at and approve: x"; '
                      f"printf '\\036{{\"then\": 0}}\\n'; printf '\\036{{\"status\": \"looks waiting\"}}\\n'; exit 4 ;; review) echo \"review $*\" >> {folder}/reviewed; sleep 0.6; "
@@ -5360,7 +5300,7 @@ class TestRunnerTests(unittest.TestCase):
         b.stdin_tty = True
         s.state = "running"
         s.line(FEED + json.dumps({"bar": "style", "done": 6, "total": 6, "label": "looks · sample from 05:10"}))
-        s.line(FEED + json.dumps({"said": "6 looks need your approval: python3 dev/style.py review"}))
+        s.line(FEED + json.dumps({"said": "6 looks need your approval: callboard tool style review"}))
         s.finished(1)
         self.assertTrue(b.finale_due(s))
         b.step()
@@ -5771,8 +5711,8 @@ class DevToolsUITests(unittest.TestCase):
             finally:
                 box["server"].shutdown()
             t.join(10)
-        # the dev tools' pages: the UI's own looks are outside the style guide's files (dev/style.py looks at the app's)
-        from dev import style
+        # the dev tools' pages: the UI's own looks are outside the style guide's files (callboard/style.py looks at the app's)
+        from callboard import style
         self.assertFalse(style.look_file("dev/devui.css"))
         self.assertFalse(style.look_file("dev/devui.html"))
         # a block's output asked for while the server was away (the page's "Failed to fetch") is asked again once it answers,
@@ -5802,7 +5742,7 @@ class DevToolsUITests(unittest.TestCase):
         does (every integration, on the board or hidden, with its letter; each integration's rules at each gate, and by
         hand), Save writes the file again — checked first, refused when [config] read_only — and
         never commits; the Gates page says what the gates are and what GitHub runs of them, the tags and branches, the
-        change notes since the last release, and the manual items, ticked from the page (python3 dev/release.py tick).
+        change notes since the last release, and the manual items, ticked from the page (callboard tool release tick).
         The hub's letter and the code's context come from the plan; Push posts no --release."""
         import subprocess
 
@@ -8097,12 +8037,8 @@ class PageStructureTests(unittest.TestCase):
         """An ⓘ's text opens in a pop-up, so an ⓘ inside that text can't be reached. Nothing passed to
         info(), to a card heading's explanation (heading's second argument: it goes behind an ⓘ when
         long) or to a field's longer help ({more: ...}) may contain an info() of its own."""
-        import importlib.util
+        from callboard import i18n as tool   # (callboard's Translations: its JavaScript tokenizer)
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        spec = importlib.util.spec_from_file_location("i18n_tool", os.path.join(root, "dev", "i18n.py"))
-        tool = importlib.util.module_from_spec(some(spec))
-        assert spec is not None
-        some(spec.loader).exec_module(tool)
         with open(os.environ.get("PLEXCACHE_CHECK_JS") or os.path.join(root, "plexcache", "web", "app.js"), encoding="utf-8") as fh:
             src = fh.read()
         toks = tool.js_tokens(src)
@@ -14585,7 +14521,7 @@ class MQTTTests(unittest.TestCase):
         self.assertTrue(ha.control_availability(fake(libs=["2"]), s, {})["nextepisode_ram_percent"])
 
     def test_discovery_keys_are_listed(self):
-        """Every key a discovery message uses is in DISCOVERY_KEYS, which dev/upkeep.py checks against each Home Assistant
+        """Every key a discovery message uses is in DISCOVERY_KEYS, which dev/ha_keys.py checks against each Home Assistant
         release, and each listed one is used: so a new key is checked too, and one dropped isn't checked for nothing."""
         from plexcache import homeassistant as ha
         self.enable()
@@ -16084,11 +16020,9 @@ class TranslationTests(unittest.TestCase):
     @classmethod
 
     def setUpClass(cls):
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("i18n_tool", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "dev", "i18n.py"))
-        cls.tool = importlib.util.module_from_spec(some(spec))
-        assert spec is not None
-        some(spec.loader).exec_module(cls.tool)
+        from callboard import i18n   # (callboard's Translations, set up for this project: callboard.toml's [i18n])
+        cls.tool = i18n
+        cls.tool._setup()
         problems = []
         cls.keys = cls.tool.all_keys(problems)
         cls.problems = problems
@@ -16174,20 +16108,20 @@ class TranslationTests(unittest.TestCase):
 
     # The catalogs are only brought in step with the code for a release (README.md → Translations):
     # in between, a new text isn't in them yet (the app shows the English) and an old one lingers.
-    # So that's only checked where they gate — dev/i18n.py's strict_now, the one place that decides
+    # So that's only checked where they gate — callboard/i18n.py's strict_now, the one place that decides
     # (for these tests and callboard's Translations block alike): callboard.toml's [i18n] targets for the code's role,
     # 100% held as a failure for a release's code. What a catalog does hold — placeholders, tags, plural forms — is
     # checked every time.
 
     def test_the_board_block(self):
-        """dev/i18n.py --callboard, callboard's Translations block: the overall share translated, one number; between
+        """callboard tool i18n --callboard, callboard's Translations block: the overall share translated, one number; between
         releases (the push gate: targets of 0) every language has met its target (exit 0: the share is only told), and where the catalogs gate (strict_now: the
         release gate, and a pull request into main — targets of 100% held as "fail") a language short of its target is a finding, red — the one
         place that decides, for this suite's strictness too."""
         quiet = _policy_env("development", PLEXCACHE_PROGRESS="")
         catalogs = lambda code: {"Idle": "x", "Busy": "y" if code == "de" else None}
         patched = lambda: (mock.patch.object(self.tool, "all_keys", return_value={"Idle": None, "Busy": None}),
-                           mock.patch.object(self.tool, "TRANSLATED", ["de", "fr"]),
+                           mock.patch.object(self.tool, "TRANSLATED", ["de", "fr"]), mock.patch.object(self.tool, "_setup"),
                            mock.patch.object(self.tool, "load", side_effect=catalogs))
         out = io.StringIO()
         with contextlib.ExitStack() as stack:
@@ -16215,7 +16149,7 @@ class TranslationTests(unittest.TestCase):
         out = io.StringIO()
         with contextlib.ExitStack() as stack:
             for m in (mock.patch.object(self.tool, "all_keys", return_value={"Idle": None}),
-                      mock.patch.object(self.tool, "TRANSLATED", ["de", "fr"]),
+                      mock.patch.object(self.tool, "TRANSLATED", ["de", "fr"]), mock.patch.object(self.tool, "_setup"),
                       mock.patch.object(self.tool, "load", return_value={"Idle": "x"}),
                       mock.patch.dict(os.environ, quiet), contextlib.redirect_stdout(out)):
                 stack.enter_context(m)
@@ -16226,7 +16160,7 @@ class TranslationTests(unittest.TestCase):
         for code in self.tool.TRANSLATED + list(self.tool.VARIANTS):
             with self.subTest(code):
                 problems = self.tool.check_catalog(code, self.keys, self.tool.load(code), release=self.RELEASE)
-                self.assertEqual(problems, [], "for a release, run: python3 dev/i18n.py sync")
+                self.assertEqual(problems, [], "for a release, run: callboard tool i18n sync")
 
     def test_catalogs_may_lag_until_a_release(self):
         keys = {"Idle": None, "{n} files": "{n} file"}
@@ -16238,13 +16172,13 @@ class TranslationTests(unittest.TestCase):
         self.assertEqual(len(self.tool.check_catalog("fr", {"{n} left": None}, {"{n} left": "restants"})), 1)
 
     def test_the_translations_page_is_the_tools_one_account(self):
-        """dev/i18n.py's page (its detail for the callboard UI): every text once, as ``missing`` exports it, and each
+        """callboard/i18n.py's page (its detail for the callboard UI): every text once, as ``missing`` exports it, and each
         language's needs as indexes into them — so the page's Export is the same file ``missing`` prints — with what's
         wrong in each catalog; written on a --callboard run, strict or not (CALLBOARD_DETAIL)."""
         tool = self.tool
         keys = {"Idle": None, "{n} files": "{n} file", "Gone": None}
         cats = {"fr": {"Idle": "Inactif", "{n} files": {"one": "{n} fichier", "other": "{n} fichiers"}}, "de": {"Idle": "Leer", "Gone": "{x}"}, "en-GB": {}, "en-US": {}}
-        with mock.patch.object(tool, "TRANSLATED", ["fr", "de"]), mock.patch.object(tool, "load", side_effect=lambda code: cats.get(code, {})), \
+        with mock.patch.object(tool, "TRANSLATED", ["fr", "de"]), mock.patch.object(tool, "_setup"), mock.patch.object(tool, "load", side_effect=lambda code: cats.get(code, {})), \
                 mock.patch.object(tool, "leftovers", return_value=["app.js:1: 'Hello there'"]):
             got = tool.page(keys, ["a note"], strict=False)
             self.assertEqual(tool.needed(keys, cats["de"]), {"{n} files": {"one": "{n} file", "other": "{n} files"}})
@@ -16264,7 +16198,7 @@ class TranslationTests(unittest.TestCase):
         path = os.path.join(folder, "i18n.json")
         for role, strict, rc in (("development", False, 0), ("release", True, 1)):
             with mock.patch.dict(os.environ, _policy_env(role, CALLBOARD_DETAIL=path, PLEXCACHE_PROGRESS="")), \
-                    mock.patch.object(tool, "all_keys", return_value=keys), mock.patch.object(tool, "TRANSLATED", ["fr", "de"]), \
+                    mock.patch.object(tool, "all_keys", return_value=keys), mock.patch.object(tool, "TRANSLATED", ["fr", "de"]), mock.patch.object(tool, "_setup"), \
                     mock.patch.object(tool, "load", side_effect=lambda code: cats.get(code, {})), mock.patch.object(tool, "leftovers", return_value=[]), \
                     contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(tool.main(["i18n.py", "--callboard"]), rc)
@@ -16420,6 +16354,14 @@ class TranslationTests(unittest.TestCase):
 
 
 
+def _dependencies():
+    """callboard's Dependencies (callboard tool upkeep) as it finds this project's: the tool, set up from callboard.toml's
+    [upkeep] — the base images, the listed ones, the check tools and dev/package.json's packages."""
+    from callboard import upkeep
+    upkeep._setup()
+    return upkeep
+
+
 class FutureTests(unittest.TestCase):
     """The future run's channels (dev/future.py): each dependency's newest pre-release when it's ahead of the stable release,
     else that release — chosen from what upstream lists, with no network here."""
@@ -16427,11 +16369,11 @@ class FutureTests(unittest.TestCase):
     def test_the_tools_are_built_on_the_pythons_debian_without_python(self):
         """jpegtran and ffmpeg are built on plain Debian (DEBIAN_TAG), so a new Python doesn't build ffmpeg again; that
         Debian is PYTHON_TAG's, in the Dockerfile and in dev/future.py's build on another Python."""
-        from dev import future, upkeep
+        from dev import future
         df = _read(os.path.join(ROOT, "Dockerfile"), encoding="utf-8")
         self.assertIn("FROM debian:${DEBIAN_TAG} AS jpegtran", df)
         self.assertIn("FROM debian:${DEBIAN_TAG} AS ffmpeg", df)
-        self.assertEqual(some(re.search(r"^ARG DEBIAN_TAG=([^@\s]+)", df, re.M)).group(1), f"{upkeep.debian_of_tag()}-slim")
+        self.assertEqual(some(re.search(r"^ARG DEBIAN_TAG=([^@\s]+)", df, re.M)).group(1), f"{future.debian_of_tag()}-slim")
         ran = []
         with mock.patch.object(future, "has_buildkit", return_value=True), mock.patch.object(future, "LOG", os.path.join(TMP, "future-build.log")), \
                 mock.patch.object(future.subprocess, "run", side_effect=lambda cmd, **kw: ran.append(cmd) or mock.Mock(returncode=0)):
@@ -16810,7 +16752,7 @@ class FutureTests(unittest.TestCase):
         failing" beside its title), a short line under its bar, and what to do in full above the board, as a failure is
         (restart Docker; Clean / Purge data) — printed off the board — in both routes; the CVE look's build of the copy
         shares the words (docker_broken)."""
-        from dev import cves, future
+        from dev import future
 
         from callboard import policy
         io_error = "write /var/lib/containerd/io.containerd.metadata.v1.bolt/meta.db: input/output error"
@@ -16884,18 +16826,7 @@ class FutureTests(unittest.TestCase):
         self.assertIn("Clean / Purge data", told)
         self.assertNotIn("no such tag yet", shown.getvalue())
         self.assertIsNone(future.ONE[0])
-        # the CVE look's build of the copy: the same words, the same fix
-        lines = ["#1 [internal] load build definition", f"ERROR: failed to build: failed to solve: {io_error}"]
 
-        class Copy:
-            stdout = iter(x + "\n" for x in lines)
-
-            def wait(self, timeout=None):
-                return 1
-        d = tempfile.mkdtemp(dir=TMP)
-        with mock.patch.object(cves, "BUILD_LOG", os.path.join(d, "build.log")), mock.patch.object(future, "docker_up", return_value=""), \
-                mock.patch.object(future, "has_buildkit", return_value=True), mock.patch("subprocess.Popen", return_value=Copy()):
-            self.assertEqual(cves.build_local(d), ("", future.docker_broken_why(f"ERROR: failed to build: failed to solve: {io_error}")))
 
     def test_an_image_that_doesnt_build_ends_the_run_at_once(self):
         """The image not built: the run fails then, said with the build's log above it — the plain part's container (the
@@ -17092,10 +17023,9 @@ class FutureTests(unittest.TestCase):
         # every package dev/package.json pins, both sections: tried here, kept current by upkeep, and checked a year ahead
         # (dev/web.js's build and callboard's web check on "futureBrowserslist", four years of browsers, when the run sets
         # PLEXCACHE_WEB_TARGETS=future and CALLBOARD_WEB_TARGETS=futureBrowserslist)
-        from dev import upkeep
         pkg = json.loads(_read(os.path.join(ROOT, "dev", "package.json"), encoding="utf-8"))
-        self.assertEqual(set(upkeep.web_packages()), set(pkg["devDependencies"]) | set(pkg["dependencies"]))
-        self.assertLessEqual(set(upkeep.web_packages()), {d.name for d in upkeep.DEPS})
+        self.assertEqual(set(future.web_packages()), set(pkg["devDependencies"]) | set(pkg["dependencies"]))
+        self.assertLessEqual(set(future.web_packages()), {d.name for d in _dependencies().DEPS})
         self.assertEqual(pkg["futureBrowserslist"], ["last 4 years", "not and_qq >= 1"])
         self.assertEqual(future.WEB_TARGETS, ["-e", "PLEXCACHE_WEB_TARGETS=future", "-e", "CALLBOARD_WEB_TARGETS=futureBrowserslist"])
         tool = _read(os.path.join(ROOT, "dev", "web.js"), encoding="utf-8")
@@ -17125,18 +17055,6 @@ class FutureTests(unittest.TestCase):
         self.assertIn("--retry 3 --retry-delay 10 --retry-all-errors", stage)
         self.assertIn("https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n${FFMPEG}.tar.gz", stage)
         self.assertLess(stage.index("https://ffmpeg.org/releases/"), stage.index("https://github.com/FFmpeg/FFmpeg/"))
-        # the day's choices, as upkeep reports them
-        from dev import upkeep
-        with tempfile.TemporaryDirectory() as d, mock.patch.object(upkeep, "FUTURE", os.path.join(d, "future.json")):
-            self.assertIsNone(upkeep.future_track())
-            with open(os.path.join(d, "future.json"), "w", encoding="utf-8") as fh:
-                json.dump({"at": time.time(), "key": "3.16 trixie arm64", "picks": [vars(p) for p in picks[:2]]}, fh)
-            self.assertEqual(upkeep.future_track(), "Python 3.16.0a2 (alpha), ffmpeg " + picks[1].version + " (snapshot)")
-            npm = [future.pick_npm("eslint", {"latest": "10.14.0", "next": "11.0.0-alpha.1"}), future.pick_npm("terser", {"latest": "5.51.2"})]
-            with open(os.path.join(d, "future.json"), "w", encoding="utf-8") as fh:
-                json.dump({"at": time.time(), "key": "3.16 trixie arm64", "picks": [vars(p) for p in picks[:2] + npm]}, fh)
-            self.assertEqual(upkeep.future_track(), "Python 3.16.0a2 (alpha), ffmpeg " + picks[1].version + " (snapshot), "
-                                                    "2 Node packages at their newest, of them eslint 11.0.0-alpha.1 (next)")
 
 
 class WebBuildTests(unittest.TestCase):
@@ -17401,7 +17319,7 @@ class IconTests(unittest.TestCase):
         node = shutil.which("node")
         if not node:
             self.skipTest("node isn't installed")
-        spec = importlib.util.spec_from_file_location("style_tool", os.path.join(ROOT, "dev", "style.py"))
+        spec = importlib.util.spec_from_file_location("style_tool", os.path.join(DEVLIB, "style.py"))
         assert spec and spec.loader
         style = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(style)
@@ -17413,16 +17331,16 @@ class IconTests(unittest.TestCase):
 
 
 class StyleGuideTests(unittest.TestCase):
-    """The style guide (dev/style.py, dev/style-guide.json): every look the app wears — each CSS rule, inline style,
+    """The style guide (callboard/style.py, dev/style-guide.json): every look the app wears — each CSS rule, inline style,
     drawing, decoration, theme colour, font, image — is one the maintainer approved from a sample. A look that's new,
-    changed or gone fails here until they see its sample and approve it at a terminal (dev/style.py review, which
+    changed or gone fails here until they see its sample and approve it at a terminal (callboard/style.py review, which
     makes the sample when it's out of date). Nobody else writes the guide: never approve, edit the guide or loosen this test without the
     maintainer's express OK (CLAUDE.md)."""
 
     @classmethod
     def setUpClass(cls):
         import importlib.util
-        spec = importlib.util.spec_from_file_location("style_tool", os.path.join(ROOT, "dev", "style.py"))
+        spec = importlib.util.spec_from_file_location("style_tool", os.path.join(DEVLIB, "style.py"))
         assert spec and spec.loader
         cls.style = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.style)
@@ -17496,7 +17414,7 @@ class StyleGuideTests(unittest.TestCase):
         s = self.style
         guide = s.load_guide()
         guide["looks"]["css .sneaked-in"] = "color:red"
-        self.assertIn("wasn't written by dev/style.py approve", s.problems(guide, dict(guide["looks"]))[0])
+        self.assertIn("wasn't written by callboard/style.py approve", s.problems(guide, dict(guide["looks"]))[0])
 
     def test_approve_takes_a_terminal_a_sample_of_these_looks_and_a_yes(self):
         s = self.style
@@ -17561,12 +17479,14 @@ class StyleGuideTests(unittest.TestCase):
         self.assertEqual(s.finder("file plexcache/web/theatre.svg", "")["how"], "image")
         self.assertEqual(s.app_pages()[:2], ["health", "caching"])
         # the pictures: Playwright, in all four looks, on every page; the dev tools' shared progress bar
-        js = _read(os.path.join(ROOT, "dev", "style-sample.js"), encoding="utf-8")
+        js = _read(os.path.join(DEVLIB, "style-sample.js"), encoding="utf-8")
         self.assertIn('require("playwright")', js)
-        self.assertEqual(s.LOOKS, [("classic", "light"), ("classic", "dark"), ("dionysus", "light"), ("dionysus", "dark")])
-        src = _read(os.path.join(ROOT, "dev", "style.py"), encoding="utf-8")
+        # (the themes are callboard.toml's: [style] themes, each with the name the sample's page gives it)
+        self.assertEqual(s.LOOKS, [("classic", "light", "Classic light"), ("classic", "dark", "Classic dark"), ("dionysus", "light", "Dionysus light"), ("dionysus", "dark", "Dionysus dark")])
+        self.assertEqual((s.THEME_FIRST, s.THEME_STORE, s.THEME_URLS), ("dionysus/light", "pc-theme", ("/theme.css", "/theme.js")))
+        src = _read(os.path.join(DEVLIB, "style.py"), encoding="utf-8")
         self.assertIn("from callboard.progress import Progress", src)   # (the shared bar, by the package: as the other dev tools)
-        self.assertIn('_dev("i18n_tool", "i18n.py")', src)               # the translations' JavaScript tokenizer, shared
+        self.assertIn("from callboard import i18n as _i18n", src)        # the translations' JavaScript tokenizer, shared (callboard's)
         self.assertIn("dev/style-sample/", _read(os.path.join(ROOT, ".gitignore"), encoding="utf-8"))
 
     def test_the_sample_shows_each_change_before_and_after(self):
@@ -17637,7 +17557,7 @@ class StyleGuideTests(unittest.TestCase):
         def crops(sides, opts=None):
             js = ("const {crops}=require(process.argv[1]);"
                   "process.stdout.write(JSON.stringify(crops(JSON.parse(process.argv[2]),JSON.parse(process.argv[3]))))")
-            r = subprocess.run(["node", "-e", js, os.path.join(ROOT, "dev", "still.js"), json.dumps(sides), json.dumps(opts or {})],
+            r = subprocess.run(["node", "-e", js, os.path.join(DEVLIB, "still.js"), json.dumps(sides), json.dumps(opts or {})],
                                capture_output=True, text=True, timeout=60)
             self.assertEqual(r.returncode, 0, r.stderr)
             return json.loads(r.stdout)
@@ -17669,7 +17589,7 @@ class StyleGuideTests(unittest.TestCase):
         self.assertFalse(got["aligned"])
         # the sample takes its crops from there, measures the look again after (a page that moves while photographed
         # is photographed again), and the review page warns of a pair that isn't lined up
-        js = _read(os.path.join(ROOT, "dev", "style-sample.js"), encoding="utf-8")
+        js = _read(os.path.join(DEVLIB, "style-sample.js"), encoding="utf-8")
         shoot = js[js.index("async function shoot("):js.index("// Before and After pixel for pixel")]
         self.assertIn("crops(at,", shoot)
         self.assertIn("const now = await measure();", shoot)
@@ -17849,16 +17769,16 @@ class StyleGuideTests(unittest.TestCase):
             tree2 = s.before_tree(kept, os.path.join(tmp, "2"), {"file plexcache/web/theatre.svg": self.now["file plexcache/web/theatre.svg"]})
             self.assertTrue(os.path.exists(os.path.join(tree2, "plexcache", "web", "theatre.svg")))
         # approve keeps the copy only when it writes the real guide, and only on a yes
-        src = _read(os.path.join(ROOT, "dev", "style.py"), encoding="utf-8")
+        src = _read(os.path.join(DEVLIB, "style.py"), encoding="utf-8")
         self.assertNotIn("style-approved.zip", src)
         self.assertIn("if keep is None and guide_path == GUIDE:", src)
-        js = _read(os.path.join(ROOT, "dev", "style-sample.js"), encoding="utf-8")
+        js = _read(os.path.join(DEVLIB, "style-sample.js"), encoding="utf-8")
         self.assertIn("setFixedTime", js)                     # both sides see the same moment
         self.assertIn('ctx.route("**/*"', js)                 # the Before's files over the same demo data
         self.assertIn("frozen(ANSWERS)", js)                   # ... and the same data: each answer kept for every page
         # every picture of the app's pages is taken still (dev/still.js SHOT: no animation, transition or caret), by
         # every tool that takes them, so the same look always comes out the same
-        still = _read(os.path.join(ROOT, "dev", "still.js"), encoding="utf-8")
+        still = _read(os.path.join(DEVLIB, "still.js"), encoding="utf-8")
         self.assertIn('animations: "disabled"', still)
         self.assertIn('caret: "hide"', still)
         self.assertIn("fontsFirst(ctx)", js)                   # nothing measured in a fallback font before its own loads
@@ -17885,7 +17805,7 @@ class StyleGuideTests(unittest.TestCase):
         s = self.style
         self.assertTrue(s.look_file("plexcache/themes.py") and s.look_file("plexcache/web/decor.js") and s.look_file("plexcache/web/fonts/x.woff2"))
         for rel in ("plexcache/__init__.py", "plexcache/app.py", "plexcache/web/i18n/de.json", "plexcache/web/../app.py",
-                    "plexcache/web/i18n/x.svg", "dev/style.py", "plexcache/web/x.py"):
+                    "plexcache/web/i18n/x.svg", "callboard/style.py", "plexcache/web/x.py"):
             self.assertFalse(s.look_file(rel), rel)
         self.assertNotEqual(s.seal({"css .a": "x"}, {"plexcache/web/app.css": "a" * 40}), s.seal({"css .a": "x"}))
         self.assertEqual(s.seal({"css .a": "x"}, {}), s.seal({"css .a": "x"}))   # (a guide without files: sealed as before)
@@ -17941,7 +17861,7 @@ class StyleGuideTests(unittest.TestCase):
                 fh.write("\nraise SystemExit('themes.py was run')\n")
             self.assertEqual({k: v for k, v in s.theme_looks(tree).items() if k.startswith("theme ")},
                              {k: v for k, v in self.now.items() if k.startswith("theme ")})
-        self.assertIn("held = files_problems(load_guide())", _read(os.path.join(ROOT, "dev", "style.py"), encoding="utf-8"))
+        self.assertIn("held = files_problems(load_guide())", _read(os.path.join(DEVLIB, "style.py"), encoding="utf-8"))
 
     def test_a_look_that_draws_the_same_needs_no_approval(self):
         """The maintainer's rule: a look the sample photographed that drew exactly the same Before and After everywhere
@@ -17986,7 +17906,7 @@ class StyleGuideTests(unittest.TestCase):
         self.assertEqual((sorted_["same"], [x["id"] for x in sorted_["code"]]), ([], [0]))
 
     def test_the_review_page_approves_a_change_at_a_time(self):
-        """dev/style.py review: the sample's page with Approve buttons, served to this computer while it runs. A look
+        """callboard/style.py review: the sample's page with Approve buttons, served to this computer while it runs. A look
         goes into the guide only as the sample showed it, and only from a terminal."""
         s = self.style
         with tempfile.TemporaryDirectory() as tmp:
@@ -18031,7 +17951,7 @@ class StyleGuideTests(unittest.TestCase):
         page = _read(os.path.join(DEVLIB, "devpage.py"), encoding="utf-8")   # (the dev pages' one server: style.py has none of its own)
         for part in ('"127.0.0.1"', "X-Page-Token", "compare_digest", "_host_ok", "ended.set()"):
             self.assertIn(part, page)
-        self.assertNotIn("http.server", _read(os.path.join(ROOT, "dev", "style.py"), encoding="utf-8"))
+        self.assertNotIn("import http.server", _read(os.path.join(DEVLIB, "style.py"), encoding="utf-8"))
 
     def _live_items(self):
         """Two looks for a sample made while its page is open: one seen on a page, one drawn on no demo page."""
@@ -18223,276 +18143,26 @@ const out = {}, tally = () => p.text(p.$(".pill.good")) + " / " + p.text(p.$(".p
     def test_check_tells_callboard_where_the_review_is(self):
         s = self.style
         with tempfile.TemporaryDirectory() as tmp:
-            self.assertEqual(s.review_line(3, tmp, self.now), "3 looks need your approval: python3 dev/style.py review")
+            self.assertEqual(s.review_line(3, tmp, self.now), "3 looks need your approval: callboard tool style review")
             with open(os.path.join(tmp, "index.html"), "w") as f:
                 f.write("x")
             with open(os.path.join(tmp, "sample.json"), "w") as f:
                 json.dump({"fingerprint": s.fingerprint(s.compare(s.load_guide()["looks"], self.now))}, f)
-            self.assertEqual(s.review_line(1, tmp, self.now), "1 look needs your approval: python3 dev/style.py review")
+            self.assertEqual(s.review_line(1, tmp, self.now), "1 look needs your approval: callboard tool style review")
             # some of it approved since: what's left is all in the sample as it showed it, so it's not out of date
             with open(os.path.join(tmp, "sample.json"), "w") as f:
                 json.dump({"fingerprint": "x", "items": [{"id": 0, "state": "new", "look": "css .zz", "was": None, "now": "gap:1px"},
                                                          {"id": 1, "state": "new", "look": "css .zy", "was": None, "now": "gap:2px"},
                                                          {"id": 2, "state": "new", "look": "css .zx", "was": None, "now": "gap:0"}]}, f)
             now = {**s.load_guide()["looks"], "css .zz": "gap:1px"}
-            self.assertEqual(s.review_line(1, tmp, now), "1 look needs your approval: python3 dev/style.py review")
+            self.assertEqual(s.review_line(1, tmp, now), "1 look needs your approval: callboard tool style review")
             now["css .zz"] = "gap:3px"                      # (but not as the sample showed it: out of date)
-            self.assertEqual(s.review_line(1, tmp, now), "1 look needs your approval: python3 dev/style.py review")
-
-
-class UpkeepTests(unittest.TestCase):
-    """The dependencies kept current (dev/upkeep.py): looked up when the suite runs by hand, never on GitHub."""
-
-    def test_an_empty_download_hash_is_pinned_by_itself(self):
-        """A download hash the Dockerfile leaves empty (FFMPEG_GH_SHA256, the mirror's) is pinned at upkeep's run, from its
-        version's file, so nobody has to run --hashes; one that's set isn't downloaded again."""
-        from dev import upkeep
-        with tempfile.TemporaryDirectory() as d:
-            df = os.path.join(d, "Dockerfile")
-            with open(df, "w", encoding="utf-8") as fh:
-                fh.write('ARG FFMPEG=9.0.2\nARG LIBJPEG_TURBO=3.2.1\nARG OXIPNG=10.2.1\nARG FFMPEG_SHA256=' + "a" * 64 + '\nARG FFMPEG_GH_SHA256=""\n'
-                         'ARG LIBJPEG_TURBO_SHA256=' + "b" * 64 + '\nARG OXIPNG_SHA256_AMD64=' + "c" * 64 + '\nARG OXIPNG_SHA256_ARM64=' + "d" * 64 + '\n')
-            with mock.patch.object(upkeep, "DOCKERFILE", df), mock.patch.object(upkeep, "_sha256_of", return_value="e" * 64) as got:
-                self.assertEqual(len(upkeep.fill_hashes()), 1)
-                self.assertEqual(upkeep.fill_hashes(), [])   # (pinned now: nothing fetched again)
-            got.assert_called_once_with("https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n9.0.2.tar.gz")
-            self.assertIn("ARG FFMPEG_GH_SHA256=" + "e" * 64 + "\n", _read(df, encoding="utf-8"))
-
-    def test_moves_only_on_dev_and_tells_callboard(self):
-        """Pins are moved as the code's role allows (callboard.toml's [upkeep] move: all on development's code, minor on a
-        release's, none on a feature branch — and none without a callboard.toml), and --callboard is the box callboard shows
-        at the end of a run: its first line current (green), behind (yellow: what moved, what's left and what to do) or
-        unknown (grey), every line fitting the box."""
-        from dev import upkeep
-        for where, moves in (("development", True), ("release", True), ("feature", False), (None, False)):
-            with mock.patch.dict(os.environ, _policy_env(where) if where else {"CALLBOARD_CONFIG": os.path.join(ROOT, "none.toml")}):
-                self.assertEqual((upkeep.moves(), upkeep.may_move()), ({"development": "all", "release": "minor", "feature": "none"}.get(where or "", "none"), moves), where)
-                with mock.patch.object(upkeep, "check", side_effect=upkeep.Offline("x")) as check, \
-                        mock.patch.object(sys, "argv", ["upkeep.py"]), mock.patch("builtins.print"):
-                    upkeep.main()
-                self.assertEqual(check.call_args.kwargs["apply"], moves, where)
-                # on callboard's board it looks while the tests run (CALLBOARD_UPKEEP=look: nothing moved), and moves once they're done
-                for phase, phase_moves in (("look", False), ("move", moves)):
-                    with mock.patch.object(upkeep, "check", side_effect=upkeep.Offline("x")) as check, mock.patch.dict(os.environ, {"CALLBOARD_UPKEEP": phase}), \
-                            mock.patch.object(sys, "argv", ["upkeep.py", "--callboard"]), mock.patch("builtins.print"):
-                        upkeep.main()
-                    self.assertEqual(check.call_args.kwargs["apply"], phase_moves, (where, phase))
-        found = {d.name: [d.have(), d.have()] for d in upkeep.DEPS}
-        fits = lambda lines: [l for l in lines if len(l) > upkeep.WIDTH]
-        with mock.patch.object(upkeep, "lookup", return_value=(found, False)):
-            got = upkeep.box(upkeep.check(apply=False), "dev")
-        self.assertEqual((got[0], got[1]), ("current", "DEPENDENCIES  -  ALL UP TO DATE"))
-        self.assertEqual(fits(got), [])
-        have = found["eslint"][0]
-        major = f"{int(have.split('.')[0]) + 1}.0.0"
-        found["eslint"] = [have, major]
-        t = found["terser"][0].split(".")
-        minor = f"{t[0]}.{int(t[1]) + 1}.0"
-        found["terser"] = [found["terser"][0], minor]
-        with mock.patch.object(upkeep, "lookup", return_value=(found, True)), mock.patch.dict(os.environ, _policy_env("development")):
-            r = upkeep.check(apply=False, where="dev")   # (dev's code: a major is yours, a minor moves there by itself)
-        got = upkeep.box(r, "dev")
-        self.assertEqual(got[0], "behind")
-        self.assertEqual(got[1], "NEW VERSIONS UPSTREAM  -  1 FOR YOU, 1 TO MOVE ON DEV")
-        self.assertIn(f"eslint {have} → {major}  (a major release)", got)
-        self.assertIn(f"terser {found['terser'][0]} → {minor}", got)
-        self.assertIn("npm install --prefix dev --save-exact eslint@<version>", " ".join(" ".join(got).split()))     # (what to do about it)
-        self.assertIn("(Upstream not reached now: these are the last look's answers.)", got)
-        self.assertEqual(fits(got), [])
-        got = upkeep.box(None, "dev", "Python: no route to host")
-        self.assertEqual((got[0], got[1]), ("unknown", "DEPENDENCIES NOT CHECKED  -  UPSTREAM NOT REACHED"))
-        # on main (release: move = "minor"), only the minor and patch releases count (moved there): a major is dev's, a
-        # line and never a prompt; on a feature branch (move = "none") a minor is dev's to move too
-        with mock.patch.object(upkeep, "lookup", return_value=(found, False)), mock.patch.dict(os.environ, _policy_env("release")):
-            r = upkeep.check(apply=False, where="main")
-        self.assertEqual([n[0] for n in r.news], ["terser"])
-        self.assertIn(f"eslint {have}: {major} is out — a major release, for dev (never moved here)", r.lines)
-        got = upkeep.box(r, "main")
-        self.assertEqual(got[1], "NEW VERSIONS UPSTREAM  -  1 TO MOVE ON MAIN")
-        self.assertNotIn("eslint", " ".join(got))
-        with mock.patch.object(upkeep, "lookup", return_value=(found, False)), mock.patch.dict(os.environ, _policy_env("feature")):
-            r = upkeep.check(apply=False, where="topic")
-        self.assertEqual((upkeep.box(r, "topic")[1], upkeep.moves_on()), ("NEW VERSIONS UPSTREAM  -  1 TO MOVE ON DEV", "dev"))
-        found["terser"] = [found["terser"][0], found["terser"][0]]
-        with mock.patch.object(upkeep, "lookup", return_value=(found, False)), mock.patch.dict(os.environ, _policy_env("release")):
-            self.assertEqual(upkeep.box(upkeep.check(apply=False, where="main"), "main")[0], "current")   # (only a major behind: nothing to do on main)
-        # callboard shows it last, from your folder, coloured by that first line, the upkeep integration's command
-        tool = _read(os.path.join(CALLBOARD, "bin", "callboard"), encoding="utf-8")
-        for word in ("UPKEEP_CMD", 'current) green_banner "${lines[@]}" ;;', 'behind|cves) yellow_banner "${lines[@]}" ;;',
-                     'out="$( cd "$ROOT" && PYTHONDONTWRITEBYTECODE=1 CALLBOARD_INTEGRATION=upkeep bash -c "$UPKEEP_CMD"'):
-            self.assertIn(word, tool)
-
-    def test_saved_answers_never_ask_upstream(self):
-        """The suite's look (saved=True) reads the last look's answers and nothing else: no network, no npm."""
-        from dev import upkeep
-        found = {d.name: [d.have(), d.have()] for d in upkeep.DEPS}
-        real_run = subprocess.run
-
-        def local_git_only(cmd, *args, **kw):
-            # (callboard reading the rules asks git about the checkout — where it is, its remotes, its files: local, and
-            # not upkeep's. Anything else run — npm, a tool, the network — is what this test refuses)
-            if isinstance(cmd, (list, tuple)) and cmd and cmd[0] == "git" and not set(cmd[1:2]) & {"fetch", "pull", "push", "clone", "ls-remote"}:
-                return real_run(cmd, *args, **kw)
-            raise AssertionError(f"ran {cmd!r}")
-        with tempfile.TemporaryDirectory() as d, mock.patch.object(upkeep, "CACHE", os.path.join(d, "upkeep.json")), \
-                mock.patch.object(upkeep, "_get", side_effect=AssertionError("upstream asked")), \
-                mock.patch.object(upkeep.subprocess, "run", side_effect=local_git_only), mock.patch.dict(os.environ, _policy_env()):
-            with self.assertRaises(upkeep.Offline):
-                upkeep.check(apply=False, saved=True)                                     # (nothing saved yet)
-            upkeep._save_cache({k: v for k, v in found.items() if k != "eslint"})
-            with self.assertRaises(upkeep.Offline):
-                upkeep.lookup(saved=True)                                                 # (a dependency with no answer yet)
-            upkeep._save_cache(found)
-            self.assertEqual(upkeep.lookup(saved=True), (found, False))
-            with open(upkeep.CACHE, "w", encoding="utf-8") as fh:
-                json.dump({"at": time.time() - 2 * upkeep.A_DAY, "found": found}, fh)
-            self.assertEqual(upkeep.lookup(saved=True), (found, True))                    # (however old: said to be stale)
-            found["eslint"] = [found["eslint"][0], "999.0.0"]
-            upkeep._save_cache(found)
-            r = upkeep.check(apply=True, saved=True)
-            self.assertEqual(r.bumped, [])
-            self.assertTrue(any(p.startswith("eslint ") for p in r.prompts))
-
-    def test_the_look_shows_each_step_on_the_shared_bar(self):
-        """While it looks (callboard's last box waits on it), the bar tests/run.py draws (dev/progress.py) says what's being
-        looked up — every dependency asked at once — then which pin is being moved, the packages of dev/package.json in one
-        npm install, with its seconds so far; and it's gone at the end. A pin that can't be moved (npm failing, or too
-        slow) is said, not a crash; when the one install of them all fails, each is tried alone, to say which."""
-        import io
-        import subprocess
-
-        from dev import upkeep
-
-        from callboard.progress import Progress
-        moved, installs = [], []
-
-        def bump(new):
-            moved.append(new)
-            if new == "2.0.9":
-                raise subprocess.TimeoutExpired(["x"], 300)
-            return f"its pin: 1.0.0 → {new}"
-
-        def npm(pins):
-            installs.append(dict(pins))
-            if "bad" in pins:
-                raise ValueError("npm couldn't install: no such version")
-        deps = [upkeep.Dep("alpha", lambda: "1.0.0", lambda: "1.1.0", "ARG ALPHA", bump=bump),
-                upkeep.Dep("beta", lambda: "2.0.0", lambda: "2.0.9", "ARG BETA", bump=bump, cant="by hand"),
-                upkeep.Dep("gamma", lambda: "3.0.0", lambda: "3.0.0", "ARG GAMMA"),
-                upkeep.Dep("delta", lambda: "4.0.0", lambda: "4.1.0", "its pin in dev/package.json", bump=bump, package="delta"),
-                upkeep.Dep("eps", lambda: "5.0.0", lambda: "5.0.1", "its pin in dev/package.json", bump=bump, package="eps")]
-
-        def run(deps):
-            out = io.StringIO()
-            with tempfile.TemporaryDirectory() as d, mock.patch.object(upkeep, "CACHE", os.path.join(d, "upkeep.json")), \
-                    mock.patch.object(upkeep, "DEPS", deps), mock.patch.object(upkeep, "npm_install", side_effect=npm), \
-                    mock.patch.dict(os.environ, {"COLUMNS": "200"}):  # (wide enough for every label, whatever terminal runs this)
-                got = upkeep.check(apply=True, fresh=True, progress=Progress(0, tty=True, stream=out))
-            return got, re.sub(r"\033\[[0-9;]*m", "", out.getvalue())                         # (its colours left out)
-        r, drawn = run(deps)
-        # one bar, filled once: the five looked up, then the three moves on the same count (npm's, alpha's, beta's —
-        # beta's a failure), never a second bar from 0
-        for said in (" 0 / 5   waiting on 5: alpha, beta, gamma, delta, eps", "beta: 2.0.9 upstream", " 5 / 5   eps",
-                     " 5 / 8   npm install delta@4.1.0 eps@5.0.1", "2/2 packages moved with npm", "moving alpha 1.0.0 → 1.1.0",
-                     "moving beta 2.0.0 → 2.0.9", " 1 │ 0 │ 7 / 8   beta 2.0.9"):
-            self.assertIn(said, drawn)
-        self.assertNotIn(" 0 / 3 ", drawn)
-        self.assertTrue(drawn.endswith("\r\033[K"))                                           # (gone before the box)
-        self.assertEqual((moved, installs), (["1.1.0", "2.0.9"], [{"delta": "4.1.0", "eps": "5.0.1"}]))
-        self.assertEqual(r.bumped, ["delta: dev/package.json (and its lock): delta 4.0.0 → 4.1.0", "eps: dev/package.json (and its lock): eps 5.0.0 → 5.0.1",
-                                    "alpha: its pin: 1.0.0 → 1.1.0"])
-        self.assertIn("beta 2.0.0 → 2.0.9: couldn't be moved — took longer than 300 s", r.lines)
-        self.assertTrue(any("Not moved by itself this time" in n[4] for n in r.news))
-        # the install of them all fails: each alone, so the one that can't be had is named and the other still moves
-        installs.clear()
-        r, drawn = run([deps[3], upkeep.Dep("bad", lambda: "1.0.0", lambda: "1.0.1", "its pin in dev/package.json", bump=bump, package="bad")])
-        self.assertEqual(installs, [{"delta": "4.1.0", "bad": "1.0.1"}, {"delta": "4.1.0"}, {"bad": "1.0.1"}])
-        self.assertIn("1/2 packages moved with npm", drawn)
-        self.assertEqual(r.bumped, ["delta: dev/package.json (and its lock): delta 4.0.0 → 4.1.0"])
-        self.assertIn("bad 1.0.0 → 1.0.1: couldn't be moved — npm couldn't install: no such version", r.lines)
-        # no terminal (CI, a log): a line every 10% of the steps, nothing redrawn
-        out = io.StringIO()
-        with tempfile.TemporaryDirectory() as d, mock.patch.object(upkeep, "CACHE", os.path.join(d, "upkeep.json")), \
-                mock.patch.object(upkeep, "DEPS", deps[2:3]), mock.patch.dict(os.environ, {"PLEXCACHE_PROGRESS": ""}):
-            upkeep.check(apply=True, fresh=True, progress=Progress(0, stream=out))
-        self.assertEqual(out.getvalue(), "    1/1 looked up\n")
-        # shown on a terminal later (callboard's log of the future run): the bar all the same, as wide as COLUMNS says
-        out = io.StringIO()
-        with mock.patch.dict(os.environ, {"PLEXCACHE_PROGRESS": "bar", "COLUMNS": "60"}):
-            bar = Progress(2, stream=out)
-            bar.draw("x" * 200)
-        self.assertTrue(bar.tty)
-        self.assertLessEqual(len(re.sub(r"\033\[[0-9;]*m", "", out.getvalue().split("\r\033[K")[-1])), 60)   # (as seen: its colours left out)
-
-    def test_a_slow_answer_doesnt_hold_the_look_up(self):
-        """Every dependency is asked at once; one that hasn't answered by DEADLINE is left (its last answer used, said to be
-        stale; with none, upstream not reached) and the bar says which host it's waiting on. A host's addresses are tried
-        IPv4 first, CONNECT seconds each, so an IPv6 that goes nowhere doesn't cost TIMEOUT for each address in turn."""
-        import io
-
-        from dev import upkeep
-
-        from callboard.progress import Progress
-        hang = threading.Event()
-        self.addCleanup(hang.set)
-
-        def slow():
-            upkeep.WHERE["slow"] = "registry.example"
-            hang.wait(10)
-            return "9.9.9"
-        deps = [upkeep.Dep("quick", lambda: "1.0.0", lambda: "1.0.0", "ARG QUICK"), upkeep.Dep("slow", lambda: "2.0.0", slow, "ARG SLOW")]
-        with tempfile.TemporaryDirectory() as d, mock.patch.object(upkeep, "CACHE", os.path.join(d, "upkeep.json")), \
-                mock.patch.object(upkeep, "DEPS", deps), mock.patch.object(upkeep, "DEADLINE", 0.5), mock.patch.dict(os.environ, {"COLUMNS": "200"}):
-            out = io.StringIO()
-            started = time.time()
-            with self.assertRaises(upkeep.Offline) as no:
-                upkeep.lookup(fresh=True, progress=Progress(0, tty=True, stream=out))
-            self.assertLess(time.time() - started, 5)
-            self.assertIn("slow: no answer in 0.5 s from registry.example", str(no.exception))
-            self.assertIn("waiting on 1: slow (registry.example)", out.getvalue())
-            upkeep._save_cache({"quick": ["1.0.0", "0.9.0"], "slow": ["2.0.0", "2.1.0"]})
-            with open(upkeep.CACHE, "r+", encoding="utf-8") as fh:  # (a look from before today)
-                old = json.load(fh)
-                old["at"] -= 2 * upkeep.A_DAY
-                fh.seek(0)
-                fh.truncate()
-                json.dump(old, fh)
-            self.assertEqual(upkeep.lookup(), ({"quick": ["1.0.0", "1.0.0"], "slow": ["2.0.0", "2.1.0"]}, True))
-        # IPv4 first, a short wait for each address; the answer then waited on for TIMEOUT
-        tried = []
-
-        class Sock:
-            def __init__(self, family, *a):
-                self.family = family
-            def settimeout(self, t):
-                tried.append((self.family, t))
-            def connect(self, addr):
-                if self.family == socket.AF_INET6:
-                    raise TimeoutError("nowhere")
-            def close(self):
-                pass
-        infos = [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", 443, 0, 0)), (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 443))]
-        with mock.patch.object(upkeep.socket, "getaddrinfo", return_value=infos), mock.patch.object(upkeep.socket, "socket", Sock):
-            self.assertEqual(upkeep._connect(("h", 443), timeout=upkeep.TIMEOUT).family, socket.AF_INET)
-        self.assertEqual(tried, [(socket.AF_INET, upkeep.CONNECT), (socket.AF_INET, upkeep.TIMEOUT)])
-
-    @unittest.skipIf(os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS"), "by hand only: GitHub isn't asked to look upstream")
-    def test_dependencies_are_current(self):
-        """From the last look's answers only (callboard's box and dev/upkeep.py do the looking, and the moving on dev): the
-        suite never waits on upstream or npm. A minor release behind moves by itself on dev, so only what's left to you fails it there."""
-        from dev import upkeep
-        try:
-            r = upkeep.check(apply=False, saved=True, where=upkeep.branch())
-        except upkeep.Offline as e:
-            self.skipTest(str(e))
-        moves = upkeep.may_move()
-        left = [p for p, n in zip(r.prompts, r.news, strict=False) if not (moves and n[3] == "minor")]
-        if left:
-            self.fail("behind upstream — move it, or hold it by choice (dev/upkeep.py):\n  " + "\n  ".join(left))
+            self.assertEqual(s.review_line(1, tmp, now), "1 look needs your approval: callboard tool style review")
 
 
 class HomeAssistantRulesTests(unittest.TestCase):
-    """dev/upkeep.py's look at Home Assistant's MQTT rules: each key the discovery messages use, in each new release."""
+    """dev/ha_keys.py's look at Home Assistant's MQTT rules: each key the discovery messages use, in each new release
+    (callboard's Dependencies runs it before it moves HA_CHECKED: callboard.toml's [upkeep] also)."""
 
     SOURCES = {"components/mqtt/abbreviations.py": 'ABBREVIATIONS = {"name": "name", "stat_t": "state_topic", "obj_id": "object_id"}\n'
                                                    'DEVICE_ABBREVIATIONS = {"ids": "identifiers"}\n',
@@ -18500,31 +18170,34 @@ class HomeAssistantRulesTests(unittest.TestCase):
                "components/mqtt/schemas.py": 'S = vol.All(cv.deprecated(CONF_OLD, CONF_VIA_DEVICE), cv.removed("object_id"))\n'}
 
     def test_rules_from_the_sources(self):
-        from dev import upkeep
-        taken, gone = upkeep.ha_rules(self.SOURCES)
+        from dev import ha_keys
+        taken, gone = ha_keys.ha_rules(self.SOURCES)
         self.assertEqual(taken, {"name", "state_topic", "identifiers", "via_device"})
         self.assertEqual(gone, {"via_hub", "object_id"})
 
     def test_a_key_it_no_longer_takes_is_a_prompt(self):
 
-        from dev import upkeep
+        from dev import ha_keys
         def get(url):
             for path, text in self.SOURCES.items():
                 if url.endswith("/homeassistant/" + path):
                     return text
             raise urllib.error.HTTPError(url, 404, "Not Found", email.message.Message(), None)
         keys = {"entity": {"name", "state_topic"}, "device": {"identifiers", "via_device"}}
-        with mock.patch.object(upkeep, "_get", side_effect=get), mock.patch.object(upkeep, "discovery_keys", return_value=keys):
-            self.assertEqual(upkeep.ha_check("2099.1.0"), [])
+        with mock.patch.object(ha_keys, "_get", side_effect=get), mock.patch.object(ha_keys, "discovery_keys", return_value=keys):
+            self.assertEqual(ha_keys.ha_check("2099.1.0"), [])
             keys["entity"] |= {"object_id", "new_thing"}
-            self.assertEqual(upkeep.ha_check("2099.1.0"), ["new_thing (entity): not a discovery key Home Assistant 2099.1.0 knows",
+            self.assertEqual(ha_keys.ha_check("2099.1.0"), ["new_thing (entity): not a discovery key Home Assistant 2099.1.0 knows",
                                                             "object_id (entity): deprecated or removed in Home Assistant 2099.1.0"])
-            with mock.patch.object(upkeep, "_repin", side_effect=AssertionError("moved")):
-                with self.assertRaises(ValueError):
-                    upkeep._bump_ha("2099.1.0")   # (not moved: the prompt names what to change)
+            with contextlib.redirect_stdout(io.StringIO()) as told:
+                self.assertEqual(ha_keys.main(["ha_keys.py", "2099.1.0"]), 1)   # (so the pin isn't moved: the prompt names what to change)
+            self.assertIn("the discovery messages need changing first: new_thing (entity): not a discovery key", told.getvalue())
+            keys["entity"] -= {"object_id", "new_thing"}
+            self.assertEqual(ha_keys.main(["ha_keys.py", "2099.1.0"]), 0)
         # what's checked is what the app lists; HA_CHECKED is a version
-        self.assertEqual(upkeep.discovery_keys(), {k: set(v) for k, v in __import__("plexcache.homeassistant").homeassistant.DISCOVERY_KEYS.items()})
-        self.assertTrue(upkeep.parse(next(d for d in upkeep.DEPS if d.name.startswith("Home Assistant")).have()))
+        self.assertEqual(ha_keys.discovery_keys(), {k: set(v) for k, v in __import__("plexcache.homeassistant").homeassistant.DISCOVERY_KEYS.items()})
+        deps = _dependencies()   # (callboard's Dependencies keeps it: a listed dependency, its own check run before it moves)
+        self.assertTrue(deps.parse(next(d for d in deps.DEPS if d.name.startswith("Home Assistant")).have()))
 
 
 class TypeCheckTests(unittest.TestCase):
@@ -18532,24 +18205,14 @@ class TypeCheckTests(unittest.TestCase):
     shared code (dev/checks.py), as callboard's block and GitHub run them."""
 
     def test_pins_are_tools_tomls_and_upkeeps(self):
-        from dev import upkeep
-
         from callboard import checks
-        deps = {d.name: d for d in upkeep.DEPS}
+        deps = {d.name: d for d in _dependencies().DEPS}
         self.assertEqual(deps["pyright"].have(), checks.version("pyright"))
         self.assertEqual(deps["Ruff"].have(), checks.version("ruff"))
         self.assertEqual(deps["Ruff"].major, 2)   # (a Ruff minor changes what its rules find: a prompt, not moved by itself)
         build = _read(os.path.join(ROOT, ".github", "workflows", "build.yml"), encoding="utf-8")
         self.assertIn("run: callboard tool typecheck", build)   # (GitHub runs what callboard's block runs)
         self.assertNotRegex(build, r"pyright@\d|ruff==\d")   # (the versions are dev/tools.toml's only)
-        tools = _read(upkeep.TOOLS, encoding="utf-8")
-        written = {}
-        with mock.patch.object(upkeep, "_read", return_value=tools), mock.patch.object(upkeep, "_write", side_effect=written.__setitem__):
-            bump = deps["Ruff"].bump
-            assert bump is not None
-            self.assertEqual(bump("9.9.9"), f"dev/tools.toml: Ruff {checks.version('ruff')} → 9.9.9")
-        self.assertIn('version = "9.9.9"', written[upkeep.TOOLS])
-        self.assertEqual(written[upkeep.TOOLS].count('version = "9.9.9"'), 1)   # (Ruff's alone)
         # Ruff reads the code as the Python pyright and the image do
         import tomllib
         with open(os.path.join(ROOT, "ruff.toml"), "rb") as fh:
@@ -18646,7 +18309,7 @@ class PolicyTests(unittest.TestCase):
 class GateTests(unittest.TestCase):
     """dev/gate.py: the checks run as a moment in the code's life holds them (push, merge, release), by hand, from the
     pre-push hook and on GitHub alike; what GitHub's workflows ask of callboard.toml; and the release's own steps
-    (dev/release.py notes, bump)."""
+    (callboard tool release notes, bump)."""
 
     def project(self, **cmds):
         """A project in git on dev, with a callboard.toml of the integrations given: (folder, git, env for a run there)."""
@@ -18672,452 +18335,12 @@ class GateTests(unittest.TestCase):
         self.assertIn("callboard gate \"$GATE\" --ci", gates)
         publish = _read(os.path.join(ROOT, ".github", "workflows", "publish.yml"), encoding="utf-8")
         self.assertIn("callboard gate release --ci", publish)
-        self.assertIn("python3 dev/release.py notes > notes.md", publish)
-        self.assertIn("python3 dev/release.py bump", publish)
+        self.assertIn("callboard tool release notes > notes.md", publish)
+        self.assertIn("callboard tool release bump", publish)
         self.assertIn('tags: ["v*"]', publish)
         build = _read(os.path.join(ROOT, ".github", "workflows", "build.yml"), encoding="utf-8")
         self.assertNotIn('tags: ["v*"]', build)   # (a tag is publish.yml's)
         self.assertNotIn("type=semver", build)
-
-    @unittest.skipUnless(shutil.which("git"), "no git here")
-    def test_the_release_notes_and_the_next_version(self):
-        """dev/release.py notes: the change notes written since the last release, joined — the GitHub Release's body;
-        bump: __version__ on to the next X.Y.0 (the next-version pull request)."""
-        import subprocess
-
-        from dev import release
-        folder, git, env = self.project(unit="echo ok", release="python3 dev/release.py --callboard")   # ([release] notes_dir: changes)
-        os.makedirs(os.path.join(folder, "changes"))
-        os.makedirs(os.path.join(folder, "plexcache"))
-        with open(os.path.join(folder, "changes", "old.md"), "w", encoding="utf-8") as fh:
-            fh.write("An old change.\n")
-        with open(os.path.join(folder, "plexcache", "__init__.py"), "w", encoding="utf-8") as fh:
-            fh.write('"""The app."""\n\n__version__ = "1.2.0"\n')
-        git("add", "-A")
-        git("commit", "-qm", "released")
-        git("tag", "v1.2.0")
-        with open(os.path.join(folder, "changes", "b-second.md"), "w", encoding="utf-8") as fh:
-            fh.write("## Faster\n\nIt's faster.\n")
-        git("add", "-A")
-        git("commit", "-qm", "work")
-        with open(os.path.join(folder, "changes", "a-first.md"), "w", encoding="utf-8") as fh:
-            fh.write("A fix, not committed yet.\n")
-        with mock.patch.dict(os.environ, {"CALLBOARD_REPO": folder, "CALLBOARD_CONFIG": os.path.join(folder, "callboard.toml")}), \
-                mock.patch.object(release, "ROOT", folder), mock.patch.object(release, "VERSION_FILE", os.path.join(folder, "plexcache", "__init__.py")):
-            self.assertEqual(release.change_notes(), ["changes/a-first.md", "changes/b-second.md"])
-            self.assertEqual(release.release_notes(), "A fix, not committed yet.\n\n## Faster\n\nIt's faster.\n")
-            self.assertEqual(release.bump(), "1.3.0")
-            os.makedirs(os.path.join(folder, "plexcache", "tools"))   # (the script that says its release itself: bumped with it)
-            with open(os.path.join(folder, "plexcache", "tools", "rewrite_blocks.py"), "w", encoding="utf-8") as fh:
-                fh.write('"""Doc."""\n__version__ = "1.3.0"   # (kept)\n')
-            self.assertEqual(release.bump(), "1.4.0")
-        self.assertIn('__version__ = "1.4.0"', _read(os.path.join(folder, "plexcache", "__init__.py"), encoding="utf-8"))
-        self.assertIn('__version__ = "1.4.0"   # (kept)', _read(os.path.join(folder, "plexcache", "tools", "rewrite_blocks.py"), encoding="utf-8"))
-        got = subprocess.run([sys.executable, os.path.join(ROOT, "dev", "release.py"), "notes"], cwd=folder, env=dict(env, CALLBOARD_REPO=folder),
-                             capture_output=True, text=True, timeout=60)
-        self.assertEqual((got.returncode, "It's faster." in got.stdout), (0, True), got.stdout + got.stderr)
-
-
-class CVETests(unittest.TestCase):
-    """dev/cves.py, the dependency check's CVEs: each rule of what's shown (only what needs doing, always a warning) and
-    what's left alone, from made-up answers of OSV, NVD and Trivy; never upstream."""
-
-    NOW = 2_000_000_000.0
-    DAY = 24 * 3600
-
-    def vuln(self, **kw):
-        from dev import cves
-        base = {"id": "CVE-1", "package": "pkg", "version": "1.0.0", "kind": "npm", "dep": "pkg", "published": self.NOW - 5 * self.DAY}
-        return cves.Vuln(**{**base, **kw})
-
-    def judged(self, *vulns, plan=None, released=None):
-        from dev import cves
-        return cves.judge(list(vulns), plan or {}, released, now=self.NOW)
-
-    def test_a_fix_upkeep_moves_itself_is_only_noted(self):
-        j = self.judged(self.vuln(fixed="1.0.1"), plan={"pkg": ("1.0.0", "1.0.2", "move")})
-        self.assertEqual((j.act, j.handled), ([], {"pkg": ["CVE-1"]}))
-        j = self.judged(self.vuln(fixed="1.0.1"), plan={"pkg": ("1.0.0", "1.0.2", "report")})   # (moves on dev by itself)
-        self.assertEqual(j.handled, {"pkg": ["CVE-1"]})
-
-    def test_a_fix_only_in_a_major_or_a_held_version_is_shown(self):
-        j = self.judged(self.vuln(fixed="2.0.0"), plan={"pkg": ("1.0.0", "2.0.0", "behind")})
-        self.assertEqual(len(j.act), 1)
-        self.assertIn("a major release, yours to move", j.act[0][1])
-        j = self.judged(self.vuln(fixed="1.1.0"), plan={"pkg": ("1.0.0", "1.1.0", "held")})
-        self.assertIn("held at 1.0.0 by choice", j.act[0][1])
-
-    def test_a_fix_a_parent_package_doesnt_take_is_quiet_then_shown(self):
-        via = {"kind": "npm-via", "dep": "eslint", "fixed": "1.0.1"}
-        self.assertEqual(self.judged(self.vuln(**via)).quiet, 1)
-        j = self.judged(self.vuln(**via, published=self.NOW - 91 * self.DAY))
-        self.assertIn("eslint still asks for 1.0.0", j.act[0][1])
-        self.assertIn("overrides", j.act[0][1])
-
-    def test_no_fix_is_quiet_until_none_is_coming(self):
-        self.assertEqual(self.judged(self.vuln()).quiet, 1)   # (new: upstream is at it)
-        j = self.judged(self.vuln(published=self.NOW - 90 * self.DAY))
-        self.assertIn("No fix coming (no fix after 90 days)", j.act[0][1])
-        self.assertIn("replace it, patch it ourselves, or move to a maintained fork", j.act[0][1])
-        j = self.judged(self.vuln(), released={"pkg": self.NOW - 400 * self.DAY})   # (new, but upstream's gone quiet)
-        self.assertIn("no release of pkg in 400 days", j.act[0][1])
-
-    def test_a_debian_cve_with_no_fix_is_counted_not_shown(self):
-        j = self.judged(self.vuln(kind="debian", image="img"), self.vuln(id="CVE-2", kind="debian", image="img"))
-        self.assertEqual((j.act, j.debian, j.quiet), ([], 2, 0))
-
-    def test_an_image_fix_is_shown_only_when_the_image_still_lacks_it_days_on(self):
-        new = self.vuln(kind="debian", package="libc6", fixed="2.41-2", image="img", seen=self.NOW - 3 * self.DAY, built=self.NOW - self.DAY)
-        self.assertEqual(self.judged(new).quiet, 1)
-        old = self.vuln(kind="debian", package="libc6", fixed="2.41-2", image="img", seen=self.NOW - 9 * self.DAY, built=self.NOW - 20 * self.DAY)
-        j = self.judged(old)
-        self.assertIn("last built 20 days ago, so rebuild it", j.act[0][1])
-        self.assertIn("apt-get install --only-upgrade libc6", j.act[0][1])
-
-    def test_an_image_packages_cves_are_one_line(self):
-        a = self.vuln(kind="base", package="urllib3", version="2.7.0", fixed="2.8.0", image="img", seen=self.NOW - 30 * self.DAY)
-        b = self.vuln(id="CVE-2", kind="base", package="urllib3", version="2.7.0", fixed="2.8.1", image="img", seen=self.NOW - 30 * self.DAY)
-        from dev import cves
-        with mock.patch.object(cves, "drops_pip", return_value=False):   # (a Dockerfile that keeps pip: to act on)
-            j = self.judged(a, b)
-        self.assertEqual((len(j.act), j.shown), (1, 2))
-        self.assertTrue(j.act[0][0].startswith("CVE-1, CVE-2 in urllib3 2.7.0"))
-        self.assertIn("Fixed in 2.8.1", j.act[0][1])
-
-    def test_a_decision_quiets_a_cve_until_a_fix_or_the_review(self):
-        from dev import cves
-        when = "2033-05-01"   # (NOW is 2033-05-18)
-        with mock.patch.dict(cves.DECISIONS, {"CVE-1": ("patch", when, "patched in our fork")}):
-            self.assertEqual(self.judged(self.vuln(published=self.NOW - 100 * self.DAY)).decided, 1)
-            self.assertEqual(len(self.judged(self.vuln(published=self.NOW - 100 * self.DAY, fixed="2.0.0"),
-                                             plan={"pkg": ("1.0.0", "2.0.0", "behind")}).act), 1)   # (a fix since: shown)
-        with mock.patch.dict(cves.DECISIONS, {"CVE-1": ("not reachable", when, "only in a dev tool's tests")}):
-            self.assertEqual(self.judged(self.vuln(kind="npm-via", fixed="1.0.1", published=self.NOW - 100 * self.DAY)).decided, 1)
-        with mock.patch.dict(cves.DECISIONS, {"CVE-1": ("patch", "2032-01-01", "old")}):
-            self.assertEqual(len(self.judged(self.vuln(published=self.NOW - 600 * self.DAY)).act), 1)   # (past the review)
-
-    def test_the_same_cve_twice_is_one(self):
-        v = self.vuln(published=self.NOW - 100 * self.DAY)
-        self.assertEqual(len(self.judged(v, v).act), 1)
-
-    def test_what_pulls_a_package_in(self):
-        from dev import cves
-        lock = {"packages": {"": {}, "node_modules/eslint": {"version": "9.0.0", "dependencies": {"esquery": "^1"}},
-                             "node_modules/esquery": {"version": "1.5.0", "dependencies": {"estraverse": "^5"}},
-                             "node_modules/estraverse": {"version": "5.3.0"}}}
-        self.assertEqual(sorted(cves.lock_packages(lock, {"eslint"})),
-                         [("eslint", "9.0.0", ""), ("esquery", "1.5.0", "eslint"), ("estraverse", "5.3.0", "eslint")])
-
-    def test_osv_nvd_and_trivy_answers(self):
-        from dev import cves
-        adv = {"id": "GHSA-x", "aliases": ["CVE-2026-1"], "published": "2026-10-01T00:00:00Z", "summary": "bad",
-               "database_specific": {"severity": "high"},
-               "affected": [{"package": {"ecosystem": "npm", "name": "esquery"}, "ranges": [{"events": [{"introduced": "0"}, {"fixed": "1.6.0"}]}]}]}
-
-        def answer(url, body=None, headers=None):
-            if url.endswith("querybatch"):
-                assert body is not None
-                return {"results": [{"vulns": [{"id": "GHSA-x"}]} if q["package"]["name"] == "esquery" else {} for q in body["queries"]]}
-            return adv
-        d = tempfile.mkdtemp(dir=TMP)
-        with open(os.path.join(d, "lock.json"), "w") as fh:
-            json.dump({"packages": {"node_modules/eslint": {"version": "9.0.0", "dependencies": {"esquery": "1"}},
-                                    "node_modules/esquery": {"version": "1.5.0"}}}, fh)
-        with open(os.path.join(d, "package.json"), "w") as fh:
-            json.dump({"devDependencies": {"eslint": "9.0.0"}}, fh)
-        with mock.patch.object(cves, "get_json", answer):
-            got = cves.npm_vulns(os.path.join(d, "lock.json"), os.path.join(d, "package.json"))
-        self.assertEqual([(v.id, v.package, v.kind, v.fixed, v.dep, v.severity) for v in got],
-                         [("CVE-2026-1", "esquery", "npm-via", "1.6.0", "eslint", "HIGH")])
-        nvd = {"vulnerabilities": [{"cve": {"id": "CVE-2026-2", "published": "2026-09-01T00:00:00.000",
-                                            "descriptions": [{"lang": "en", "value": "overflow"}],
-                                            "metrics": {"cvssMetricV31": [{"cvssData": {"baseSeverity": "CRITICAL"}}]},
-                                            "configurations": [{"nodes": [{"cpeMatch": [{"vulnerable": True, "criteria": "cpe:2.3:a:ffmpeg:ffmpeg:*:*",
-                                                                                         "versionEndExcluding": "8.0.1"}]}]}]}},
-                                   {"cve": {"id": "CVE-2026-3", "vulnStatus": "Rejected"}}]}
-        with mock.patch.object(cves, "get_json", return_value=nvd):
-            got = cves.nvd_vulns({"ffmpeg": "8.0"}, pause=0)
-        self.assertEqual([(v.id, v.dep, v.fixed, v.severity) for v in got], [("CVE-2026-2", "ffmpeg", "8.0.1", "CRITICAL")])
-        trivy = {"Metadata": {"ImageConfig": {"created": "2026-10-30T00:00:00Z"}},
-                 "Results": [{"Class": "os-pkgs", "Vulnerabilities": [
-                     {"VulnerabilityID": "CVE-2026-4", "PkgName": "libc6", "InstalledVersion": "2.41-1", "FixedVersion": "2.41-2, 2.42-1"},
-                     {"VulnerabilityID": "CVE-2026-5", "PkgName": "libc6", "InstalledVersion": "2.41-1", "Status": "not_affected"}]},
-                     {"Class": "lang-pkgs", "Vulnerabilities": [{"VulnerabilityID": "CVE-2026-6", "PkgName": "urllib3", "InstalledVersion": "2.7.0"}]}]}
-        got = cves.trivy_vulns(trivy, "img")
-        self.assertEqual([(v.id, v.kind, v.fixed) for v in got], [("CVE-2026-4", "debian", "2.41-2"), ("CVE-2026-6", "base", "")])
-        self.assertTrue(got[0].built)
-
-    def test_a_fix_nvd_dates_in_upstreams_git_is_checked_against_our_release(self):
-        """NVD gives some fixes only as a date in upstream's git (git-master before a commit): a release made after it
-        has the fix, so it's left out; one older, or that can't be dated, is shown as that, never as "no fix coming"."""
-        from dev import cves
-        nvd = {"vulnerabilities": [{"cve": {"id": "CVE-2025-25468", "published": "2025-02-18T00:00:00.000",
-                                            "configurations": [{"nodes": [{"cpeMatch": [{"vulnerable": True, "criteria": "cpe:2.3:a:ffmpeg:ffmpeg:*:*",
-                                                                                         "versionEndExcluding": "2025-01-13"}]}]}]}}]}
-        asked = []
-
-        def answer(made):
-            def get(url, body=None, headers=None):
-                if "api.github.com" in url:
-                    asked.append(url)
-                    if made is None:
-                        raise OSError("not reached")
-                    return {"commit": {"committer": {"date": made}}}
-                return nvd
-            return get
-        with mock.patch.object(cves, "get_json", answer("2026-06-01T00:00:00Z")):
-            self.assertEqual(cves.nvd_vulns({"ffmpeg": "9.0.2"}, pause=0), [])   # (made after the fix: it has it)
-        self.assertEqual(asked, ["https://api.github.com/repos/FFmpeg/FFmpeg/commits/n9.0.2"])
-        with mock.patch.object(cves, "get_json", answer("2024-12-01T00:00:00Z")):
-            older = cves.nvd_vulns({"ffmpeg": "7.1"}, pause=0)
-        with mock.patch.object(cves, "get_json", answer(None)):
-            undated = cves.nvd_vulns({"ffmpeg": "9.0.2"}, pause=0)
-        for got in (older, undated):
-            self.assertEqual([(v.id, v.fixed) for v in got], [("CVE-2025-25468", "2025-01-13")])
-            j = self.judged(*got, plan={"ffmpeg": (got[0].version, got[0].version, "current")})
-            self.assertEqual(len(j.act), 1)
-            self.assertIn("Fixed in ffmpeg's git on 2025-01-13 (NVD names no release)", j.act[0][1])
-            self.assertNotIn("No fix coming", j.act[0][1])
-        with mock.patch.dict(cves.DECISIONS, {"CVE-2025-25468": ("not reachable", "2033-05-01", "checked: has the fix")}):
-            self.assertEqual(self.judged(*older).decided, 1)   # (a decision holds for one: there's no release to move to)
-
-    def test_an_image_on_another_os_is_not_told_to_apt_get(self):
-        """latest built from an older Dockerfile (Alpine): its package's fix comes with the next build from this one."""
-        from dev import cves
-        trivy = {"Metadata": {"OS": {"Family": "alpine"}, "ImageConfig": {"created": "2026-10-16T00:00:00Z"}},
-                 "Results": [{"Class": "os-pkgs", "Vulnerabilities": [
-                     {"VulnerabilityID": "CVE-2026-85091", "PkgName": "zlib", "InstalledVersion": "1.3.2-r0", "FixedVersion": "1.3.2-r1"}]}]}
-        v = cves.trivy_vulns(trivy, "img")[0]
-        self.assertEqual((v.kind, v.distro), ("debian", "alpine"))
-        v.seen, v.built = self.NOW - 60 * self.DAY, self.NOW - 18 * self.DAY
-        j = self.judged(v)
-        self.assertEqual((j.act, j.shown, j.waited), ([], 0, 1))   # (fixed by the next build: waiting, not counted)
-        self.assertEqual(j.waiting[0][0], "CVE-2026-85091 in zlib 1.3.2-r0 (Alpine, in img)")
-        self.assertIn("built from an older Dockerfile", j.waiting[0][1])
-        self.assertNotIn("apt-get", j.waiting[0][1])
-        j = self.judged(self.vuln(kind="debian", package="libc6", fixed="2.41-2", image="img", distro="debian",
-                                  seen=self.NOW - 9 * self.DAY, built=self.NOW - 20 * self.DAY))
-        self.assertIn("apt-get install --only-upgrade libc6", j.act[0][1])   # (a Debian image: as before)
-
-    def test_pips_own_packages_once_the_dockerfile_drops_pip(self):
-        from dev import cves
-        v = self.vuln(kind="base", package="urllib3", version="2.7.0", fixed="2.8.0", image="img", seen=self.NOW - 30 * self.DAY)
-        with mock.patch.object(cves, "drops_pip", return_value=True):
-            j = self.judged(v)
-            self.assertEqual((j.act, j.shown, j.waited), ([], 0, 1))
-            self.assertIn("the Dockerfile now takes pip out", j.waiting[0][1])
-        with mock.patch.object(cves, "drops_pip", return_value=False):
-            j = self.judged(v)
-            self.assertEqual((j.shown, j.waiting), (1, []))
-            self.assertIn("remove pip from the Dockerfile's final stage", j.act[0][1])
-        self.assertTrue(cves.drops_pip())   # (this Dockerfile does: the app installs nothing with pip)
-
-    def test_each_branch_looks_at_its_own_image(self):
-        from dev import cves
-        self.assertEqual(cves.images("dev"), ["ghcr.io/drsassafras/plex-cache:dev"])
-        self.assertEqual(cves.images("main"), ["ghcr.io/drsassafras/plex-cache:latest"])
-        self.assertEqual(cves.images(""), ["ghcr.io/drsassafras/plex-cache:latest", "ghcr.io/drsassafras/plex-cache:dev"])   # (not a checkout: both)
-
-    def test_the_look_is_of_the_copy_callboard_checks(self):
-        """callboard main looks at main's copy, callboard dev at dev's, callboard local at the folder on its branch: that copy's pins,
-        its npm lock, and its own image built here; the published image of its branch only when it can't be built."""
-        from dev import cves, upkeep
-
-        from callboard import plan, policy
-        d = tempfile.mkdtemp(dir=TMP)
-        with open(os.path.join(d, "Dockerfile"), "w") as fh:
-            fh.write("FROM python:3.13-alpine\nARG FFMPEG=7.1.1\nARG OXIPNG=9.0.0\n")
-        with mock.patch.dict(os.environ, {"CALLBOARD_COPY": d, **_policy_env("release", CALLBOARD_BRANCH="main", CALLBOARD_CODE="main")}):
-            self.assertEqual(cves.source(), d)
-            self.assertEqual(cves.source_branch(), "main")   # (the branch callboard worked out for the code: dev/policy.py's context)
-            self.assertEqual(cves.images(), ["ghcr.io/drsassafras/plex-cache:latest"])
-            self.assertEqual(upkeep.cve_pins(cves.source()), {"ffmpeg": "7.1.1", "oxipng": "9.0.0"})
-            self.assertEqual(cves.copy_os(), "alpine")
-        with mock.patch.dict(os.environ, _policy_env("development", CALLBOARD_BRANCH="dev", CALLBOARD_CODE="dev")):
-            self.assertEqual(cves.source_branch(), "dev")
-        with mock.patch.dict(os.environ, _policy_env("release", CALLBOARD_BRANCH="")), mock.patch.object(upkeep, "branch", return_value="main"):
-            self.assertEqual(cves.source_branch(), "main")   # (the folder: the branch it's on)
-        for name, arg in upkeep.CVE_ARGS.items():   # (each the ARG its Dep reads)
-            self.assertEqual(next(dep.where for dep in upkeep.DEPS if dep.name == name), f"ARG {arg} in the Dockerfile")
-        # on the board: the copy being checked is what its CVEs are of (CALLBOARD_COPY)
-        req = {"want": "check", "code": "main", "src": "/the/copy", "root": ROOT, "config": os.path.join(ROOT, "callboard.toml"),
-               "env": _policy_env("release", CALLBOARD_BRANCH="main", CALLBOARD_CODE="main"), "label": "Main"}
-        sec = next(x for x in plan.build(req, policy.Config(req["config"]))[0]["sections"] if x["id"] == "upkeep")
-        self.assertEqual((sec["env"]["CALLBOARD_COPY"], sec["env"]["CALLBOARD_BRANCH"], sec["cwd"]), ("/the/copy", "main", ROOT))
-
-    def test_the_copys_image_is_built_and_looked_at(self):
-        from dev import cves
-        d = tempfile.mkdtemp(dir=TMP)
-        lock = os.path.join(d, "missing-lock.json")   # (a copy with no npm lock: nothing of npm's to look at)
-        found = [self.vuln(kind="debian", package="zlib1g", fixed="2", image=cves.LOCAL_IMAGE)]
-        steps: list[str] = []
-        with mock.patch.object(cves, "CACHE", os.path.join(d, "cves.json")), mock.patch.object(cves, "SEEN", os.path.join(d, "seen.json")), \
-                mock.patch.object(cves, "crate_vulns", return_value=[]), mock.patch.object(cves, "nvd_vulns", return_value=[]), \
-                mock.patch.object(cves, "released_at", return_value={}), mock.patch.object(cves, "osv", return_value={}):
-            with mock.patch.object(cves, "build_local", return_value=("sha256:abc", "")), \
-                    mock.patch.object(cves, "scan", return_value=found) as scan:
-                got, _, notes = cves.look({}, lock, lock, step=steps.append)
-            scan.assert_called_once_with(cves.LOCAL_IMAGE, True)
-            self.assertEqual(([v.image for v in got], notes), ([cves.LOCAL_LABEL], []))
-            self.assertEqual(len(steps), cves.parts())
-            steps.clear()
-            with mock.patch.object(cves, "build_local", return_value=("", "no docker here")), \
-                    mock.patch.object(cves, "images", return_value=["ghcr.io/o/plex-cache:dev"]), \
-                    mock.patch.object(cves, "scan", return_value=[]) as scan:
-                _, _, notes = cves.look({}, lock, lock, step=steps.append)
-            scan.assert_called_once_with("ghcr.io/o/plex-cache:dev", False)
-            self.assertEqual(notes, [f"{cves.LOCAL_LABEL} not built (no docker here): the published ghcr.io/o/plex-cache:dev looked at instead"])
-            self.assertEqual(len(steps), cves.parts())
-            self.assertTrue(os.path.exists(os.path.join(d, "cves.json")))   # (kept for the day all the same: nothing missing)
-
-    def test_the_copys_build_is_seen_going(self):
-        """A long build (the first compiles ffmpeg) says each step as it starts, not a bar that looks stuck."""
-        from dev import cves
-        out = ["#5 [ffmpeg 3/4] RUN set -eux; ./configure", "#9 [stage-3 2/9] RUN set -eux; arch=amd64", "done"]
-
-        class Proc:
-            stdout = iter(line + "\n" for line in out)
-
-            def wait(self, timeout=None):
-                return 0
-        said: list[str] = []
-        d = tempfile.mkdtemp(dir=TMP)
-        with mock.patch.object(cves, "BUILD_LOG", os.path.join(d, "build.log")), mock.patch("subprocess.Popen", return_value=Proc()), \
-                mock.patch("subprocess.run", return_value=cves.subprocess.CompletedProcess([], 0, "sha256:abc\n", "")):
-            self.assertEqual(cves.build_local(d, said.append), ("sha256:abc", ""))
-        self.assertEqual(said, [f"building {cves.LOCAL_LABEL}", f"building {cves.LOCAL_LABEL} · ffmpeg 3/4: RUN set -eux; ./configure",
-                                f"building {cves.LOCAL_LABEL} · stage-3 2/9: RUN set -eux; arch=amd64"])
-        with open(os.path.join(d, "build.log")) as fh:
-            self.assertEqual(fh.read().splitlines(), out)   # (the whole build kept: a failure's note names it)
-        # Docker's engine found (or started) as the future run finds it, and BuildKit needed: why not, said, nothing built
-        from dev import future
-        with mock.patch.object(future, "docker_up", return_value="Docker's engine isn't running and didn't start"), mock.patch("subprocess.Popen") as popen:
-            self.assertEqual(cves.build_local(d), ("", "Docker's engine isn't running and didn't start"))
-        # what it says finding the engine goes to the bar, never to stdout: the Dependencies' first line is its word
-        said.clear()
-        with mock.patch.object(future, "sockets", return_value=["/home/me/.colima/default/docker.sock"]), \
-                mock.patch.object(future, "engine_answers", side_effect=lambda timeout=15, host="": bool(host)), mock.patch.dict(os.environ, {}), \
-                mock.patch.object(future, "has_buildkit", return_value=False), contextlib.redirect_stdout(io.StringIO()) as out:
-            self.assertEqual(cves.build_local(d, said.append), ("", future.NO_BUILDKIT))
-        self.assertEqual(out.getvalue(), "")
-        self.assertTrue(said[0].startswith("Docker's engine answers at /home/me/.colima/default/docker.sock"), said)
-        with mock.patch.object(future, "docker_up", return_value=""), mock.patch.object(future, "has_buildkit", return_value=False):
-            self.assertEqual(cves.build_local(d), ("", future.NO_BUILDKIT))
-        popen.assert_not_called()
-
-    def test_a_copy_on_alpine_is_told_apk(self):
-        from dev import cves
-        v = self.vuln(kind="debian", package="zlib", version="1.3.2-r0", fixed="1.3.2-r1", image=cves.LOCAL_LABEL, distro="alpine",
-                      seen=self.NOW - 9 * self.DAY, built=self.NOW - self.DAY)
-        with mock.patch.object(cves, "copy_os", return_value="alpine"):
-            j = self.judged(v)
-        self.assertEqual(j.act[0][0], f"CVE-1 in zlib 1.3.2-r0 (Alpine, in {cves.LOCAL_LABEL})")
-        self.assertIn("an apk upgrade zlib in the Dockerfile's final stage", j.act[0][1])
-
-    def test_an_image_fix_is_dated_from_when_it_was_first_seen(self):
-        from dev import cves
-        seen = os.path.join(tempfile.mkdtemp(dir=TMP), "seen.json")
-        v = self.vuln(kind="debian", fixed="2", published=1000.0)
-        with mock.patch.object(cves, "SEEN", seen):
-            cves.mark_seen([v], now=5000.0)   # (no record yet: from when the CVE came out)
-            self.assertEqual(v.seen, 1000.0)
-            w = self.vuln(id="CVE-2", kind="debian", fixed="3", published=1000.0)
-            cves.mark_seen([v, w], now=6000.0)   # (a record: a new one from now, the old one as it was)
-            self.assertEqual((v.seen, w.seen), (1000.0, 6000.0))
-
-    def test_the_days_look_is_kept_and_saved_answers_ask_nothing(self):
-        from dev import cves
-        d = tempfile.mkdtemp(dir=TMP)
-        lock = os.path.join(d, "lock.json")
-        with open(lock, "w") as fh:
-            fh.write("{}")
-        found = [self.vuln()]
-        with mock.patch.object(cves, "CACHE", os.path.join(d, "cves.json")), mock.patch.object(cves, "SEEN", os.path.join(d, "seen.json")), \
-                mock.patch.object(cves, "npm_vulns", return_value=found) as npm, mock.patch.object(cves, "crate_vulns", return_value=[]), \
-                mock.patch.object(cves, "nvd_vulns", return_value=[]), mock.patch.object(cves, "released_at", return_value={}):
-            self.assertEqual(cves.look({}, lock, lock, scan_images=[], saved=True)[2], ["CVEs not looked up yet (python3 dev/upkeep.py does it)"])
-            self.assertEqual(cves.look({}, lock, lock, scan_images=[])[0], found)
-            self.assertEqual(cves.look({}, lock, lock, scan_images=[])[0], found)
-            self.assertEqual(npm.call_count, 1)   # (the day's answers)
-            cves.look({}, lock, lock, scan_images=[], fresh=True)
-            self.assertEqual(npm.call_count, 2)
-            with mock.patch.object(cves, "code_sig", return_value="changed"):   # (the asking code changed: asked again today)
-                cves.look({}, lock, lock, scan_images=[])
-            self.assertEqual(npm.call_count, 3)
-            npm.side_effect = OSError("offline")
-            got, _, notes = cves.look({"x": "1"}, lock, lock, scan_images=[])
-            self.assertEqual(notes, ["the npm packages (OSV) not checked: offline"])
-
-    def test_the_cves_are_on_the_dependencies_bar(self):
-        """The CVEs looked up alongside the dependencies are steps on the same bar (and a worker more): it fills once, at
-        the real end, never full while the CVEs are still being looked up — the day's answers counted too."""
-        from dev import cves, upkeep
-
-        from callboard.progress import Progress
-        d = tempfile.mkdtemp(dir=TMP)
-        deps = [upkeep.Dep("quick", lambda: "1.0.0", lambda: "1.0.0", "ARG QUICK")]
-        sent = []
-        with mock.patch.object(upkeep, "CACHE", os.path.join(d, "upkeep.json")), mock.patch.object(upkeep, "DEPS", deps), \
-                mock.patch.object(cves, "CACHE", os.path.join(d, "cves.json")), mock.patch.object(cves, "SEEN", os.path.join(d, "seen.json")), \
-                mock.patch.object(cves, "npm_vulns", return_value=[]), mock.patch.object(cves, "crate_vulns", return_value=[]), \
-                mock.patch.object(cves, "nvd_vulns", return_value=[]), mock.patch.object(cves, "scan", return_value=[]), \
-                mock.patch("callboard.progress.Progress._feed", lambda self: sent.append((self.done, self.total, self.workers))):
-            for fresh in (True, False):   # (asked, then the day's answers)
-                sent.clear()
-                upkeep.check(apply=False, fresh=fresh, progress=Progress(1, stream=io.StringIO(), feed=True), cves=True, images=["img"])
-                total = 1 + len(cves.PARTS) + 1
-                self.assertTrue(all(t == total for _, t, _ in sent[1:]), sent)
-                self.assertEqual(max(done for done, _, _ in sent), total)
-                self.assertNotIn((total, total), [(dn, t) for dn, t, _ in sent[:-len(cves.PARTS) - 1]])   # (full only once the CVEs are)
-                self.assertEqual(sent[-1][2], 2)   # (the dependency's thread, and the CVEs')
-
-    def test_the_box_and_the_board_say_them_as_a_warning(self):
-        from dev import cves, upkeep
-        j = cves.Judged(act=[("CVE-9 in pkg 1.0.0", "No fix coming: replace it.")], shown=1, quiet=2, debian=3)
-        r = upkeep.Report(cves=j)
-        got = upkeep.box(r, "dev")
-        self.assertEqual(got[0], "cves")   # (orange: a warning, the test never fails on one; not "behind": nothing is)
-        self.assertEqual(got[1], "DEPENDENCIES  -  ALL UP TO DATE, 1 CVE TO ACT ON")
-        self.assertIn("1 CVE to act on (a warning: nothing fails):", got)
-        self.assertIn("Left alone: 2 CVEs being fixed upstream, 3 Debian CVEs with no fix (Debian's call).", " ".join(got))
-        self.assertTrue(all(len(line) <= upkeep.WIDTH for line in got))
-        self.assertEqual(upkeep.summary(r), f"1 warning · {len(upkeep.DEPS)} dependencies up to date · 1 CVE to act on")
-        self.assertTrue(any(f[0] == "warning" and "CVE" in f[1] for f in upkeep.found(r)), upkeep.found(r))   # (in the board's Issues: a warning)
-        r = upkeep.Report(bumped=["Node: Dockerfile: 24.1.0 → 24.2.0"], moved=["Node 24.1.0 → 24.2.0"],
-                          cves=cves.Judged(handled={"Node": ["CVE-8"]}))
-        self.assertIn("  Node: Dockerfile: 24.1.0 → 24.2.0 (fixes CVE-8)", upkeep.box(r, "dev"))
-        self.assertEqual(upkeep.box(upkeep.Report(cves=cves.Judged()), "dev")[0], "current")
-
-    def test_cves_fixed_in_dev_are_said_apart_and_not_counted(self):
-        from dev import cves, upkeep
-        j = cves.Judged(waiting=[("CVE-7 in urllib3 2.7.0 (the base image's Python packages, in img)", "Fixed in 2.8.0.")], waited=3)
-        r = upkeep.Report(cves=j)
-        got = upkeep.box(r, "dev")
-        self.assertEqual(got[:2], ["current", "DEPENDENCIES  -  ALL UP TO DATE"])   # (green: nothing to act on)
-        self.assertIn("Fixed in dev, waiting on the release (3 CVEs, not counted):", got)
-        self.assertTrue(all(len(line) <= upkeep.WIDTH for line in got))
-        self.assertEqual(upkeep.summary(r), f"1 notice · {len(upkeep.DEPS)} dependencies up to date")
-        self.assertEqual([f[0] for f in upkeep.found(r)], ["notice"])
-        out = io.StringIO()
-        with mock.patch.object(upkeep, "check", return_value=r), contextlib.redirect_stdout(out):
-            upkeep.github_cves("plex-cache:test")
-        self.assertTrue(out.getvalue().startswith("::notice title=CVE fixed, waiting on the release: CVE-7"), out.getvalue())
-
-    def test_githubs_look_warns_and_never_fails(self):
-        from dev import cves, upkeep
-        j = cves.Judged(act=[("CVE-9 in pkg 1.0.0", "Replace it.")], shown=1, notes=["oxipng (OSV) not checked: x"])
-        out = io.StringIO()
-        with mock.patch.object(upkeep, "check", return_value=upkeep.Report(cves=j)) as check, contextlib.redirect_stdout(out):
-            self.assertEqual(upkeep.github_cves("plex-cache:test"), 0)
-        self.assertEqual(check.call_args.kwargs["images"], ["plex-cache:test"])
-        self.assertTrue(check.call_args.kwargs["local"])
-        self.assertEqual(out.getvalue().splitlines(), ["::warning title=CVE to act on: CVE-9 in pkg 1.0.0::Replace it.",
-                                                       "::warning title=CVEs not checked::oxipng (OSV) not checked: x",
-                                                       "1 CVE to act on"])
-        with mock.patch.object(upkeep, "check", side_effect=upkeep.Offline("x")), contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(upkeep.github_cves("plex-cache:test"), 0)
-        build = _read(os.path.join(ROOT, ".github", "workflows", "build.yml"), encoding="utf-8")
-        self.assertIn("run: python dev/upkeep.py --cves plex-cache:test", build)
 
 
 class CheckToolTests(unittest.TestCase):
@@ -19125,7 +18348,7 @@ class CheckToolTests(unittest.TestCase):
     findings said one way, the board's bar and the result line its; no check tool of its own beside it."""
 
     WRAPPERS = ("typecheck.py", "buildcheck.py")   # (each check tool's section on callboard's board, run through dev/checks.py)
-    USERS = ("cves.py",)   # (a tool run as a part of another section: Trivy, in the dependency check's — fetched the same way)
+    USERS = ("cves.py",)   # (callboard's too, run as a part of another section: Trivy, in the dependency check's — fetched the same way)
 
     def test_every_check_tool_runs_through_the_shared_code(self):
         from callboard import checks
@@ -19138,9 +18361,9 @@ class CheckToolTests(unittest.TestCase):
             self.assertNotRegex(text, r'"npx"|"pip"|urlopen\(|Progress\(', f"dev/{name} fetches or reports a tool its own way")
             used |= set(re.findall(r'checks\.command\("([\w-]+)"\)', text))
         for name in self.USERS:
-            text = _read(os.path.join(ROOT, "dev", name), encoding="utf-8")
-            self.assertIn("from callboard import checks", text, f"dev/{name} isn't on callboard/checks.py")
-            self.assertNotRegex(text, r'"npx"|"pip"|Progress\(', f"dev/{name} fetches or reports a tool its own way")
+            text = _read(os.path.join(DEVLIB, name), encoding="utf-8")
+            self.assertIn("from callboard import checks", text, f"callboard/{name} isn't on callboard/checks.py")
+            self.assertNotRegex(text, r'"npx"|"pip"|Progress\(', f"callboard/{name} fetches or reports a tool its own way")
             used |= set(re.findall(r'checks\.command\("([\w-]+)"\)', text))
         # (a linter of another language — PMD, RuboCop… — runs only where the project has that language's code: callboard's
         # own toggle for it, read by its shared code, says whether this project has; one it hasn't needs no pin here)
@@ -19171,9 +18394,11 @@ class CheckToolTests(unittest.TestCase):
             if instr.startswith("RUN") and "curl" in instr:
                 self.assertTrue("sha256sum -c" in instr or "MKVTOOLNIX_KEY_FPR" in instr,
                                 "a RUN downloads without checking what it got:\n" + instr[:200])
-        # dev/upkeep.py moves each hash with its version, so a bump can't leave the checks behind
-        from dev import upkeep
-        self.assertEqual(set(upkeep.SUMS), {"FFMPEG", "OXIPNG", "LIBJPEG_TURBO"})
+        # callboard's Dependencies moves each hash with its version (callboard.toml's [upkeep] also: each one's sum=), so a
+        # bump can't leave the checks behind
+        upkeep = _dependencies()
+        self.assertEqual(upkeep.PROBLEMS, [])
+        self.assertEqual(set(upkeep.SUMS), {"ffmpeg", "oxipng", "libjpeg-turbo"})
         for name, sums in upkeep.SUMS.items():
             for arg in sums:
                 self.assertIn(f"ARG {arg}=", df, f"{name}'s hash ARG {arg} isn't in the Dockerfile")
@@ -19251,1581 +18476,45 @@ class CheckToolTests(unittest.TestCase):
         self.assertIn("tell(text, feed=True)", _read(os.path.join(ROOT, "tests", "run.py"), encoding="utf-8"))
         self.assertNotIn('json.dumps({"tell"', _read(os.path.join(ROOT, "tests", "run.py"), encoding="utf-8"))
 
-def _release_check(name: str, ok: bool, line: str, todo: list[str] | None = None):
-    """A dev/release.py check for a test: check_<name>, so its rule in callboard.toml's [release] is <name>'s."""
-    from dev import release
-
-    def check():
-        return release.Result(name.replace("_", " ").title() if name != "mqtt_docs" else "MQTT docs", ok, line, todo or [])
-    check.__name__ = f"check_{name}"
-    return check
-
 
 class ReleaseTests(unittest.TestCase):
-    """The release checks (dev/release.py): what callboard --release checks before dev is released, and only then."""
-
-    def test_version_is_a_new_minor_or_major(self):
-        from dev import release
-        text = lambda v: f'__version__ = "{v}"\n'
-        with mock.patch.object(release, "released", return_value=((0, 15, 0), "main has 0.15.0")), \
-                mock.patch.object(release, "_git", return_value=""):
-            for v, ok in (("0.16.0", True), ("0.17.0", True), ("1.0.0", True), ("0.16.22", False), ("0.15.0", False),
-                          ("0.14.0", False), ("0.16.0-beta.1", False), ("0.16", False)):
-                with self.subTest(v):
-                    self.assertEqual(release.check_version(text(v)).ok, ok)
-            got = release.check_version(text("0.16.22"))
-            self.assertIn("0.16.0", " ".join(got.todo))   # (what to set it to)
-            self.assertFalse(release.check_version("nothing here").ok)
-        with mock.patch.object(release, "released", return_value=((0, 15, 0), "main has 0.15.0")), \
-                mock.patch.object(release, "_git", return_value="v0.16.0\n"):
-            self.assertEqual(release.check_version(text("0.16.0")).line, "0.16.0 is tagged already")
-        with mock.patch.object(release, "released", return_value=(None, "")):
-            self.assertFalse(release.check_version(text("0.16.0")).ok)   # (nothing to compare with: not passed)
-
-    def test_released_is_main_or_the_newest_tag(self):
-        from dev import release
-        answers = {("show", "origin/main:plexcache/__init__.py"): '__version__ = "0.15.0"\n',
-                   ("tag", "-l"): "v0.14.0\nv0.16.0-beta.2\nv0.15.1\n"}
-        with mock.patch.object(release, "_git", side_effect=lambda *a: answers.get(a)):
-            self.assertEqual(release.released(), ((0, 15, 1), "tag v0.15.1"))   # (a pre-release tag isn't a release)
-        with mock.patch.object(release, "_git", return_value=None):
-            self.assertEqual(release.released(), (None, ""))
-
-    def test_translations_must_be_complete(self):
-        from dev import i18n, release
-        with mock.patch.object(i18n, "all_keys", return_value={"Idle": None}), \
-                mock.patch.object(i18n, "load", side_effect=lambda code: {"Idle": None if code == "fr" else "x"}):
-            got = release.check_translations()
-        self.assertFalse(got.ok)
-        self.assertTrue(got.line.startswith("1 of "), got.line)
-        self.assertIn("fr: 1 untranslated", got.todo)
-        with mock.patch.object(i18n, "all_keys", return_value={"Idle": None}), \
-                mock.patch.object(i18n, "load", return_value={"Idle": "x"}):
-            self.assertTrue(release.check_translations().ok)
-
-    def test_the_release_page_is_each_check_as_it_came(self):
-        """dev/release.py's detail for its page in the callboard UI: each check, whether it passed, its line and what to
-        do; how many are ready; and whether this run gates (strict). Written whenever the board asks (CALLBOARD_DETAIL)."""
-        from dev import release
-        folder = tempfile.mkdtemp(dir=TMP)
-        path = os.path.join(folder, "release.json")
-        checks = [_release_check("version", True, "0.17.0, a new release"),
-                  _release_check("looks", False, "2 looks waiting for approval", ["new: css .a", "python3 dev/style.py review"])]
-        for args, role, rc, strict in (([], "release", 1, True), (["--callboard"], "development", 3, False), (["--callboard"], "release", 1, True)):
-            with mock.patch.object(release, "CHECKS", checks), mock.patch.dict(os.environ, _policy_env(role, CALLBOARD_DETAIL=path, PLEXCACHE_PROGRESS="")), \
-                    contextlib.redirect_stdout(io.StringIO()):
-                self.assertEqual(release.main(args), rc)
-            with open(path, encoding="utf-8") as fh:
-                got = json.load(fh)
-            level = "fail" if strict else "info"   # (each check's level: [release]'s at the gate — info between releases, fail for a release's code)
-            self.assertEqual({k: v for k, v in got.items() if k not in ("tools", "result", "files", "level", "rc", "note", "context", "rules")},
-                             {"kind": "release", "strict": strict, "ready": 1, "total": 2, "skipped": [], "checks": [
-                                 {"name": "Version", "ok": True, "line": "0.17.0, a new release", "todo": [], "level": level},
-                                 {"name": "Looks", "ok": False, "line": "2 looks waiting for approval", "todo": ["new: css .a", "python3 dev/style.py review"], "level": level}]})
-            self.assertEqual((got["context"]["rules"], got["level"], got["rc"]), (POLICY_CODE[role][1], level, rc))
+    """This project's own two release checks (dev/mqtt_checks.py; callboard.toml's [release] own_checks). The release
+    checks themselves are callboard's (callboard tool release), held by its own tests."""
 
     def test_every_setting_is_placed_for_mqtt(self):
-        from dev import release
+        from dev import mqtt_checks
         from plexcache import config
         from plexcache import homeassistant as ha
-        self.assertTrue(release.check_mqtt_settings().ok, release.check_mqtt_settings().todo)
+        self.assertTrue(mqtt_checks.check_mqtt_settings().ok, mqtt_checks.check_mqtt_settings().todo)
         defaults = copy.deepcopy(config.DEFAULTS)
         defaults["general"]["new_switch"] = True
         with mock.patch.object(config, "DEFAULTS", defaults), mock.patch.dict(ha.NOT_OVER_MQTT, {"gone.*": "x"}):
-            got = release.check_mqtt_settings()
+            got = mqtt_checks.check_mqtt_settings()
         self.assertFalse(got.ok)
         self.assertEqual(got.line, "1 settings not placed, 1 listed that are gone")
         self.assertIn("general.new_switch: not a control over MQTT, nor in NOT_OVER_MQTT", got.todo)
 
     def test_mqtt_docs_match_the_code(self):
-        from dev import release
-        self.assertTrue(release.check_mqtt_docs().ok, release.check_mqtt_docs().todo)
+        from dev import mqtt_checks
+        self.assertTrue(mqtt_checks.check_mqtt_docs().ok, mqtt_checks.check_mqtt_docs().todo)
         source = (
             "class B:\n    def _topics(self, cfg):\n        return f'{base}/state', f'{base}/set'\n"
             "    def _command(self, name, value):\n        if name == 'recheck':\n            pass\n"
             "        elif name in ('ram_reserve_gb', 'poll_seconds'):\n            pass\n"
             "        elif name.startswith('library_') and (name.endswith('_prefetch_start') or name.endswith('_start')):\n            pass\n")
-        self.assertEqual(release.mqtt_commands(source), {"recheck", "ram_reserve_gb", "poll_seconds", "library_<key>_prefetch_start"})
+        self.assertEqual(mqtt_checks.mqtt_commands(source), {"recheck", "ram_reserve_gb", "poll_seconds", "library_<key>_prefetch_start"})
         readme = ("| `plexcache/state` | everything |\n| `plexcache/info` | gone |\n"
                   "| `plexcache/set/<name>` | `recheck`, `ram_reserve_gb` (`3`, `ON`), `library_<key>_prefetch_start`, `old_one` |\n")
-        got = release.check_mqtt_docs(readme, source)
+        got = mqtt_checks.check_mqtt_docs(readme, source)
         self.assertFalse(got.ok)
         self.assertEqual(got.todo[:3], ["topic plexcache/info: in the README's table, not published",
                                         "command poll_seconds: taken, not in the README's plexcache/set/<name> row",
                                         "command old_one: in the README's plexcache/set/<name> row, not taken"])
 
-    def test_coverage_bar_from_what_the_tests_saved(self):
-        from dev import release
-
-        from callboard import coverage
-        from callboard.checks import Finding, Outcome
-        with mock.patch.object(coverage, "load", return_value=(None, "no coverage saved yet: run the tests")):
-            got = release.check_coverage()
-        self.assertFalse(got.ok)
-        self.assertEqual((got.line, got.todo), ("not measured", ["no coverage saved yet: run the tests"]))
-        met = Outcome("Release bar", "", [], facts=["overall 98.5% (release: 98%, each file 90%)"])
-        short = Outcome("Release bar", "", [Finding("Coverage", "plexcache", 0, 0, "error",
-                                                    "97.1% of every line run, under the release's 98%", "release")],
-                        facts=["overall 97.1% (release: 98%, each file 90%)"])
-        for outcome, ok in ((met, True), (short, False)):
-            with self.subTest(ok), mock.patch.object(coverage, "load", return_value=({"hit": {}}, "")), \
-                    mock.patch.object(coverage, "measure", return_value=([], "")), \
-                    mock.patch.object(coverage, "release_check", return_value=outcome):
-                got = release.check_coverage()
-            self.assertEqual(got.ok, ok)
-            self.assertEqual(got.line, outcome.facts[0])
-        self.assertIn("97.1% of every line run, under the release's 98%", got.todo)
-
-    def test_audits_as_a_release_holds_them(self):
-        from dev import release
-        said = "Audited 100% · 0 findings open · release rules met"
-        done = mock.Mock(returncode=0, stdout=f"  (a note)\n{said}\n")
-        with mock.patch.object(release.subprocess, "run", return_value=done) as run, mock.patch.dict(os.environ, _policy_env("development", diff=True)):
-            got = release.check_audits()
-        self.assertTrue(got.ok)
-        self.assertEqual(got.line, said)
-        env = run.call_args.kwargs["env"]   # (as a release's code holds them, the whole codebase: the one set of rules, dev/policy.py's context)
-        self.assertEqual((env["CALLBOARD_RULES"], env["CALLBOARD_DIFF"], env["CALLBOARD_INTEGRATION"]), ("release", "0", "audit"))
-        bad = mock.Mock(returncode=1, stdout="  sensitive code waits\n2 release rules not met\n")
-        with mock.patch.object(release.subprocess, "run", return_value=bad):
-            got = release.check_audits()
-        self.assertFalse(got.ok)
-        self.assertEqual(got.line, "2 release rules not met")
-        self.assertIn("sensitive code waits", got.todo)
-
-    def test_every_look_approved(self):
-        from dev import release, style
-        with mock.patch.object(style, "pending", return_value={"new": {}, "changed": {}, "gone": {}}):
-            self.assertTrue(release.check_looks().ok)
-        with mock.patch.object(style, "pending", return_value={"new": {}, "changed": {"css .fhit": ["a", "b"]}, "gone": {}}):
-            got = release.check_looks()
-        self.assertFalse(got.ok)
-        self.assertEqual(got.line, "1 looks waiting for approval")
-        self.assertEqual(got.todo[0], "changed: css .fhit")
-
-    def test_the_board_block_is_a_readiness(self):
-        """dev/release.py --callboard, callboard's Release checks block: between releases (development's code: [release]
-        level info) an overall readiness that only tells (exit 3, what's still to go); for a release's code ([release.release]:
-        fail) the blocking check it always was — the rules decide, from callboard.toml."""
-        from dev import release
-
-        from callboard.progress import FEED
-        checks = [_release_check("version", True, "0.17.0, a new release"),
-                  _release_check("coverage", False, "overall 97.1%"),
-                  _release_check("looks", False, "2 looks waiting for approval")]
-        quiet = _policy_env("development", PLEXCACHE_PROGRESS="feed")
-        out = io.StringIO()
-        with mock.patch.object(release, "CHECKS", checks), contextlib.redirect_stdout(out), \
-                mock.patch.dict(os.environ, quiet):
-            self.assertEqual(release.main(["--callboard"]), 3)
-        self.assertIn("To go: coverage, looks", out.getvalue())
-        self.assertIn(FEED + json.dumps({"said": "To go: coverage, looks"}), out.getvalue())   # (its block's line)
-        # each requirement its own unit: the bar ends at those met, out of all (the misses held as info: its grey rest)
-        bars = [json.loads(line[len(FEED):]) for line in out.getvalue().split("\n") if line.startswith(FEED) and '"bar"' in line]
-        self.assertEqual({k: bars[-1][k] for k in ("done", "total", "bad", "warned", "skipped", "passed", "unit")},   # (the bar full: all three looked at; one met, two only noted)
-                         {"done": 3, "total": 3, "bad": 0, "warned": 0, "skipped": 2, "passed": 1, "unit": "requirements met"})
-        out = io.StringIO()
-        with mock.patch.object(release, "CHECKS", checks), contextlib.redirect_stdout(out), \
-                mock.patch.dict(os.environ, _policy_env("release", PLEXCACHE_PROGRESS="feed")):
-            self.assertEqual(release.main(["--callboard"]), 1)   # (a release's code: red, and the copy waits)
-        self.assertIn(FEED + json.dumps({"said": "Coverage: overall 97.1%; Looks: 2 looks waiting for approval"}), out.getvalue())
-        bars = [json.loads(line[len(FEED):]) for line in out.getvalue().split("\n") if line.startswith(FEED) and '"bar"' in line]
-        self.assertEqual((bars[-1]["done"], bars[-1]["total"], bars[-1]["bad"]), (3, 3, 2))   # (1 met, 2 failed)
-        out = io.StringIO()
-        with mock.patch.object(release, "CHECKS", checks[:1]), contextlib.redirect_stdout(out), \
-                mock.patch.dict(os.environ, quiet):
-            self.assertEqual(release.main(["--callboard"]), 0)
-        self.assertIn("Ready to release", out.getvalue())
-
-    def test_runs_each_check_and_says_them(self):
-        from dev import release
-        checks = [_release_check("version", True, "0.16.0, a new release"),
-                  _release_check("translations", False, "1 of 17 catalogs not complete", ["fr: 1 problems"])]
-        out = io.StringIO()
-        with mock.patch.object(release, "CHECKS", checks), contextlib.redirect_stdout(out), \
-                mock.patch.dict(os.environ, _policy_env("release", PLEXCACHE_PROGRESS="feed")):
-            self.assertEqual(release.main(), 1)
-        self.assertIn("✔ Version: 0.16.0, a new release\n✘ Translations: 1 of 17 catalogs not complete\n    fr: 1 problems\n", out.getvalue())
-        self.assertIn('{"said": "Translations: 1 of 17 catalogs not complete"}', out.getvalue())   # (its block's line on the board)
-        with mock.patch.object(release, "CHECKS", checks[:1]), contextlib.redirect_stdout(io.StringIO()), mock.patch.dict(os.environ, _policy_env("release")):
-            self.assertEqual(release.main(), 0)
-
-    @unittest.skipUnless(shutil.which("rsync") and shutil.which("bash") and shutil.which("git"), "no rsync or git here (callboard copies with it)")
-    def test_callboard_release_and_translations_every_run(self):
-        """callboard's Release checks and Translations blocks, every run: the tools alone decide how strict they are, from
-        the gate whose rules hold (told them as CALLBOARD_RULES) — by hand exit 3 only tells (grey, the run goes on), and
-        at the release gate (--gate release) exit 1 is a failure like a failing test. A pass at one gate doesn't count for
-        another."""
-        import subprocess
-        folder = tempfile.mkdtemp(dir=TMP)
-        project, nas, fake = (os.path.join(folder, d) for d in ("project", "nas", "bin"))
-        for d in (os.path.join(project, "app"), nas, fake):
-            os.makedirs(d)
-        with open(os.path.join(fake, "ssh"), "w", encoding="utf-8") as fh:   # (the NAS: this machine, a folder of it)
-            fh.write('#!/bin/bash\nwhile [ $# -gt 0 ]; do case "$1" in -o|-p|-l) shift 2 ;; -O) exit 0 ;; -*) shift ;; *) break ;; esac; done\n'
-                     'shift; [ $# -eq 0 ] && exit 0; exec bash -c "$*"\n')
-        with open(os.path.join(fake, "midclt"), "w", encoding="utf-8") as fh:   # (the restart a push makes)
-            fh.write("#!/bin/bash\nexit 0\n")
-        for name in ("ssh", "midclt"):
-            os.chmod(os.path.join(fake, name), 0o755)
-        with open(os.path.join(project, "app", "code.py"), "w", encoding="utf-8") as fh:
-            fh.write("one\n")
-        with open(os.path.join(folder, "config"), "w", encoding="utf-8") as fh:
-            fh.write("TN_HOST=nas.example\nTN_USER=me\n")
-        with open(os.path.join(project, ".callboard"), "w", encoding="utf-8") as fh:
-            fh.write(f"TN_APP=myapp\nTN_DEST={nas}\nTN_PATHS=app\n")
-        git = lambda *a: subprocess.run(["git", "-C", project, *a], check=True, capture_output=True,
-                                        env=dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t"))
-        git("init", "-q", "-b", "topic")
-
-        def settings(strict_rc: int, i18n_ok: bool = False):
-            told = "printf '\\036{\"status\": \"in progress\"}\\n'"   # (the note beside the block's title, as the tools send it)
-            _toml(project, unit="echo tests: rules=${CALLBOARD_RULES:-nearest}",
-                  i18n="echo 100% translated; exit 0" if i18n_ok else f'echo 32.9% translated; [ "$CALLBOARD_RULES" = release ] && exit 1; {told}; exit 3',
-                  release=f'echo the version is wrong; echo 4 of 7 ready; if [ "$CALLBOARD_RULES" = release ]; then exit {strict_rc}; else {told}; exit 3; fi')
-        env = dict(os.environ, PATH=fake + os.pathsep + os.environ.get("PATH", ""), CALLBOARD_CONFIG=os.path.join(folder, "config"),
-                   XDG_STATE_HOME=os.path.join(folder, "state"), TMPDIR=folder)
-        env.pop("PLEXCACHE_PROGRESS", None)
-
-        def callboard(*args):   # (callboard push local …: "push" first; else callboard local …)
-            words = ["push", "local", *args[1:]] if args[:1] == ("push",) else ["local", *args]
-            got = subprocess.run([os.path.join(CALLBOARD, "bin", "callboard"), *words], cwd=project, env=env, capture_output=True,
-                                 text=True, timeout=120, stdin=subprocess.DEVNULL)
-            return got.returncode, got.stdout + got.stderr
-        settings(1)
-        rc, out = callboard("push")   # (by hand: both blocks only tell, grey, and the run passes)
-        self.assertEqual(rc, 0, out)
-        self.assertIn("Release checks: IN PROGRESS", out)
-        self.assertIn("Translations: IN PROGRESS", out)
-        self.assertIn("tests: rules=nearest", out)
-        rc, out = callboard("--gate", "release")   # (the release gate now: in sync, and passed — but not at this gate, so tested again)
-        self.assertEqual(rc, 1, out)
-        self.assertIn("The last tests weren't run as this gate or mode", out)
-        self.assertIn("Release checks: FAILED", out)
-        self.assertIn("Translations: FAILED", out)
-        self.assertIn("\nthe version is wrong\n", out)   # (what it said, above the board)
-        self.assertIn("tests: rules=release", out)
-        settings(0)
-        rc, out = callboard("--gate", "release")
-        self.assertEqual(rc, 1, out)   # (the translations still gate a release)
-        self.assertIn("Release checks: PASSED", out)
-        self.assertIn("Translations: FAILED", out)
-        settings(0, i18n_ok=True)
-        rc, out = callboard("--gate", "release")
-        self.assertEqual(rc, 0, out)
-        self.assertIn("Release checks: PASSED", out)
-        self.assertIn("Translations: PASSED", out)
-        rc, out = callboard("--gate", "release")   # (passed, and nothing changed: readiness runs again all the same, quick; the tests don't)
-        self.assertEqual(rc, 0, out)
-        self.assertIn("Release checks: PASSED", out)
-        self.assertIn("Unit Tests: ALREADY PASSED", out)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 
-
-class AuditTests(unittest.TestCase):
-    """dev/audit.py, callboard's Security Audit block: each audit's public half (what was audited, when) and private half
-    (who, how thoroughly, what it found); which lines each audit saw, from git blame; the dev rule's grace window; the
-    release rules; and record, which splits a filled-in template into its two halves."""
-
-    def test_who_a_rule_accepts(self):
-        from dev import audit
-        self.assertTrue(audit.accepts("alpha>=5.5 thoroughness<=3", "alpha-5.5", 3))
-        self.assertTrue(audit.accepts("alpha>=5.5 thoroughness<=3", "alpha-5.6", 1))
-        self.assertFalse(audit.accepts("alpha>=5.5 thoroughness<=3", "alpha-5.5", 4))     # (not thorough enough)
-        self.assertFalse(audit.accepts("alpha>=5.5 thoroughness<=3", "alpha-5.4", 1))     # (an older version)
-        self.assertFalse(audit.accepts("alpha>=5.5", "beta-5.1", 1))                    # (families aren't ranked)
-        self.assertTrue(audit.accepts("beta", "beta-5.1", 5))
-        self.assertTrue(audit.accepts("human", "human:sam", 2))
-        self.assertTrue(audit.accepts("human:sam", "human:sam", 2))
-        self.assertFalse(audit.accepts("human:sam", "human:alex", 2))
-        self.assertTrue(audit.accepts("any", "gamma-5.5", 5))
-        self.assertFalse(audit.accepts("any effort>=high", "alpha-5.5", 1))   # (a word it doesn't know never passes)
-
-    def test_what_a_record_needs(self):
-        from dev import audit
-        ok = {"id": "2026-11-10-1", "date": dt.date(2026, 11, 10), "commit": "abc", "kind": "full",
-              "auditor": "beta-5.1", "thoroughness": 4}
-        self.assertEqual(audit.problems(ok, "both"), [])
-        self.assertIn("id 'beta-5.1-full' isn't YYYY-MM-DD-N", audit.problems({**ok, "id": "beta-5.1-full"}, "public"))
-        self.assertIn("a partial audit needs its scope", audit.problems({**ok, "kind": "partial"}, "public"))
-        self.assertIn("thoroughness 0 isn't 1 to 5", audit.problems({**ok, "thoroughness": 0}, "private"))
-        bad = {**ok, "finding": [{"id": "F-2026-001", "title": "t", "lines": ["a.py:3"], "detail": "d",
-                                  "severity": "huge", "status": "open"}]}
-        got = audit.problems(bad, "private")
-        self.assertIn("F-2026-001: severity 'huge' isn't one of info, low, medium, high, critical", got)
-        self.assertIn("F-2026-001: main None isn't one of affected, not-affected, fixed", got)
-        self.assertEqual(audit.problems({**ok, "auditor": ""}, "public"), [])   # (the public half never needs who)
-        # a false positive may have severity "none" (None - False Positive), or none at all; nothing else may
-        fp = {"id": "F-2026-002", "title": "t", "lines": ["a.py:3"], "detail": "d", "main": "affected", "type": "hardening"}
-        for sev, status, ok_ in (("none", "false-positive", True), ("", "false-positive", True), (None, "false-positive", True),
-                                 ("none", "open", False), ("none", "fixed", False), ("", "open", False), ("low", "false-positive", True)):
-            f = {**fp, "status": status, **({} if sev is None else {"severity": sev})}
-            got = [p for p in audit.problems({**ok, "finding": [f]}, "private") if "severity" in p or "priority" in p]
-            self.assertEqual(got == [], ok_, (sev, status, got))
-        got = audit.problems({**ok, "finding": [{**fp, "status": "open", "severity": "none"}]}, "private")
-        self.assertIn("F-2026-002: severity 'none' (None - False Positive) is only for a false positive, not 'open'", got)
-
-    def project(self):
-        """A project in git: two files committed long ago, its dev/audit.toml, an empty private audits repo beside it;
-        dev/audit.py pointed at them."""
-        import subprocess
-
-        from dev import audit
-        base = tempfile.mkdtemp(dir=TMP)
-        repo, private = os.path.join(base, "app"), os.path.join(base, "audits")
-        os.makedirs(os.path.join(repo, "dev"))
-        os.makedirs(os.path.join(private, "audits"))
-        with open(os.path.join(repo, "dev", "audit.toml"), "w") as fh:
-            fh.write('code = ["*.py"]\nprivate = "../audits"\n[dev]\ngrace_days = 7\ngrace_share = 10\n')
-        with open(os.path.join(repo, "a.py"), "w") as fh:
-            fh.write("def login(user):\n    return user\n\n\ndef other():\n    return 2\n")
-        with open(os.path.join(repo, "b.py"), "w") as fh:
-            fh.write("".join(f"x{i} = {i}\n" for i in range(20)))
-        env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
-
-        def git(*a, when=None):
-            e = dict(env, GIT_AUTHOR_DATE=when, GIT_COMMITTER_DATE=when) if when else env
-            return subprocess.run(["git", "-C", repo, *a], check=True, capture_output=True, text=True, env=e).stdout.strip()
-        git("init", "-q")
-        git("add", "a.py", "b.py")
-        git("commit", "-qm", "first", when="2001-01-01T00:00:00Z")
-        for patch in (mock.patch.object(audit, "ROOT", repo), mock.patch.object(audit, "CONFIG", os.path.join(repo, "dev", "audit.toml")),
-                      mock.patch.object(audit, "PUBLIC", os.path.join(repo, "security", "audits")),
-                      mock.patch.object(audit, "_repo", return_value=(repo, "")),
-                      mock.patch.dict(os.environ, {"PLEXCACHE_AUDITS": private, "CALLBOARD_RELEASE": ""})):
-            patch.start()
-            self.addCleanup(patch.stop)
-        return repo, private, git
-
-    def write(self, folder, name, text):
-        os.makedirs(folder, exist_ok=True)
-        with open(os.path.join(folder, name), "w") as fh:
-            fh.write(text)
-
-    def audit_files(self, repo, private, aid, date, commit, kind, scope=None, auditor="beta-5.1", thoroughness=4, extra=""):
-        self.write(os.path.join(repo, "security", "audits"), f"{aid}.toml", f'id = "{aid}"\ndate = {date}\ncommit = "{commit}"\nkind = "{kind}"\n'
-                   + (f"scope = {json.dumps(scope)}\n" if scope else ""))
-        self.write(os.path.join(private, "audits"), f"{aid}.toml",
-                   f'id = "{aid}"\nauditor = "{auditor}"\nthoroughness = {thoroughness}\n' + extra)
-
-    @unittest.skipUnless(shutil.which("git"), "no git here")
-    def test_a_line_is_seen_until_it_changes(self):
-        from dev import audit
-        repo, private, git = self.project()
-        first = git("rev-parse", "HEAD")
-        self.audit_files(repo, private, "2026-11-01-1", "2026-11-01", first, "full")
-        with open(os.path.join(repo, "a.py"), "w") as fh:
-            fh.write("def login(user):\n    return user.strip()\n\n\ndef other():\n    return 2\n")
-        git("commit", "-qam", "change")
-        audits, have_private, bad = audit.load()
-        self.assertEqual((have_private, bad, [a.auditor for a in audits]), (True, [], ["beta-5.1"]))
-        m = audit.measure(audits)
-        waiting = sorted((rel, n) for rel, n, ln in m.all() if not ln.seen)
-        self.assertEqual(waiting, [("a.py", 2)])   # (changed since the full audit: no longer seen)
-        self.assertEqual(len(list(m.all())), 24)   # (blank lines don't count)
-
-        # a partial of just that function, at the new commit, sees it again
-        self.audit_files(repo, private, "2026-11-02-1", "2026-11-02", git("rev-parse", "HEAD"), "partial", ["a.py:login"],
-                         auditor="gamma-5.5", thoroughness=5)
-        m = audit.measure(audit.load()[0])
-        self.assertEqual([(rel, n) for rel, n, ln in m.all() if not ln.seen], [])
-        self.assertEqual([a.id for a in m.lines["a.py"][2].seen], ["2026-11-02-1"])
-        self.assertEqual([a.id for a in m.lines["a.py"][5].seen], ["2026-11-01-1"])   # (other(): not in the partial's scope)
-
-    @unittest.skipUnless(shutil.which("git"), "no git here")
-    def test_the_dev_rule_waits_out_its_grace_window(self):
-        from dev import audit
-        repo, private, git = self.project()
-        audits = audit.load()[0]
-        got = audit.coverage_check(audit.measure(audits), audits, time.time(), [], 7, 10)
-        self.assertIn("24 lines no audit has seen: the oldest has waited", (got.findings or [])[0].message)   # (since 2001; all of it)
-        self.assertEqual(got.said(), ["audited 0.0%", "full 0.0%", "no full audit yet"])
-        self.audit_files(repo, private, "2026-11-01-1", "2026-11-01", git("rev-parse", "HEAD"), "full")
-        with open(os.path.join(repo, "b.py"), "a") as fh:
-            fh.write("y = 1\n")   # (1 line of 25, uncommitted: 4%, just now)
-        audits = audit.load()[0]
-        got = audit.coverage_check(audit.measure(audits), audits, time.time(), [], 7, 10)
-        self.assertEqual((got.findings or []), [])   # (inside the window: fine)
-        self.assertEqual(got.said(), ["audited 96.0%", "full 96.0%", "last full 2026-11-01", "1 line to audit before a push"])
-        git("commit", "-qam", "more", when="2001-06-01T00:00:00Z")
-        got = audit.coverage_check(audit.measure(audits), audits, time.time(), [], 7, 10)
-        self.assertIn("the oldest has waited", (got.findings or [])[0].message)   # (committed long ago, still unaudited: orange)
-        with open(os.path.join(repo, "a.py"), "a") as fh:
-            fh.write("z = 1\n")
-        git("commit", "-qam", "sensitive")
-        audits = audit.load()[0]
-        self.audit_files(repo, private, "2026-11-02-1", "2026-11-02", git("rev-parse", "HEAD~1"), "partial", ["b.py"])
-        got = audit.coverage_check(audit.measure(audit.load()[0]), audit.load()[0], time.time(), ["a.py"], 7, 10)
-        self.assertEqual([(f.path, f.message) for f in (got.findings or [])], [("a.py", "1 line of sensitive code no audit has seen")])
-
-    @unittest.skipUnless(shutil.which("git"), "no git here")
-    def test_the_release_rules(self):
-        from dev import audit
-        repo, private, git = self.project()
-        rule = {"accept": ["alpha>=5.5 thoroughness<=3", "beta>=5.1 thoroughness<=4"], "max_age_days": 180, "soak_days": 7,
-                "block_open": "high"}
-        head, now = git("rev-parse", "HEAD"), time.time()
-        today = dt.date.fromtimestamp(now).isoformat()
-        self.audit_files(repo, private, f"{today}-1", today, head, "full", auditor="gamma-5.5", thoroughness=1)
-        audits = audit.load()[0]
-        got = audit.release_check(audit.measure(audits), audits, True, rule, now, "fail", freeze=True)
-        msgs = [f.message for f in (got.findings or [])]
-        self.assertIn("no full audit the release rules accept in the last 180 days", msgs)   # (gamma isn't on the list)
-        self.assertIn("no release candidate tagged (vX.Y.Z-rc.N) on this code", msgs)
-        self.assertEqual({f.severity for f in (got.findings or [])}, {"error"})
-
-        finding = ('[[finding]]\nid = "F-2026-001"\ntitle = "Token compared with =="\nseverity = "high"\nlines = ["a.py:1-2"]\n'
-                   'detail = "d"\nstatus = "open"\nmain = "affected"\n')
-        self.audit_files(repo, private, f"{today}-2", today, head, "full", auditor="beta-5.1", thoroughness=4, extra=finding)
-        git("tag", "-a", "-m", "rc", "v1.0.0-rc.1")   # (annotated: it carries when it was made)
-        audits = audit.load()[0]
-        got = audit.release_check(audit.measure(audits), audits, True, rule, now + 8 * audit.DAY, "fail", freeze=True)
-        self.assertEqual([f.message for f in (got.findings or [])], ["F-2026-001 is open at high"])
-        self.assertEqual([f.message for f in (audit.findings_check(audits).findings or [])], ["F-2026-001 high: Token compared with =="])
-        got = audit.release_check(audit.measure(audits), audits, True, rule, now, "warn", freeze=False)
-        self.assertIn("v1.0.0-rc.1 has soaked 0.0 of 7 days", [f.message for f in (got.findings or [])])
-        self.assertEqual({f.severity for f in (got.findings or [])}, {"warning"})   # (on dev, once an RC is tagged: orange)
-
-    def test_what_who_audits_needs_is_configured_privately(self):
-        from dev import audit
-        public = audit.config_check(False, {}, "fail", "info")   # (anyone's clone: a notice, never a failure)
-        self.assertEqual([f.severity for f in public.findings or []], ["information"])
-        self.assertIn("auditor and thoroughness requirements", (public.findings or [])[0].message)
-        self.assertFalse(public.bad())
-        self.assertEqual(public.said(), ["public records only"])
-        ours = audit.config_check(True, {"release": {"accept": ["alpha>=5.5 thoroughness<=3"]}}, "warn")
-        self.assertEqual((ours.findings, ours.said()), ([], ["auditor requirements set"]))
-        unset = audit.config_check(True, {}, "warn")   # (the private repo, but no requirement in it: orange)
-        self.assertEqual([(f.severity, f.message) for f in unset.findings or []],
-                         [("warning", "the private rules.toml has no [release] accept: no auditor is required")])
-        self.assertFalse(unset.bad())   # (held as a warning: not failed)
-        self.assertTrue(audit.config_check(True, {}, "fail").bad())   # (a release's code: [audit.release] config = "fail")
-        typo = audit.config_check(True, {"release": {"accept": ["alpha>=5.5 effort>=high"]}}, "fail")
-        self.assertEqual([(f.severity, f.message) for f in typo.findings or []],
-                         [("error", "the private rules.toml's accept entry 'alpha>=5.5 effort>=high' can't be read")])
-
-    @unittest.skipUnless(shutil.which("git"), "no git here")
-    def test_the_public_half_alone(self):
-        from dev import audit
-        repo, private, git = self.project()
-        self.audit_files(repo, private, "2026-11-01-1", "2026-11-01", git("rev-parse", "HEAD"), "partial", ["b.py"])
-        with mock.patch.dict(os.environ, {"PLEXCACHE_AUDITS": os.path.join(repo, "nowhere")}):
-            audits, have_private, bad = audit.load()
-            self.assertEqual((have_private, bad, audits[0].auditor, audits[0].kind), (False, [], "", "partial"))
-            out = io.StringIO()
-            with contextlib.redirect_stdout(out), mock.patch.dict(os.environ, _policy_env("development")):
-                rc = audit.main([])
-        self.assertEqual(rc, 4)   # (code no audit has seen: a warning, as [audit] unaudited says)
-        self.assertIn("audited 83.3%", out.getvalue().lower())
-        self.assertIn("public records only", out.getvalue())
-        self.assertNotIn("beta", out.getvalue())   # (who did it stays private)
-
-    @unittest.skipUnless(shutil.which("git"), "no git here")
-    def test_the_blocks_line_leads_with_the_open_findings(self):
-        """With the private records, callboard's Security Audit block's line starts with how many findings are open (the
-        facts left off a line too long for the board are its last)."""
-        from dev import audit
-        repo, private, git = self.project()
-        self.audit_files(repo, private, "2026-11-01-1", "2026-11-01", git("rev-parse", "HEAD"), "partial", ["b.py"],
-                         extra='[[finding]]\nid = "F-2026-001"\ntitle = "t"\nseverity = "low"\nlines = ["b.py:5"]\ndetail = "d"\n'
-                               'status = "open"\nmain = "affected"\n')
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            audit.main([])
-        last = [x for x in out.getvalue().splitlines() if "audited" in x.lower()][-1].strip()
-        self.assertTrue(last.startswith("1 open finding · "), last)
-        from dev import auditgui
-        self.assertEqual(auditgui.Data().overview()["open"], 1)   # (the audits page's Overview says it too)
-
-    @unittest.skipUnless(shutil.which("git"), "no git here")
-    def test_record_splits_a_template_into_its_halves(self):
-        import tomllib
-
-        from dev import audit
-        repo, private, git = self.project()
-        old = git("rev-parse", "HEAD")
-        self.audit_files(repo, private, "2026-10-01-1", "2026-10-01", old, "full", auditor="alpha-5.5", thoroughness=3)
-        filled = os.path.join(repo, "filled.toml")
-        self.write(repo, "filled.toml", f'id = "2026-11-10-1"\ndate = 2026-11-10\ncommit = "{old}"\nkind = "partial"\n'
-                   'scope = ["a.py:login"]\nauditor = "beta-5.1"\nthoroughness = 4\nmain_commit = "m"\nprompt = "PROMPT.md@x"\n'
-                   '[[finding]]\nid = "F-2026-002"\ntitle = "Login trusts its input"\nseverity = "medium"\nlines = ["a.py:1-2"]\n'
-                   'detail = """\nTwo lines\nof detail.\n"""\nstatus = "open"\nmain = "affected"\n')
-        rc, said = audit.record(filled)
-        self.assertEqual(rc, 0, said)
-        with open(os.path.join(repo, "security", "audits", "2026-11-10-1.toml"), "rb") as fh:
-            pub = tomllib.load(fh)
-        self.assertEqual(sorted(pub), ["commit", "date", "id", "kind", "prints", "scope"])   # (nothing of who, nor what was found)
-        self.assertEqual(len(pub["prints"]), 2)   # (login()'s two lines, as they were at that commit)
-        with open(os.path.join(private, "audits", "2026-11-10-1.toml"), "rb") as fh:
-            sec = tomllib.load(fh)
-        self.assertEqual((sec["auditor"], sec["thoroughness"]), ("beta-5.1", 4))
-        f = sec["finding"][0]
-        self.assertEqual((f["introduced_in"], f["missed_by"], f["detail"]), (old, ["2026-10-01-1"], "Two lines\nof detail.\n"))
-        self.assertEqual(audit.record(filled)[0], 1)   # (already recorded: --force to replace it)
-        self.assertEqual(audit.load()[2], [])
-
-    def test_a_fingerprint_is_a_line_and_its_neighbours(self):
-        from dev import audit
-        base = tempfile.mkdtemp(dir=TMP)
-        body = "def check(token):\n    if not token:\n        return False\n    return token == SECRET\n"
-        self.write(base, "a.py", "x = 1\n\n\n" + body + "\n\ny = 2\n")
-        self.write(base, "b.py", "y = 2\n\n\n" + body + "\n\nx = 1\n")   # (the same function, moved: and to another file)
-        edited = tempfile.mkdtemp(dir=TMP)
-        self.write(edited, "a.py", "x = 1   \n" + body.replace("False", "True") + "y = 2\n")   # (a.py, edited)
-        a, b, c = audit.fingerprints("a.py", base), audit.fingerprints("b.py", base), audit.fingerprints("a.py", edited)
-        self.assertEqual(sorted(a), [1, 4, 5, 6, 7, 10])   # (blank lines have none)
-        self.assertTrue(all(audit.PRINT.match(p) for p in a.values()))
-        self.assertEqual(set(a.values()) & set(b.values()), set())   # (another file: none of it counts as seen)
-        os.rename(os.path.join(base, "b.py"), os.path.join(base, "a.py"))
-        moved = audit.fingerprints("a.py", base)
-        self.assertEqual({moved[5], moved[6]}, {a[5], a[6]})   # (moved within its file: all but its edges)
-        self.assertNotIn(moved[4], a.values())
-        self.assertEqual((c[1], c[2]), (a[1], a[4]))   # (trailing spaces and blank lines don't matter)
-        self.assertNotIn(c[3], a.values())   # (a changed line, and the lines next to it, need an audit again)
-        self.assertNotIn(c[4], a.values())
-        self.assertNotIn(c[5], a.values())
-
-    @unittest.skipUnless(shutil.which("git"), "no git here")
-    def test_an_audit_of_uncommitted_code_counts_once_it_is_committed(self):
-        import tomllib
-
-        from dev import audit
-        repo, private, git = self.project()
-        with open(os.path.join(repo, "a.py"), "w") as fh:
-            fh.write("def login(user):\n    return user.strip()\n\n\ndef other():\n    return 2\n")   # (not committed)
-        audits = audit.load()[0]
-        got = audit.coverage_check(audit.measure(audits), audits, time.time(), [], 7, 10)
-        self.assertIn("1 line to audit before a push", got.said())
-        self.write(repo, "filled.toml", f'id = "2026-11-10-1"\ndate = 2026-11-10\ncommit = "{git("rev-parse", "HEAD")}"\n'
-                   'kind = "partial"\nscope = ["a.py:login"]\nauditor = "alpha-5.5"\nthoroughness = 2\n')
-        rc, said = audit.record(os.path.join(repo, "filled.toml"))
-        self.assertEqual(rc, 0, said)
-        with open(os.path.join(repo, "security", "audits", "2026-11-10-1.toml"), "rb") as fh:
-            pub = tomllib.load(fh)
-        self.assertEqual((pub["uncommitted"], len(pub["prints"])), (True, 2))
-
-        def waiting():
-            m = audit.measure(audit.load()[0])
-            return [(rel, n) for rel, n, ln in m.all() if not ln.seen and rel == "a.py"], m
-        self.assertEqual(waiting()[0], [("a.py", 5), ("a.py", 6)])   # (login() is seen before it's committed; other() never was)
-        git("commit", "-qam", "strip it")
-        git("commit", "-q", "--amend", "-m", "strip the user")   # (rewritten: a commit the audit never knew)
-        self.assertEqual(waiting()[0], [("a.py", 5), ("a.py", 6)])
-        git("reset", "-q", "--soft", "HEAD~1")
-        git("commit", "-qm", "squashed")
-        self.assertEqual(waiting()[0], [("a.py", 5), ("a.py", 6)])
-
-        # a commit git no longer knows (another clone, a branch gone): the fingerprints still place it, quietly
-        with open(os.path.join(repo, "security", "audits", "2026-11-10-1.toml")) as fh:
-            text = fh.read()
-        self.write(os.path.join(repo, "security", "audits"), "2026-11-10-1.toml", text.replace(pub["commit"], "0" * 40))
-        left, m = waiting()
-        self.assertEqual((left, m.notes), ([("a.py", 5), ("a.py", 6)], []))
-
-        with open(os.path.join(repo, "a.py"), "w") as fh:
-            fh.write("def login(user):\n    return user.strip().lower()\n\n\ndef other():\n    return 2\n")
-        self.assertEqual(waiting()[0], [("a.py", 1), ("a.py", 2), ("a.py", 5), ("a.py", 6)])   # (changed: and its neighbour)
-
-    @unittest.skipUnless(shutil.which("git"), "no git here")
-    def test_what_to_audit_as_a_scope(self):
-        from dev import audit
-        repo, private, git = self.project()
-        self.assertEqual(audit.target_scope("uncommitted", [], [])[2], "no uncommitted changes to the app code")
-        with open(os.path.join(repo, "a.py"), "w") as fh:
-            fh.write("def login(user):\n    return user.strip()\n\n\ndef other():\n    return 2\n")
-        self.write(repo, "c.py", "class C:\n    def m(self):\n        def inner():\n            return 1\n        return inner\n")
-        self.assertEqual(audit.target_scope("uncommitted", [], []), ("partial", ["a.py:login", "c.py"], ""))   # (a new file: whole)
-        self.assertEqual(audit.scope_of({"c.py": {4}}), ["c.py:C.m.inner"])
-        self.assertEqual(audit.scope_of({"c.py": {2, 4}}), ["c.py:C.m"])   # (the outer one takes the inner in)
-        self.assertEqual(audit.scope_of({"b.py": {3}}), ["b.py"])   # (outside any function: the file)
-        self.assertEqual(audit.target_scope("full", [], [])[:2], ("full", []))
-        self.assertEqual(audit.target_scope("chosen", ["a.py:nope"], [])[2], "not in the app code: a.py:nope")
-        self.assertEqual(audit.target_scope("since-audit", [], [])[2], "there's no audit yet: start with a full one")
-        self.assertEqual(audit.target_scope("unpushed", [], [])[2], "this branch has no upstream to compare with")
-        self.assertEqual(audit.target_scope("unaudited", [], [])[1], ["a.py", "b.py", "c.py"])
-        self.assertEqual(audit.scope_size("partial", ["a.py:login"]), 2)
-
-    @unittest.skipUnless(shutil.which("git"), "no git here")
-    def test_an_author_audit_never_counts_at_release(self):
-        from dev import audit
-        repo, private, git = self.project()
-        rule = {"accept": ["alpha>=5.5 thoroughness<=3"], "max_age_days": 180, "soak_days": 0, "block_open": "high"}
-        today = dt.date.today().isoformat()
-        self.audit_files(repo, private, f"{today}-1", today, git("rev-parse", "HEAD"), "full", auditor="alpha-5.5", thoroughness=1,
-                         extra="author = true\n")
-        audits = audit.load()[0]
-        self.assertTrue(audits[0].author)
-        m = audit.measure(audits)
-        self.assertEqual([(rel, n) for rel, n, ln in m.all() if not ln.seen], [])   # (on dev: it counts)
-        got = audit.release_check(m, audits, True, rule, time.time(), "warn", freeze=False)
-        self.assertIn("no full audit the release rules accept in the last 180 days", [f.message for f in got.findings or []])
-
-    @unittest.skipUnless(shutil.which("git"), "no git here")
-    def test_a_persons_audit_is_open_until_they_finish_it_then_recorded(self):
-        import tomllib
-
-        from dev import audit, auditrun
-        repo, private, git = self.project()
-        with open(os.path.join(repo, "a.py"), "w") as fh:
-            fh.write("def login(user):\n    return user.strip()\n\n\ndef other():\n    return 2\n")   # (not committed)
-        self.assertEqual(auditrun.person("  Dr  Sass "), "human:dr-sass")
-        with self.assertRaises(ValueError):
-            auditrun.person("<script>")
-        run = auditrun.Runner()
-        r = run.start("uncommitted", [], auditrun.person("Dr Sass"), 2)
-        got = some(auditrun.load_run(r.id))
-        self.assertEqual((got.state, got.plugin, got.kind, got.scope, got.uncommitted), ("open", "", "partial", ["a.py:login"], True))
-        self.assertTrue(os.path.exists(os.path.join(private, "runs", r.id, "prints.json")))
-        run.write_finding(r.id, {"title": "Login trusts its input", "severity": "high", "lines": ["a.py:1-2"], "detail": "No check.", "main": "affected"})
-        run.write_finding(r.id, {"title": "A slip", "severity": "low", "lines": ["a.py:2"], "main": "affected"})
-        run.write_finding(r.id, None, remove=1)
-        with self.assertRaises(ValueError):
-            run.write_finding(r.id, {"title": " "})   # (a finding needs its title)
-        self.assertEqual([f["title"] for f in some(auditrun.load_run(r.id)).draft], ["Login trusts its input"])
-        self.assertEqual(auditrun.load_runs()[0].state, "open")   # (a person's stays open: nothing runs it)
-        with open(os.path.join(repo, "a.py"), "w") as fh:
-            fh.write("def login(user):\n    return user.lower()\n\n\ndef other():\n    return 2\n")   # (changed while it was audited)
-        done = run.finish(r.id)
-        self.assertEqual((done.state, done.findings), ("done", 1), done.error)
-        self.assertIn("the code changed while it was audited", " ".join(done.said))
-        with self.assertRaises(ValueError):
-            run.finish(r.id)   # (only once)
-        with open(os.path.join(repo, "security", "audits", f"{done.audit_id}.toml"), "rb") as fh:
-            pub = tomllib.load(fh)
-        self.assertEqual((pub["kind"], pub["uncommitted"], len(pub["prints"])), ("partial", True, 2))
-        with open(os.path.join(repo, "security", "audits", f"{done.audit_id}.toml")) as fh:
-            self.assertNotIn("sass", fh.read().lower())   # (who, and how closely, stay private)
-        with open(os.path.join(private, "audits", f"{done.audit_id}.toml"), "rb") as fh:
-            sec = tomllib.load(fh)
-        self.assertEqual((sec["auditor"], sec["thoroughness"], sec["run"], "prompt" in sec), ("human:dr-sass", 2, r.id, False))
-        self.assertEqual((sec["finding"][0]["id"], sec["finding"][0]["severity"]), (f"F-{dt.date.today().year}-001", "high"))
-        seen = lambda: [n for rel, n, ln in audit.measure(audit.load()[0]).all() if rel == "a.py" and ln.seen]
-        self.assertEqual(seen(), [1])   # (line 2 changed since: not what it read; line 1 is as committed)
-        with open(os.path.join(repo, "a.py"), "w") as fh:
-            fh.write("def login(user):\n    return user.strip()\n\n\ndef other():\n    return 2\n")
-        self.assertEqual(seen(), [1, 2])   # (as it was when it started)
-        marked = run.mark("chosen", ["b.py"], auditrun.person("Sam"), 4, [])
-        self.assertEqual((marked.state, marked.findings, marked.kind), ("done", 0, "partial"), marked.error)   # (a review already done)
-        c = auditrun.Runner().start("full", [], auditrun.person("Sam"), 5)
-        self.assertTrue(run.cancel(c.id))
-        self.assertEqual(some(auditrun.load_run(c.id)).state, "cancelled")
-        with self.assertRaises(ValueError):
-            run.start("full", [], auditrun.person("Sam"), 6)
-
-    def fake_claude(self, answer, rc=0):
-        """A stand-in for the Claude Code plugin's command: what it was asked, kept beside it; a stream as its, then its answer."""
-        d = tempfile.mkdtemp(dir=TMP)
-        script = os.path.join(d, "claude.py")
-        self.write(d, "claude.py", "import json, os, sys\n"
-                   f"open({os.path.join(d, 'asked.json')!r}, 'w').write(json.dumps({{'args': sys.argv[1:], 'cwd': os.getcwd(), 'prompt': sys.stdin.read(), "
-                   "'files': sorted(os.listdir('.'))}))\n"
-                   "print(json.dumps({'type': 'assistant', 'message': {'content': [{'type': 'tool_use', 'name': 'Read', 'input': {'file_path': 'a.py'}}]}}))\n"
-                   f"print(json.dumps({{'type': 'result', 'is_error': False, 'result': {answer!r}}}))\n"
-                   f"sys.exit({rc})\n")
-        patch = mock.patch.dict(os.environ, {"PLEXCACHE_AUDIT_CLAUDE": f"{sys.executable} {script}"})
-        patch.start()
-        self.addCleanup(patch.stop)
-        return os.path.join(d, "asked.json")
-
-    @unittest.skipUnless(shutil.which("git"), "no git here")
-    def test_an_ai_auditor_is_read_only_logged_and_recorded(self):
-        import tomllib
-
-        from dev import audit, auditrun
-        repo, private, git = self.project()
-        self.write(private, "PROMPT.md", "# the prompt\n\n---\n\nAudit <commit>, <full | partial>:\n<scope list, for a partial audit>\n")
-        asked = self.fake_claude('Done.\n```toml\n[[finding]]\ntitle = "Login trusts its input"\nseverity = "severe"\n'
-                                 'lines = ["a.py:1-2", "somewhere"]\ndetail = """\nNo check.\n"""\nmain = "affected"\n```\n')
-        with open(os.path.join(repo, "a.py"), "w") as fh:
-            fh.write("def login(user):\n    return user.strip()\n\n\ndef other():\n    return 2\n")   # (not committed)
-        r = auditrun.Runner().start("uncommitted", [], "opus-5.5", 3, wait=True)
-        got = {x.id: x for x in auditrun.load_runs()}[r.id]
-        self.assertEqual((got.state, got.plugin, got.kind, got.scope, got.uncommitted, got.findings, got.error),
-                         ("done", "claude-code", "partial", ["a.py:login"], True, 1, ""))
-        with open(asked) as fh:
-            call = json.load(fh)
-        args = call["args"]
-        self.assertEqual((args[args.index("--model") + 1], args[args.index("--effort") + 1], args[args.index("--tools") + 1]),
-                         ("claude-opus-5-5", "high", "Read,Grep,Glob"))
-        self.assertIn("--restricted", args)
-        self.assertNotIn("audits", call["cwd"])   # (a copy of the code: never the private repo)
-        allowed = args[args.index("--allowedTools") + 1:args.index("--disallowedTools")]
-        denied = args[args.index("--disallowedTools") + 1:args.index("--permission-mode")]
-        self.assertTrue(allowed and all(a.startswith("Read(//") and a.endswith("/**)") for a in allowed), allowed)   # (never a bare Read: any file)
-        self.assertNotIn("Read", allowed)
-        self.assertIn(f"Read(/{os.path.realpath(call['cwd'])}/**)", allowed)   # (its working folder, the copy)
-        self.assertIn(f"Read(/{os.path.realpath(repo)}/**)", denied)           # (never the project's own folder)
-        self.assertIn(f"Read(/{os.path.realpath(private)}/**)", denied)        # (nor the private repo)
-        self.assertIn("a.py", call["files"])
-        self.assertIn("- `a.py:login`", call["prompt"])
-        with open(os.path.join(repo, "security", "audits", f"{got.audit_id}.toml"), "rb") as fh:
-            pub = tomllib.load(fh)
-        self.assertEqual((pub["kind"], pub["uncommitted"], len(pub["prints"])), ("partial", True, 2))
-        with open(os.path.join(private, "audits", f"{got.audit_id}.toml"), "rb") as fh:
-            sec = tomllib.load(fh)
-        f = sec["finding"][0]
-        self.assertEqual((sec["auditor"], sec["thoroughness"], sec["run"]), ("opus-5.5", 3, r.id))
-        self.assertEqual((f["id"], f["status"], f["severity"], f["lines"]), (f"F-{dt.date.today().year}-001", "open", "medium", ["a.py:1-2"]))
-        self.assertIn("(the severity given: 'severe')", f["detail"])   # (kept, never dropped)
-        for name in ("run.json", "prompt.md", "output.jsonl", "result.md"):
-            self.assertTrue(os.path.exists(os.path.join(private, "runs", r.id, name)), name)
-        evs, _ = auditrun.events(r.id)
-        self.assertEqual([(e["kind"], e.get("tool"), e["text"]) for e in evs], [("tool", "Read", "a.py"), ("result", None, "finished")])
-        m = audit.measure(audit.load()[0])
-        self.assertEqual([n for rel, n, ln in m.all() if rel == "a.py" and ln.seen], [1, 2])   # (seen before it's committed)
-
-    @unittest.skipUnless(shutil.which("git"), "no git here")
-    def test_an_ai_auditor_run_that_goes_wrong_is_logged_and_records_nothing(self):
-        from dev import auditgui, auditor_claude, auditrun
-        repo, private, git = self.project()
-        self.write(private, "PROMPT.md", "---\nAudit.\n")
-        self.fake_claude("I looked, and here are some thoughts.")
-        r = auditrun.Runner().start("full", [], "fable-5.1", 4, wait=True)
-        got = {x.id: x for x in auditrun.load_runs()}[r.id]
-        self.assertEqual(got.state, "failed")
-        self.assertIn("isn't the TOML the prompt asks for", got.error)
-        with open(os.path.join(private, "runs", r.id, "result.md")) as fh:
-            self.assertIn("some thoughts", fh.read())   # (its answer, kept all the same)
-        self.assertFalse(os.path.isdir(os.path.join(repo, "security", "audits")))
-        self.fake_claude("No findings.")
-        r = auditrun.Runner().start("full", [], "fable-5.1", 4, wait=True)
-        self.assertEqual({x.id: x for x in auditrun.load_runs()}[r.id].state, "done")   # (an audit that found nothing: recorded)
-        with self.assertRaises(ValueError):
-            auditrun.Runner().start("full", [], "gpt-5", 4)   # (no plugin here runs it)
-        self.assertEqual([p["id"] for p in auditgui.Data().options()["plugins"]], ["claude-code"])
-        with mock.patch.dict(os.environ, {"PLEXCACHE_AUDIT_CLAUDE": "no-such-claude"}), mock.patch.object(auditor_claude, "PLACES", ()), \
-                mock.patch.object(auditor_claude, "_from_shell", lambda name: ""):
-            with self.assertRaisesRegex(ValueError, "not found on this computer"):
-                auditrun.Runner().start("full", [], "fable-5.1", 4)   # (said before a run is logged)
-            self.assertEqual(auditgui.Data().options()["plugins"], [])   # (not installed: never offered, never named)
-        self.assertEqual(auditrun.answer("```toml\n[[finding]]\ntitle = 1\n```")[1], "")
-
-    def test_an_ai_auditors_reads_and_command_are_its_own(self):
-        """The Claude Code auditor reads only in its copies: Read rules by path (never a bare Read, which allows any
-        file), this project's folder and the private repo refused, and the home folder when the copies aren't in it.
-        Its command is never the committed dev/audit.toml's (a commit could run anything on Start audit): the private
-        rules.toml's, claude or an absolute path, or PLEXCACHE_AUDIT_CLAUDE."""
-        from dev import auditor_claude
-        repo, private, git = self.project()
-        with tempfile.TemporaryDirectory() as tmp:
-            code, main = os.path.join(tmp, "code"), os.path.join(tmp, "main")
-            allowed, denied = auditor_claude.reads([code, main], [repo, private])
-            # (each folder as given and as its real path: on a Mac the temporary folder's /var is /private/var)
-            named = {f"Read(/{x}/**)" for p in (code, main) for x in (os.path.abspath(p), os.path.realpath(p))}
-            self.assertEqual(set(allowed), named)
-            self.assertIn(f"Read(/{os.path.realpath(private)}/**)", denied)
-            home = os.path.realpath(os.path.expanduser("~"))
-            self.assertEqual("Read(~/**)" in denied, not os.path.realpath(tmp).startswith(home + os.sep))
-            with self.assertRaises(ValueError):
-                auditor_claude.reads([os.path.join(tmp, "a b")], [])   # (a folder a rule can't name: refused, not run)
-        p = auditor_claude.ClaudeCode()
-        with mock.patch.dict(os.environ, {"PLEXCACHE_AUDIT_CLAUDE": ""}):
-            with open(os.path.join(repo, "dev", "audit.toml"), "a") as fh:
-                fh.write('[auditors.claude-code]\ncommand = "sh -c touch-pwned"\n')
-            self.assertEqual(p.given(), ("claude", ""))   # (the repo's own command: never taken)
-            self.write(private, "rules.toml", '[auditors.claude-code]\ncommand = "sh -c touch-pwned"\n')
-            self.assertEqual(p.command(), [])
-            self.assertIn("isn't claude or an absolute path", p.found())
-            self.write(private, "rules.toml", f'[auditors.claude-code]\ncommand = "{sys.executable}"\n')
-            self.assertEqual(p.command(), [sys.executable])   # (an absolute path in the private rules: as given)
-
-    @unittest.skipUnless(shutil.which("git"), "no git here")
-    def test_an_ai_auditors_copies_of_git_have_no_links(self):
-        """main's copy (and what's pushed) comes from git archive: a link committed there (to ~/.ssh, say) is left out,
-        as the working copy leaves links out, so nothing the auditor reads leads outside its copies."""
-        from dev import auditrun
-        repo, private, git = self.project()
-        os.symlink(os.path.expanduser("~"), os.path.join(repo, "home"))
-        os.symlink("/etc/hosts", os.path.join(repo, "hosts"))
-        git("add", "home", "hosts")
-        git("commit", "-qm", "links")
-        with tempfile.TemporaryDirectory() as into:
-            auditrun.extract(git("rev-parse", "HEAD"), into)
-            self.assertEqual(sorted(os.listdir(into)), ["a.py", "b.py"])
-            with tempfile.TemporaryDirectory() as code:
-                auditrun.snapshot(code)
-                self.assertNotIn("hosts", os.listdir(code))
-
-    def test_the_dev_pages_wear_callboards_stage_on_their_tab(self):
-        """Each dev page's tab icon (callboard's devpage.icons) is callboard's stage, a curtain opening on a prompt with
-        its footlights going to green, at 16, 32, 48, 64 and 128px (128 for every size above), each the drawing for its
-        size (callboard/icon-<px>.svg: at 16 the lamps become the floor, from 32 they are lamps), each in the page as
-        data: so every page's img-src lets it in, the review page's ('self') too."""
-        import base64
-
-        from callboard import devpage  # (the dev pages' shared code: the callboard install's)
-        links = re.findall(r'<link rel="icon" type="image/svg\+xml" sizes="(\d+)x\1" href="data:image/svg\+xml;base64,([^"]+)">', devpage.icons())
-        self.assertEqual([int(px) for px, _ in links], [16, 32, 48, 64, 128])
-        here = os.path.dirname(os.path.abspath(devpage.__file__))
-        for px, b64 in links:
-            svg = base64.b64decode(b64).decode()
-            self.assertEqual(svg, _read(os.path.join(here, f"icon-{px}.svg"), encoding="utf-8"))
-            self.assertIn(f'width="{px}" height="{px}"', svg)
-            self.assertIn('l3 2.65-3 2.65"', svg)   # (the prompt's >)
-            self.assertIn('fill="#3fb060"', svg)   # (the green lamp)
-            self.assertNotIn("<script", svg)
-        self.assertNotIn("<circle", base64.b64decode(links[0][1]).decode())   # (16px: the lamps are the floor)
-        self.assertIn("<circle", base64.b64decode(links[1][1]).decode())   # (32px: lamps)
-        self.assertEqual(devpage.iconed("<html><head><title>x</title></head>"), "<html><head>" + devpage.icons() + "<title>x</title></head>")
-        self.assertIn("img-src 'self' data:;", dict(devpage.headers("n", "'self'"))["Content-Security-Policy"])
-        self.assertIn("img-src data:;", dict(devpage.headers("n"))["Content-Security-Policy"])
-        self.assertIn("iconed(html(token))", _read(os.path.join(DEVLIB, "devpage.py"), encoding="utf-8"))   # (every page devpage.serve serves)
-
-    def test_a_dev_page_keeps_to_a_name_of_its_own(self):
-        """A dev tool's page (dev/devpage.py's Session: the review page, the audits page) is on a name of its own,
-        <tool>-<random>.localhost: cookies don't keep to a port, so on 127.0.0.1 its cookie would go to every other server
-        there (another user's, say). Its one-time code is never printed nor on a command line: the browser is sent a file
-        only you can read, which tries that name and falls back to 127.0.0.1, and goes once the code is spent. Once in, the
-        page answers only on the name the browser came in by (F-2026-016)."""
-        import stat
-
-        from callboard import devpage  # (the dev pages' shared code: the callboard install's)
-
-        class Asked:   # (what a request handler gives Session: its headers)
-            def __init__(self, **headers):
-                self.headers = headers
-        session = devpage.Session("audits")
-        port = 4321
-        self.assertRegex(session.host, r"^audits-[0-9a-f]{16}\.localhost$")
-        self.assertEqual(session.address(port), f"http://{session.host}:{port}/")
-        self.assertNotIn(session.code, session.address(port))
-        opener = session.opener(port)
-        self.addCleanup(session.close)
-        self.assertEqual((stat.S_IMODE(os.stat(opener).st_mode), stat.S_IMODE(os.stat(os.path.dirname(opener)).st_mode)), (0o600, 0o700))
-        page = _read(opener, encoding="utf-8")
-        self.assertIn(json.dumps(session.url(port)), page)                  # (its own name first, if the browser finds it)
-        self.assertIn(json.dumps(session.url(port, "127.0.0.1")), page)     # (else 127.0.0.1)
-        self.assertIn(json.dumps(session.address(port) + "ping.png"), page)
-        self.assertIsNone(session.enter(Asked(Host=f"evil.example:{port}"), port, f"code={session.code}"))
-        cookie = some(session.enter(Asked(Host=f"{session.host}:{port}"), port, f"code={session.code}"))
-        self.assertIn("SameSite=Strict", cookie)
-        self.assertFalse(os.path.exists(opener))   # (the code spent: its file gone)
-        jar = cookie.split(";")[0]
-        self.assertTrue(session.ok(Asked(Host=f"{session.host}:{port}", Cookie=jar), port))
-        self.assertFalse(session.ok(Asked(Host=f"127.0.0.1:{port}", Cookie=jar), port))   # (only the name it came in by)
-        self.assertFalse(session.ok(Asked(Host=f"{session.host}:{port}", Cookie=jar, **{"Sec-Fetch-Site": "same-site"}), port))
-        self.assertIsNone(session.enter(Asked(Host=f"127.0.0.1:{port}"), port, f"code={session.code}"))
-        self.assertNotIn("inline_styles", _read(os.path.join(DEVLIB, "devpage.py"), encoding="utf-8"))
-        self.assertIn("show(session, ", _read(os.path.join(DEVLIB, "devpage.py"), encoding="utf-8"))   # (serve opens the page by the opener's file)
-        for where, tool in ((ROOT, "dev/style.py"), (ROOT, "dev/auditgui.py"), (DEVLIB, "devui.py")):   # (each page through devpage.serve: never webbrowser.open(url), no server of its own)
-            src = _read(os.path.join(where, tool), encoding="utf-8")
-            self.assertIn("devpage.serve(", src)
-            self.assertNotIn("webbrowser", src)
-            self.assertNotIn("http.server", src)
-
-    @unittest.skipUnless(shutil.which("git"), "no git here")
-    def test_the_audits_page_is_this_computers_alone(self):
-        import http.client
-        import threading
-
-        from dev import auditgui
-        repo, private, git = self.project()
-        self.audit_files(repo, private, "2026-11-01-1", "2026-11-01", git("rev-parse", "HEAD"), "full",
-                         extra='[[finding]]\nid = "F-2026-001"\ntitle = "t"\nseverity = "high"\nlines = ["a.py:1"]\ndetail = "d"\n'
-                               'status = "open"\nmain = "affected"\n')
-        self.write(private, "rules.toml", '[release]\naccept = ["human thoroughness<=3"]\n')
-        up = threading.Event()
-        box = {}
-
-        def ready(server, url, token):
-            box.update(server=server, port=server.server_port, token=token, url=url)
-            up.set()
-        t = threading.Thread(target=auditgui.serve, args=(auditgui.Data(),), kwargs={"open_browser": False, "ready": ready}, daemon=True)
-        with contextlib.redirect_stdout(io.StringIO()):
-            t.start()
-            self.assertTrue(up.wait(10))
-            try:
-                def ask(method, path, body=None, host=None, token=None, cookie=None, more=None):
-                    c = http.client.HTTPConnection("127.0.0.1", box["port"], timeout=30)
-                    c.request(method, path, body=json.dumps(body) if body is not None else None,
-                              headers={"Host": host or f"127.0.0.1:{box['port']}", "X-Page-Token": box["token"] if token is None else token,
-                                       "Cookie": box.get("cookie", "") if cookie is None else cookie, **(more or {})})
-                    res = c.getresponse()
-                    box["headers"] = dict(res.getheaders())
-                    return res.status, res.read()
-                # the page and its token: for the browser that opened the address it printed (its one-time code) only
-                status, page = ask("GET", "/")
-                self.assertEqual(status, 403)   # (any other program that asks with the right Host: no page, no token)
-                self.assertNotIn(box["token"].encode(), page)
-                entry = "/?" + box["url"].split("?", 1)[1]
-                self.assertEqual(ask("GET", entry, host="evil.example:80")[0], 403)
-                status, body = ask("GET", entry)
-                self.assertEqual(status, 200)
-                self.assertIn(b'location.replace("/")', body)   # (on from the page's own address: its Strict cookie goes)
-                set_cookie = box["headers"]["Set-Cookie"]
-                self.assertIn("HttpOnly", set_cookie)
-                self.assertIn("SameSite=Strict", set_cookie)
-                box["cookie"] = set_cookie.split(";")[0]
-                self.assertEqual(ask("GET", entry, cookie="")[0], 403)   # (the code works once: not for another program after)
-                self.assertEqual(ask("GET", entry)[0], 200)              # (but the page's own browser, again, is let in)
-                status, page = ask("GET", "/")
-                self.assertEqual(status, 200)
-                self.assertIn(box["token"].encode(), page)
-                self.assertNotIn(b"/*THEME*/", page)
-                csp = box["headers"]["Content-Security-Policy"]
-                self.assertNotIn("unsafe-inline", csp)   # (only the page's own script and style: this response's nonce)
-                nonce = some(re.search(r"script-src 'nonce-([^']+)'", csp)).group(1)
-                self.assertIn(f'<script nonce="{nonce}">'.encode(), page)
-                self.assertIn(f'<style nonce="{nonce}">'.encode(), page)
-                self.assertNotIn(b"<script>", page)
-                self.assertIn(b'<head><link rel="icon" type="image/svg+xml" sizes="16x16" href="data:image/svg+xml;base64,', page)   # (the dev pages' tab icon)
-                self.assertIn("frame-ancestors 'none'", csp)
-                self.assertEqual((box["headers"]["X-Frame-Options"], box["headers"]["X-Content-Type-Options"]), ("DENY", "nosniff"))
-                self.assertEqual(ask("GET", "/api/overview", cookie="")[0], 403)   # (the token alone isn't enough)
-                self.assertEqual(ask("GET", "/api/overview", more={"Sec-Fetch-Site": "same-site"})[0], 403)   # (another port's page)
-                self.assertEqual(ask("GET", "/", host="evil.example:80")[0], 403)   # (another site's name pointed here)
-                self.assertEqual(ask("GET", "/api/overview", token="wrong")[0], 403)
-                self.assertEqual(ask("POST", "/api/start", {"target": "full"}, token="")[0], 403)
-                status, body = ask("GET", "/api/overview")
-                got = json.loads(body)
-                self.assertEqual((status, got["audits"], got["private"]), (200, 1, True))
-                self.assertEqual(got["commit"]["app"], ["security/audits/2026-11-01-1.toml"])   # (waiting for you to commit)
-                status, body = ask("POST", "/api/finding", {"audit": "2026-11-01-1", "id": "F-2026-001", "status": "fixed", "fixed_in": "abc"})
-                self.assertEqual(status, 200, body)
-                self.assertEqual(ask("POST", "/api/finding", {"audit": "2026-11-01-1", "id": "F-2026-001", "status": "gone"})[0], 400)
-                findings = json.loads(ask("GET", "/api/findings")[1])
-                self.assertEqual((findings[0]["status"], findings[0]["fixed_in"]), ("fixed", "abc"))
-                bad = json.loads(ask("POST", "/api/rules", {"text": '[release]\naccept = ["human effort>=high"]\n'})[1])
-                self.assertEqual((bad["ok"], bad["problems"]), (False, ["accept entry 'human effort>=high' can't be read"]))
-                with open(os.path.join(private, "rules.toml")) as fh:
-                    self.assertIn("thoroughness<=3", fh.read())   # (refused: left as it was)
-                files = json.loads(ask("GET", "/api/explorer?kinds=partial")[1])["files"]
-                self.assertEqual({f["path"]: f["seen"] for f in files}, {"a.py": 0, "b.py": 0})   # (full audits toggled off)
-                rows = json.loads(ask("GET", "/api/file?path=a.py")[1])["rows"]
-                self.assertEqual([x["id"] for x in rows[0]["seen"]], ["2026-11-01-1"])
-                self.assertEqual(ask("GET", "/api/file?path=../secret")[0], 400)
-                opts = json.loads(ask("GET", "/api/options")[1])
-                self.assertEqual(opts["people"]["1"], "every line traced")
-                self.assertEqual(ask("POST", "/api/start", {"target": "chosen", "paths": ["b.py"], "name": "", "thoroughness": 3})[0], 400)
-                status, body = ask("POST", "/api/start", {"target": "chosen", "paths": ["b.py"], "name": "Dr Sass", "thoroughness": 3})
-                self.assertEqual(status, 200, body)
-                rid = json.loads(body)["id"]
-                status, body = ask("POST", "/api/draft", {"id": rid, "finding": {"title": "x", "severity": "low", "lines": ["b.py:1"], "main": "affected"}})
-                self.assertEqual((status, len(json.loads(body)["draft"])), (200, 1), body)
-                runs = json.loads(ask("GET", "/api/runs")[1])
-                self.assertEqual((runs[0]["state"], runs[0]["how"], runs[0]["auditor"]), ("open", "read closely", "human:dr-sass"))
-                done = json.loads(ask("POST", "/api/finish", {"id": rid})[1])
-                self.assertEqual(done["state"], "done", done)
-                marked = json.loads(ask("POST", "/api/mark", {"target": "chosen", "paths": ["a.py"], "name": "Sam", "thoroughness": 5, "findings": []})[1])
-                self.assertEqual(marked["state"], "done", marked)
-            finally:
-                box["server"].shutdown()
-                t.join(30)
-
-    @unittest.skipUnless(shutil.which("git"), "no git here")
-    def test_the_public_repo_alone_names_no_auditor(self):
-        import tomllib
-
-        from dev import audit, auditgui, auditrun
-        repo, private, git = self.project()
-        self.audit_files(repo, private, "2026-11-01-1", "2026-11-01", git("rev-parse", "HEAD"), "partial", ["b.py"], auditor="human:sam")
-        self.write(private, "rules.toml", '[auditors.claude-code]\nmodels = ["opus-5.5"]\n')
-        self.fake_claude("No findings.")
-        self.assertEqual(auditgui.Data().options()["plugins"][0]["auditors"], ["opus-5.5"])   # (offered from the private rules)
-        with open(audit.CONFIG, "rb") as fh:
-            self.assertNotIn("auditors", tomllib.load(fh))
-        with mock.patch.dict(os.environ, {"PLEXCACHE_AUDITS": os.path.join(repo, "nowhere")}):
-            got = auditgui.Data().overview()   # (anyone's clone: coverage all the same)
-            self.assertEqual((got["private"], got["audits"], got["seen"], got["lines"]), (False, 1, 20, 24))
-            with self.assertRaises(ValueError):
-                auditrun.Runner().start("full", [], auditrun.person("Sam"), 3)   # (audits need the private repo)
-        for name in os.listdir(os.path.join(repo, "security", "audits")):
-            with open(os.path.join(repo, "security", "audits", name)) as fh:
-                self.assertNotIn("sam", fh.read())
-
-    def test_cvss_scores_as_the_specification_does(self):
-        from dev import audit
-        for vector, want in [("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H", (9.8, "critical")),
-                             ("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H", (10.0, "critical")),
-                             ("CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N", (5.5, "medium")),
-                             ("CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:L/I:N/A:N", (3.1, "low")),
-                             ("CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:L/I:L/A:N", (6.4, "medium")),
-                             ("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N", (7.5, "high")),
-                             ("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N", (0.0, "info"))]:
-            self.assertEqual(audit.cvss(vector), want, vector)
-        for bad in ("AV:N/AC:L", "CVSS:3.1/AV:X/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H", "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H"):
-            with self.assertRaises(ValueError):
-                audit.cvss(bad)
-        f = {"id": "F-2026-001", "title": "t", "lines": ["a.py:1"], "detail": "d", "status": "open", "main": "affected",
-             "cvss": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N", "severity": "low"}
-        rec = {"id": "2026-11-01-1", "auditor": "human:sam", "thoroughness": 3, "finding": [f]}
-        self.assertIn("F-2026-001: severity 'low' isn't its CVSS vector's (high)", audit.problems(rec, "private"))
-        audit.scored(f)
-        self.assertEqual((f["severity"], audit.problems(rec, "private")), ("high", []))
-        hard = {**f, "type": "hardening"}
-        rec["finding"] = [hard]
-        self.assertIn("F-2026-001: a hardening finding has no CVSS vector (it isn't exploitable as it is)", audit.problems(rec, "private"))
-        hard.pop("cvss")
-        self.assertEqual(audit.problems(rec, "private"), [])
-
-    @unittest.skipUnless(shutil.which("git"), "no git here")
-    def test_a_findings_code_is_followed_and_hardening_never_blocks(self):
-        from dev import audit, auditgui, auditrun
-        repo, private, git = self.project()
-        run = auditrun.Runner()
-        r = run.start("full", [], auditrun.person("Sam"), 2)
-        run.write_finding(r.id, {"title": "Login trusts its input", "type": "vulnerability", "cvss": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N",
-                                 "lines": ["a.py:1-2"], "main": "affected"})
-        run.write_finding(r.id, {"title": "Compare in constant time", "type": "hardening", "severity": "high", "lines": ["b.py:3-4"], "main": "affected"})
-        with self.assertRaises(ValueError):
-            run.write_finding(r.id, {"title": "bad", "cvss": "CVSS:3.1/AV:Q", "lines": ["a.py:1"]})
-        done = run.finish(r.id)
-        self.assertEqual(done.state, "done", done.error)
-        audits = audit.load()[0]
-        vuln, hard = audits[0].findings
-        self.assertEqual((vuln["severity"], vuln["type"], hard["severity"], len(vuln["prints"]), len(hard["prints"])), ("critical", "vulnerability", "high", 2, 2))
-        state = lambda: [audit.code_state(f, audits[0]) for f in audit.load()[0][0].findings]
-        self.assertEqual(state(), ["there", "there"])
-        with open(os.path.join(repo, "a.py"), "w") as fh:
-            fh.write("def login(user):\n    return check(user)\n\n\ndef other():\n    return 2\n")   # (the fix, not committed)
-        self.assertEqual(state(), ["gone", "there"])   # (both its lines changed: line 1's neighbour did)
-        with open(os.path.join(repo, "b.py"), "w") as fh:
-            fh.write("".join(f"x{i} = {i}\n" for i in range(20)).replace("x4 = 4", "x4 = 5"))
-        self.assertEqual(state(), ["gone", "changed"])
-        got = {f["id"]: f for f in auditgui.Data().findings()}
-        self.assertEqual(sorted((f["code"], f["score"]) for f in got.values()), [("changed", None), ("gone", 9.1)])
-        check = audit.findings_check(audit.load()[0])
-        self.assertEqual(check.said()[:2], ["1 open finding", "1 to confirm fixed (their code is gone)"])
-        rule = {"accept": ["human"], "max_age_days": 180, "soak_days": 0, "block_open": "high"}
-        rel = audit.release_check(audit.measure(audit.load()[0]), audit.load()[0], True, rule, time.time(), "warn", freeze=False)
-        msgs = [x.message for x in rel.findings or []]
-        self.assertTrue(any("is open at critical 9.1" in m for m in msgs), msgs)
-        self.assertFalse(any("hardening" in m for m in msgs), msgs)   # (a hardening finding never holds up a release)
-        with open(os.path.join(repo, "a.py"), "w") as fh:
-            fh.write("def login(user):\n    return user\n\n\ndef other():\n    return 2\n")   # (undone: there again)
-        self.assertEqual(state()[0], "there")
-
-    # The fixing rules' fingerprint, approved by the maintainer. Change it only when they've read the new rules and said so.
-    FIXING_RULES_SHA256 = "ac61ccdb2ba8c65c2da197b7b5955c2bcf64941502ff2f9dfdf07accdd33216c"
-
-    def test_the_fixing_rules_are_the_ones_the_maintainer_approved(self):
-        """The rules every fixer follows (dev/auditfix.py's HOW, what dev/audit.py fixes prints) change only with the
-        maintainer's say: any edit, even a word, fails here until they approve the new text."""
-        import hashlib
-
-        from dev import auditfix
-        got = hashlib.sha256(auditfix.HOW.encode("utf-8")).hexdigest()
-        self.assertEqual(got, self.FIXING_RULES_SHA256,
-                         "dev/auditfix.py's fixing rules (HOW) changed. Show the maintainer the change; once they approve "
-                         f"it, set AuditTests.FIXING_RULES_SHA256 to {got}")
-
-    @unittest.skipUnless(shutil.which("git"), "no git here")
-    def test_a_fixer_reports_each_fix_and_confirm_closes_it(self):
-        """Whoever fixes the findings reads them (dev/audit.py fixes) and reports each fix (fixed), with the tests that
-        guard it, and each other case its test found (found: a new finding, found by that test, never by an audit or its
-        auditor). It can't close one: Confirm runs each one's tests and closes those that pass; one that fails is open
-        again. The block says if a guarding test is ever removed."""
-        from dev import audit, auditfix, auditgui
-        repo, private, git = self.project()
-        self.write(os.path.join(repo, "tests"), "test_app.py", "import unittest\n\n\nclass LoginTests(unittest.TestCase):\n"
-                   "    def test_login_checks(self):\n        pass\n\n    def test_broken(self):\n        self.fail('still there')\n")
-        self.audit_files(repo, private, "2026-11-01-1", "2026-11-01", git("rev-parse", "HEAD"), "full",
-                         extra='[[finding]]\nid = "F-2026-001"\ntitle = "Login trusts its input"\nseverity = "high"\nlines = ["a.py:1"]\n'
-                               'detail = "d"\nstatus = "open"\nmain = "affected"\n\n[[finding]]\nid = "F-2026-002"\ntitle = "Other"\n'
-                               'severity = "low"\nlines = ["a.py:5"]\ndetail = "d"\nstatus = "open"\nmain = "affected"\n')
-        self.assertEqual(audit.test_ids()["LoginTests.test_login_checks"], "tests.test_app.LoginTests.test_login_checks")
-        cli = lambda *a: self._cli(audit, *a)
-        rc, text = cli("fixes")
-        self.assertEqual(rc, 0)
-        for want in ("dev/audit.py fixed F-YYYY-NNN", "If the check finds another case, don't fix it. Record it as a new finding",
-                     "You can't close a finding", "## F-2026-001: Login trusts its input"):
-            self.assertIn(want, text)
-        self.assertEqual(cli("fixed", "F-2026-001", "--test", "LoginTests.test_nope")[0], 2)   # (only tests the project has)
-        rc, said = cli("fixed", "F-2026-001", "--test", "tests/test_app.py::LoginTests.test_login_checks", "--note", "checks it")
-        self.assertEqual(rc, 0, said)
-        self.assertEqual(cli("fixed", "F-2026-002", "--test", "LoginTests.test_broken")[0], 0)
-        rc, said = cli("found", "--via", "F-2026-001", "--title", "Other login trusts it too", "--lines", "b.py:5", "--hardening",
-                       "--priority", "low", "--test", "LoginTests.test_login_checks", "--detail", "same kind; put b.py back in the test")
-        self.assertEqual(rc, 0, said)
-        self.assertIn("F-2026-003: a new finding, found by a test written for F-2026-001's fix", said)
-        data = auditgui.Data()
-        by = {f["id"]: f for f in data.findings()}
-        self.assertEqual((by["F-2026-001"]["status"], by["F-2026-001"]["waiting"], by["F-2026-001"]["tests"], by["F-2026-001"]["led_to"]),
-                         ("open", True, ["LoginTests.test_login_checks"], ["F-2026-003"]))
-        self.assertIn("fix reported (fixed), guarded by LoginTests.test_login_checks: checks it", by["F-2026-001"]["checks"][-1])
-        new = by["F-2026-003"]
-        self.assertEqual((new["status"], new["source"], new["via"], new["by_audit"], new["waiting"], new["main_by"]),
-                         ("open", "fix-test", "F-2026-001", False, False, "fix report"))
-        self.assertIn("- Found by a test written for F-2026-001's fix", auditfix.fixes_text(private))
-        self.assertIn("New cases a fix's test found: F-2026-003", auditfix.fixes_text(private))
-        self.assertIn("2 fixed, to confirm", audit.findings_check(audit.load()[0]).said())
-        # (Confirm: F-2026-001's test passes, so it's closed; F-2026-002's fails, so it's open again)
-        self.assertEqual(data.confirm_fixes({})["ids"], ["F-2026-001", "F-2026-002"])
-        for _ in range(600):
-            if not data.confirming.get("running"):
-                break
-            time.sleep(0.1)
-        done = {d["id"]: d for d in data.confirming["done"]}
-        self.assertTrue(done["F-2026-001"]["ok"])
-        self.assertFalse(done["F-2026-002"]["ok"])
-        by = {f["id"]: f for f in data.findings()}
-        self.assertEqual((by["F-2026-001"]["status"], by["F-2026-001"]["closed_by"], by["F-2026-001"]["outside"]), ("fixed", "confirm", False))
-        self.assertIn("confirmed: its tests passed (LoginTests.test_login_checks)", by["F-2026-001"]["checks"][-1])
-        self.assertEqual((by["F-2026-002"]["status"], by["F-2026-002"]["waiting"]), ("open", False))
-        self.assertIn("not confirmed, open again", by["F-2026-002"]["checks"][-1])
-        with self.assertRaises(ValueError):
-            data.confirm_fixes({})   # (nothing waits now)
-        # (a close the page didn't make: flagged)
-        auditfix.fixed(private, "F-2026-002")
-        auditfix.edit(private, "2026-11-01-1", lambda rec: next(x for x in rec["finding"] if x["id"] == "F-2026-002").update(status="fixed"))
-        self.assertTrue(next(f for f in data.findings() if f["id"] == "F-2026-002")["outside"])
-        self.assertEqual(audit.problems({"id": "2026-11-01-1", "auditor": "a", "thoroughness": 3, "finding": [
-            {"id": "F-2026-009", "title": "t", "lines": ["a.py:1"], "detail": "d", "severity": "low", "status": "open", "main": "affected",
-             "source": "fix-test", "tests": ["not a test"]}]}, "private"),
-            ["F-2026-009: tests aren't a list of Class.test_name", "F-2026-009: a finding a fix's test found names the finding whose fix it was (via = \"F-YYYY-NNN\")"])
-        self.write(os.path.join(repo, "tests"), "test_app.py", "import unittest\n")   # (its guarding test removed)
-        said = [x.message for x in audit.findings_check(audit.load()[0]).findings or []]
-        self.assertIn("F-2026-001's guarding test LoginTests.test_login_checks is gone from tests/", said)
-
-    @unittest.skipUnless(shutil.which("git"), "no git here")
-    def test_each_audit_keeps_its_prompt_version_and_what_missed_a_finding(self):
-        """The prompt's version is the hash of its text (a copy of each kept in the private repo's prompts/), named v1, v2…
-        by first use. A finding is missed by each earlier audit that read its lines (their fingerprints), a fix's test's
-        finds too; the scorecard counts, per auditor, thoroughness and prompt, what each found and missed."""
-        from dev import audit, auditfix, auditgui
-        repo, private, git = self.project()
-        with open(os.path.join(private, "PROMPT.md"), "w") as fh:
-            fh.write("# How to audit\n\n---\nAudit it carefully.\n")
-        v1 = audit.prompt_version(private)
-        self.assertRegex(v1, r"^PROMPT\.md#[0-9a-f]{10}$")
-        with open(os.path.join(private, "prompts", v1.split("#")[1] + ".md")) as fh:
-            self.assertEqual(fh.read(), "Audit it carefully.\n")
-        with open(os.path.join(private, "PROMPT.md"), "w") as fh:
-            fh.write("# How to audit, reworded\n\n---\nAudit it carefully.\n")
-        self.assertEqual(audit.prompt_version(private), v1)   # (only the prompt's own text makes a version)
-        with open(os.path.join(private, "PROMPT.md"), "w") as fh:
-            fh.write("# How to audit\n\n---\nAudit it very carefully.\n")
-        v2 = audit.prompt_version(private)
-        self.assertNotEqual(v2, v1)
-        head = git("rev-parse", "HEAD")
-        read_a = json.dumps(audit.spot_prints(["a.py:1-6"], repo))
-        read_b = json.dumps(audit.spot_prints(["b.py:1-20"], repo))
-        for aid, date, prints, who, prompt, extra in (
-                ("2026-11-01-1", "2026-11-01", read_a, "beta-5.1", v1, ""),
-                ("2026-11-01-2", "2026-11-01", read_b, "beta-5.1", v1, ""),
-                ("2026-11-02-1", "2026-11-02", read_a, "gamma-5.5", v2 + " + re-check",
-                 '[[finding]]\nid = "F-2026-001"\ntitle = "Login trusts its input"\nseverity = "high"\nlines = ["a.py:1"]\n'
-                 f'prints = {json.dumps(audit.spot_prints(["a.py:1"], repo))}\ndetail = "d"\nstatus = "open"\nmain = "affected"\n')):
-            self.write(os.path.join(repo, "security", "audits"), f"{aid}.toml",
-                       f'id = "{aid}"\ndate = {date}\ncommit = "{head}"\nkind = "full"\nprints = {prints}\n')
-            self.write(os.path.join(private, "audits"), f"{aid}.toml",
-                       f'id = "{aid}"\nauditor = "{who}"\nthoroughness = 4\nprompt = "{prompt}"\n' + extra)
-        audits = audit.load()[0]
-        labels = audit.prompt_labels(audits)
-        self.assertEqual(labels, {v1: "v1", v2: "v2"})
-        self.assertEqual([audit.prompt_label(a, labels) for a in audits], ["v1", "v1", "v2 + re-check"])
-        data = auditgui.Data()
-        data.refresh({})   # (the re-check works out what missed each finding, for records from before it did)
-        f = next(f for f in data.findings() if f["id"] == "F-2026-001")
-        self.assertEqual((f["prompt"], [m["id"] for m in f["missed"]]), ("v2 + re-check", ["2026-11-01-1"]))   # (not the audit of b.py only)
-        self.assertEqual(f["missed"][0], {"id": "2026-11-01-1", "auditor": "beta-5.1", "thoroughness": 4, "prompt": "v1"})
-        # (a fix's test's find: missed by every audit that read its lines, the one whose finding it came from too)
-        self.write(os.path.join(repo, "tests"), "test_app.py", "import unittest\n\n\nclass LoginTests(unittest.TestCase):\n"
-                   "    def test_login_checks(self):\n        pass\n")
-        new = auditfix.found(private, "F-2026-001", {"title": "Other trusts it too", "lines": ["a.py:5"], "type": "hardening",
-                                                     "severity": "low", "detail": "d", "tests": ["LoginTests.test_login_checks"]})
-        g = next(f for f in data.findings() if f["id"] == new)
-        self.assertEqual(sorted(m["id"] for m in g["missed"]), ["2026-11-01-1", "2026-11-02-1"])
-        rows = {(r["auditor"], r["prompt"]): r for r in data.overview()["scorecard"]}
-        self.assertEqual((rows["beta-5.1", "v1"]["audits"], rows["beta-5.1", "v1"]["found"], rows["beta-5.1", "v1"]["missed"]),
-                         (["2026-11-01-1", "2026-11-01-2"], [], ["F-2026-001", new]))
-        self.assertEqual((rows["gamma-5.5", "v2 + re-check"]["found"], rows["gamma-5.5", "v2 + re-check"]["missed"]), (["F-2026-001"], [new]))
-
-    @unittest.skipUnless(shutil.which("git"), "no git here")
-    def test_the_audits_page_says_when_its_server_runs_old_code(self):
-        """A server started before the page's code changed answers with the old code (a fix reported mitigated read as a
-        failed one): a tab's beat hears that, and the page says to start it again."""
-        import http.client
-        import threading
-
-        from dev import auditgui
-        self.project()
-        up, box = threading.Event(), {}
-
-        def ready(server, url, token):
-            box.update(server=server, url=url, token=token)
-            up.set()
-        with mock.patch.dict(os.environ, {"XDG_CACHE_HOME": tempfile.mkdtemp(dir=TMP)}), contextlib.redirect_stdout(io.StringIO()):
-            t = threading.Thread(target=auditgui.serve, args=(auditgui.Data(),), kwargs={"open_browser": False, "ready": ready}, daemon=True)
-            t.start()
-            self.assertTrue(up.wait(10))
-            port = box["server"].server_port
-            host = f"127.0.0.1:{port}"
-
-            def ask(method, path, cookie=""):
-                c = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
-                c.request(method, path, headers={"Host": host, "Cookie": cookie})
-                res = c.getresponse()
-                return res.status, dict(res.getheaders()), res.read()
-            try:
-                cookie = ask("GET", "/?" + box["url"].split("?", 1)[1])[1]["Set-Cookie"].split(";")[0]
-                beat = "/alive?tab=a&t=" + urllib.parse.quote(box["token"])
-                self.assertEqual(ask("POST", beat, cookie)[0], 204)
-                with mock.patch.object(auditgui, "_code", return_value=(("audit.py", 1),)):
-                    self.assertEqual(ask("POST", beat, cookie)[:3:2], (200, b"stale"))
-            finally:
-                box["server"].shutdown()
-                t.join(30)
-        with open(auditgui.PAGE, encoding="utf-8") as fh:
-            self.assertIn("This page is out of date.", fh.read())
-
-    def test_the_audits_page_comes_back_where_it_was(self):
-        """Started again (dev/audit.py ui), the page comes back on the address and keys it had, kept for you alone
-        outside both repos: a tab still open carries on with its cookie, and no new code is needed. It says what the last
-        audit was and whether both its halves arrived, and which findings were worked on without a fix reported."""
-        import http.client
-        import stat
-        import threading
-
-        from dev import auditgui
-        repo, private, git = self.project()
-        cache = tempfile.mkdtemp(dir=TMP)
-        self.audit_files(repo, private, "2026-11-01-1", "2026-11-01", git("rev-parse", "HEAD"), "full",
-                         extra='[[finding]]\nid = "F-2026-001"\ntitle = "t"\nseverity = "high"\nlines = ["a.py:1-2"]\ndetail = "d"\n'
-                               'status = "open"\nmain = "affected"\n')
-
-        def run():
-            up, box = threading.Event(), {}
-
-            def ready(server, url, token):
-                box.update(server=server, port=server.server_port, token=token, url=url)
-                up.set()
-            t = threading.Thread(target=auditgui.serve, args=(auditgui.Data(),), kwargs={"open_browser": False, "ready": ready, "keep": True}, daemon=True)
-            t.start()
-            self.assertTrue(up.wait(10))
-            return t, box
-
-        def ask(box, path, cookie, host):
-            c = http.client.HTTPConnection("127.0.0.1", box["port"], timeout=30)
-            c.request("GET", path, headers={"Host": host, "X-Page-Token": box["token"], "Cookie": cookie})
-            res = c.getresponse()
-            return res.status, dict(res.getheaders()), res.read()
-        with mock.patch.dict(os.environ, {"XDG_CACHE_HOME": cache}), contextlib.redirect_stdout(io.StringIO()):
-            t, first = run()
-            host = f"127.0.0.1:{first['port']}"
-            try:
-                status, headers, _ = ask(first, "/?" + first["url"].split("?", 1)[1], "", host)
-                self.assertEqual(status, 200)
-                cookie = headers["Set-Cookie"].split(";")[0]
-                got = json.loads(ask(first, "/api/latest", cookie, host)[2])
-                self.assertEqual((got["audit"]["id"], got["audit"]["findings"], got["audit"]["private"], got["audit"]["public"]), ("2026-11-01-1", 1, True, True))
-                with open(os.path.join(repo, "a.py"), "w") as fh:   # (worked on: its code changed, no fix reported)
-                    fh.write("def login(user):\n    return user.strip()\n\n\ndef other():\n    return 2\n")
-                self.assertTrue(json.loads(ask(first, "/api/findings", cookie, host)[2])[0]["worked"])
-            finally:
-                first["server"].shutdown()
-                t.join(30)
-            kept = auditgui._kept_path()
-            self.assertTrue(kept.startswith(cache))
-            self.assertEqual((stat.S_IMODE(os.stat(kept).st_mode), stat.S_IMODE(os.stat(os.path.dirname(kept)).st_mode)), (0o600, 0o700))
-            t, again = run()
-            try:
-                self.assertEqual((again["port"], again["token"]), (first["port"], first["token"]))
-                self.assertEqual(ask(again, "/api/overview", cookie, host)[0], 200)   # (the open tab carries on)
-                self.assertEqual(ask(again, "/api/overview", "", host)[0], 403)       # (still not without its cookie)
-            finally:
-                again["server"].shutdown()
-                t.join(30)
-
-    @unittest.skipUnless(shutil.which("git") and shutil.which("node"), "no git or node here")
-    def test_the_audits_page_reads_at_a_glance(self):
-        """The audits page as its own script draws it, from its real server, with no browser (in node, on the stand-in
-        page tests/dom.js gives a dev page's script: a browser is only for what needs layout or pixels): the findings as a table
-        (severity, status, how found, ID, title), filtered by buttons, each row opening its card under it; the card's
-        facts read-only, as lists, and every field that changes the records folded away under Manual override (the tests
-        that guard a finding shown read-only too); every setting on Start audit and Findings with its ⓘ; Start audit's
-        buttons beside who audits it; and an AI auditor, here and to check the fixes, Opus at medium unless you pick."""
-        import subprocess
-        import threading
-        import types
-
-        from dev import auditgui, auditrun
-        if not shutil.which("node"):
-            self.skipTest("node isn't installed")
-        repo, private, git = self.project()
-        self.audit_files(repo, private, "2026-11-01-1", "2026-11-01", git("rev-parse", "HEAD"), "full",
-                         extra='[[finding]]\nid = "F-2026-001"\ntitle = "Login trusts its input"\nseverity = "high"\nlines = ["a.py:1-2"]\ndetail = "d"\n'
-                               'status = "open"\nmain = "affected"\ntests = ["LoginTests.test_login_checks"]\n\n[[finding]]\nid = "F-2026-002"\ntitle = "Other"\n'
-                               'type = "hardening"\nseverity = "low"\nlines = ["b.py:1"]\ndetail = "d"\nstatus = "false-positive"\nmain = "affected"\n')
-        self.write(private, "PROMPT.md", "# The prompt\n\n---\nAudit it.\n")
-        ai = types.SimpleNamespace(id="ai", label="An AI auditor", found=lambda private: "", auditors=lambda private: ["haiku-5.5", "opus-5.5"],
-                                   efforts={1: "max", 2: "xhigh", 3: "high", 4: "medium", 5: "low"}, default=lambda private: ("opus-5.5", 4))
-        up, box = threading.Event(), {}
-
-        def ready(server, url, token):
-            box.update(server=server, url=url)
-            up.set()
-        with mock.patch.object(auditrun, "plugins", return_value=[ai]), contextlib.redirect_stdout(io.StringIO()):
-            t = threading.Thread(target=auditgui.serve, args=(auditgui.Data(),), kwargs={"open_browser": False, "ready": ready}, daemon=True)
-            t.start()
-            self.assertTrue(up.wait(10))
-            script = os.path.join(tempfile.mkdtemp(dir=TMP), "ui.js")
-            with open(script, "w", encoding="utf-8") as fh:
-                fh.write(self.UI_JS)
-            try:
-                got = subprocess.run(["node", script, box["url"].replace(urllib.parse.urlsplit(box["url"]).hostname or "", "127.0.0.1", 1),
-                                      os.path.join(ROOT, "tests", "dom.js")], capture_output=True, text=True, timeout=120)
-            finally:
-                box["server"].shutdown()
-                t.join(30)
-        self.assertEqual(got.returncode, 0, got.stdout + got.stderr)
-        ui = json.loads(got.stdout.strip().splitlines()[-1])
-        self.assertEqual(ui["errors"], [])
-        self.assertEqual(ui["heads"], ["Severity", "Status", "How found", "ID", "Title"])
-        self.assertEqual(ui["rows"], ["F-2026-001", "F-2026-002"])   # (All: the open one first)
-        self.assertEqual(ui["todo"], ["F-2026-001"])                 # (To do, the default: the closed one left out)
-        self.assertTrue(ui["card_under_row"])
-        self.assertEqual(ui["card_controls_outside_override"], [])  # (nothing in the card changes the records but in Manual override)
-        self.assertIn("LoginTests.test_login_checks", ui["card_facts"])   # (its tests, read-only)
-        self.assertNotIn("Score", ui["card_facts"])                 # (its severity is the row's: not said again)
-        self.assertEqual(ui["card_buttons_outside_override"], [])   # (Mark as fixed and the rest: by hand, under Manual override)
-        self.assertTrue(ui["detail_open"])
-        self.assertEqual(ui["steps"], [["1. Audit the code", "Done"], ["2. Fix the findings", "Your turn"], ["3. Report the fixes", "Not yet"],
-                                       ["4. Confirm the fixes", "Not yet"], ["5. Push the fixes", "Not yet"]])
-        self.assertEqual(ui["hardening"], ["low · hardening"])
-        self.assertEqual(ui["kept"], 2)
-        self.assertEqual(ui["without_info"], [])                    # (every setting has its ⓘ)
-        self.assertGreater(ui["settings"], 15)
-        self.assertTrue(ui["pop"])                                  # (an ⓘ shows what it's about)
-        self.assertEqual((ui["check_model"], ui["check_effort"]), ("ai|opus-5.5", "4"))
-        self.assertEqual((ui["start_model"], ui["start_effort"]), ("opus-5.5", "4"))
-        self.assertEqual(ui["buttons_beside"], {"person": ["Start reading", "Already audited it"], "ai": ["Start audit"]})
-        self.assertNotIn("Findings: are they fixed?", ui["start_groups"])
-        from dev import auditor_claude
-        self.assertEqual(auditor_claude.ClaudeCode().default(private), ("opus-5.5", 4))   # (the plugin's own default)
-
-    UI_JS = r"""
-const { page } = require(process.argv[3]);
-(async () => {
-  // the page from its server, as a browser gets it: the one-time code for the cookie, then the page with its cookie
-  const url = new URL(process.argv[2]), base = url.origin + "/";
-  let cookie = "", flying = 0;   // (the page's requests still out: answered before it's closed)
-  const jar = async (u, init) => {
-    const i = init || {};
-    flying++;
-    try {
-      const r = await fetch(u, { ...i, redirect: "manual", headers: { ...(i.headers || {}), ...(cookie ? { Cookie: cookie } : {}) } });
-      const set = r.headers.get("set-cookie");
-      if (set) cookie = set.split(";")[0];
-      await r.clone().arrayBuffer();
-      return r;
-    } finally { flying--; }
-  };
-  await jar(url.href);
-  const got = await jar(base), html = await got.text();
-  const scripts = [...html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
-  if (got.status !== 200 || !scripts.length) throw new Error("the page didn't come: " + got.status + " " + html.slice(0, 200));
-  const p = page(/<body>([\s\S]*?)<script\b/.exec(html)[1], { fetch: jar, base });
-  const errors = [];
-  process.on("unhandledRejection", (e) => errors.push(String(e && e.stack || e)));
-  for (const s of scripts) p.run(s);
-  const out = { errors };
-  const { $, $$, text, click, button, wait } = p;
-  const nav = (words) => click(button(words, $("nav")));
-  const F = "[data-pane=findings] ";
-  // every setting (a choice, a box to type in) that's drawn: with its ⓘ, in its field
-  let without = [], settings = 0;
-  const audit = () => {
-    for (const e of $$("select, textarea, input:not([type=radio])").filter((e) => e.offsetParent !== null || e.closest("details"))) {
-      settings++;
-      if (!(e.closest(".field") && e.closest(".field").querySelector(".info"))) without.push(e.outerHTML.slice(0, 80));
-    }
-  };
-  await wait(() => $("nav button"), "the tabs");
-  nav("Findings");
-  await wait(() => $(F + "table.findings"), "the findings table");
-  out.heads = $$(F + "table.findings th").map(text);
-  out.todo = $$(F + "table.findings tr.pick").map((r) => r.dataset.key);
-  click(button("All (", $(F + ".seg").parentNode));
-  await wait(() => $$(F + "table.findings tr.pick").length === 2, "All's two findings");
-  out.rows = $$(F + "table.findings tr.pick").map((r) => r.dataset.key);
-  click($(F + "table.findings tr.pick"));
-  const row = $(F + "table.findings tr.pick");
-  out.card_under_row = !row.nextElementSibling.hidden && !!row.nextElementSibling.querySelector(".card");
-  out.card_controls_outside_override = $$(F + "td.more .card select, " + F + "td.more .card input, " + F + "td.more .card textarea")
-    .filter((e) => !e.closest("details.override")).map((e) => e.outerHTML.slice(0, 80));
-  out.card_facts = text($(F + "td.more .facts"));
-  out.card_buttons_outside_override = $$(F + "td.more .card button:not(.info)").filter((b) => !b.closest("details.override")).map(text);
-  out.detail_open = $(F + "td.more .card details:not(.override)").open;
-  out.steps = $$(F + ".steps > li").map((l) => [text(l.querySelector("b")), text(l.querySelector(".badge"))]);
-  out.hardening = $$(F + "table.findings .badge.hard").map(text);
-  click($(F + "td.more details.override > summary"));
-  click(button("Score it", $(F + "td.more details.override")) || button("Change the CVSS score", $(F + "td.more details.override")));
-  audit();
-  const checking = $$(F + "b").find((b) => text(b) === "Have an AI check the fixes").parentNode.querySelectorAll("select");
-  out.check_model = checking[0].value;
-  out.check_effort = checking[1].value;
-  click($(F + ".info"));
-  out.pop = !!$("#pop") && text($("#pop")).length > 10;
-  nav("Start audit");
-  await wait(() => $("#go-person"), "Start audit");
-  click($("#mark"));   // (not yet: no name, so it's disabled, and nothing happens)
-  out.start_groups = $$("h3.group").map(text);
-  out.start_model = $("#auditor-ai").value;
-  out.start_effort = $("#effort-ai").value;
-  const beside = (el) => el.closest(".card").querySelectorAll("button:not(.info)").map(text);
-  out.buttons_beside = { person: beside($("#go-person")), ai: beside($("#effort-ai")) };
-  p.check($("input[name=target][value=full]"));
-  nav("Findings");   // (back to a tab drawn before: there at once)
-  out.kept = $$(F + "table.findings tr.pick").length;
-  nav("Start audit");
-  p.type($("#name"), "Dana");
-  await wait(() => !$("#mark").disabled, "Already audited it, once it has a name and a plan");
-  click($("#mark"));
-  await wait(() => $("#marking .card"), "the findings form");
-  audit();
-  out.without_info = [...new Set(without)];
-  out.settings = settings;
-  await wait(() => flying === 0, "the page's requests");   // (anything the last clicks set going, done)
-  out.errors = errors.concat(p.errors.map((e) => String(e && e.stack || e)));
-  p.close();
-  console.log(JSON.stringify(out));
-  process.exit(0);
-})().catch((e) => { console.error(e && e.stack || e); process.exit(1); });
-"""
-
-    def test_a_mitigation_is_confirmed_and_kept_on_record(self):
-        """A finding can be mitigated, not fixed: lived with for now, often until something upstream changes. Its fixer
-        reports it (fixed --mitigated), Confirm runs its tests like a fix's, and a pass leaves it mitigated: on record,
-        listed and counted as such, never closed as fixed nor dropped, for a proper fix later."""
-        from dev import audit, auditfix, auditgui
-        repo, private, git = self.project()
-        self.write(os.path.join(repo, "tests"), "test_app.py", "import unittest\n\n\nclass MqttTests(unittest.TestCase):\n"
-                   "    def test_plain_only_when_asked(self):\n        pass\n")
-        self.audit_files(repo, private, "2026-11-01-1", "2026-11-01", git("rev-parse", "HEAD"), "full",
-                         extra='[[finding]]\nid = "F-2026-001"\ntitle = "MQTT password sent unencrypted"\nseverity = "medium"\nlines = ["a.py:1"]\n'
-                               'detail = "d"\nstatus = "open"\nmain = "affected"\n')
-        rc, said = self._cli(audit, "fixed", "F-2026-001", "--mitigated", "--test", "MqttTests.test_plain_only_when_asked",
-                             "--note", "plain MQTT only behind an opt-in setting; TLS needs the broker's support")
-        self.assertEqual(rc, 0, said)
-        self.assertIn("reported mitigated", said)
-        f = next(x for x in auditgui.Data().findings() if x["id"] == "F-2026-001")
-        self.assertEqual((f["status"], f["reported"], f["waiting"]), ("open", "mitigated", True))
-        self.assertIn("1 mitigated, to confirm", audit.findings_check(audit.load()[0]).said())
-        done = auditfix.confirm(private, ["F-2026-001"], tests=lambda names: (True, ""))
-        self.assertEqual((done[0]["ok"], done[0]["status"]), (True, "mitigated"))
-        f = next(x for x in auditgui.Data().findings() if x["id"] == "F-2026-001")
-        self.assertEqual((f["status"], f["closed_by"], f["outside"]), ("mitigated", "confirm", False))
-        self.assertIn("confirmed mitigated: its tests passed", f["checks"][-1])
-        self.assertEqual(audit.problems(audit.load()[0][0].private or {}, "private"), [])
-        said = audit.findings_check(audit.load()[0]).said()
-        self.assertIn("1 mitigated", said)
-        self.assertIn("no open findings", said)   # (not open: it doesn't hold the block, nor a release)
-        self.assertNotIn("F-2026-001", "\n".join(x.message for x in audit.release_check(audit.measure(audit.load()[0]), audit.load()[0], True, {}, time.time(), "warn", freeze=False).findings or []))
-
-    def _cli(self, audit, *args):
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            rc = audit.main(list(args))
-        return rc, out.getvalue()
-
-    @unittest.skipUnless(shutil.which("git"), "no git here")
-    def test_a_fix_is_found_in_git_and_open_findings_can_be_rechecked_or_copied(self):
-
-        from dev import audit, auditgui, auditrun
-        repo, private, git = self.project()
-        git("branch", "up")
-        git("branch", "--set-upstream-to=up")   # (an upstream to push to: a branch here)
-        run = auditrun.Runner()
-        r = run.start("full", [], auditrun.person("Sam"), 2)
-        run.write_finding(r.id, {"title": "Login trusts its input", "cvss": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N",
-                                 "lines": ["a.py:1-2"], "main": "affected", "detail": "No check."})
-        run.write_finding(r.id, {"title": "Not real", "type": "hardening", "severity": "low", "lines": ["b.py:5"], "main": "affected"})
-        self.assertEqual(run.finish(r.id).state, "done")
-        first = lambda: audit.load()[0][0]
-        self.assertEqual(audit.target_scope("open", [], audit.load()[0])[1], ["a.py:login", "b.py"])
-        text = audit.brief([(first(), first().findings[0])])
-        for want in ("## F-", "Login trusts its input", "CVSS 3.1 9.1 (critical)", "Where it is now: a.py:1-2", "No check."):
-            self.assertIn(want, text)
-        self.assertEqual(audit.fix_where(first().findings[0], first()), ("not fixed", ""))
-        with open(os.path.join(repo, "a.py"), "w") as fh:
-            fh.write("\n\ndef login(user):\n    return user\n\n\ndef other():\n    return 2\n")   # (moved down: not changed)
-        self.assertEqual(audit.locate(first().findings[0], first()), ["a.py:3-4"])
-        with open(os.path.join(repo, "a.py"), "w") as fh:
-            fh.write("def login(user):\n    return check(user)\n\n\ndef other():\n    return 2\n")
-        self.assertEqual(audit.fix_where(first().findings[0], first()), ("working copy", ""))
-        git("commit", "-qam", "the fix")
-        fixed = git("rev-parse", "HEAD")
-        self.assertEqual(audit.fix_where(first().findings[0], first()), ("committed", fixed))
-        data = auditgui.Data()
-        got = data.confirm({"audit": first().id, "id": first().findings[0]["id"]})
-        self.assertEqual(got, {"where": "committed", "commit": fixed})
-        f = first().findings[0]
-        self.assertEqual((f["status"], f["fixed_in"]), ("fixed", fixed))
-        self.assertIn("marked fixed by hand (committed)", f["checks"][0])
-        self.assertIn("is fixed in a commit that isn't pushed yet", " ".join(x.message for x in audit.findings_check(audit.load()[0]).findings or []))
-        git("branch", "-f", "up", "HEAD")   # (pushed)
-        self.assertEqual(audit.fix_where(f, first())[0], "pushed")
-        data.finding({"audit": first().id, "id": first().findings[1]["id"], "status": "false-positive", "note": "checked: fine"})
-        data.finding({"audit": first().id, "id": first().findings[0]["id"], "cve": "cve-2026-12345"})
-        self.assertEqual(first().findings[0]["cve"], "CVE-2026-12345")
-        self.assertIn("CVE-2026-12345", audit.brief([(first(), first().findings[0])]))
-        with self.assertRaises(ValueError):
-            data.finding({"audit": first().id, "id": first().findings[0]["id"], "cve": "CVE-26-1"})
-        self.assertEqual(sorted(x["status"] for x in data.findings()), ["false-positive", "fixed"])
-
-    @unittest.skipUnless(shutil.which("git"), "no git here")
-    def test_an_ai_auditor_rechecks_the_open_findings(self):
-        import tomllib
-
-        from dev import audit, auditrun
-        repo, private, git = self.project()
-        self.write(private, "PROMPT.md", "---\nAudit <commit>, <full | partial>:\n<scope list, for a partial audit>\n")
-        git("branch", "up")
-        git("branch", "--set-upstream-to=up")
-        run = auditrun.Runner()
-        r = run.start("full", [], auditrun.person("Sam"), 2)
-        run.write_finding(r.id, {"title": "Login trusts its input", "severity": "high", "lines": ["a.py:1-2"], "main": "affected"})
-        run.write_finding(r.id, {"title": "Other", "severity": "low", "lines": ["b.py:5"], "main": "affected"})
-        self.assertEqual(run.finish(r.id).state, "done")
-        with open(os.path.join(repo, "a.py"), "w") as fh:
-            fh.write("def login(user):\n    return check(user)\n\n\ndef other():\n    return 2\n")
-        git("commit", "-qam", "the fix")
-        git("branch", "-f", "up", "HEAD")
-        ids = [f["id"] for f in audit.load()[0][0].findings]
-        asked = self.fake_claude("```toml\n[[recheck]]\nid = \"%s\"\nworking = \"fixed\"\npushed = \"fixed\"\nmain = \"affected\"\n"
-                                 "detail = \"login checks now\"\n\n[[recheck]]\nid = \"%s\"\nworking = \"present\"\npushed = \"present\"\ncvss = \"CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N\"\n```\n" % tuple(ids))
-        got = run.start("open", [], "opus-5.5", 3, wait=True)
-        got = some(auditrun.load_run(got.id))
-        self.assertEqual(got.state, "done", got.error)
-        self.assertEqual(got.recheck, ids)
-        with open(asked) as fh:
-            call = json.load(fh)
-        self.assertIn("## Re-check the open findings", call["prompt"])
-        self.assertIn(ids[0], call["prompt"])
-        self.assertEqual(call["args"].count("--add-dir"), 2)   # (main's, and the branch as pushed)
-        with open(os.path.join(private, "audits", f"{audit.load()[0][0].id}.toml"), "rb") as fh:
-            f1, f2 = tomllib.load(fh)["finding"]
-        self.assertEqual((f1["status"], f1["fixed_in"]), ("fixed", git("rev-parse", "HEAD")))
-        self.assertIn("fixed and pushed: login checks now", f1["checks"][-1])
-        self.assertEqual(f2["status"], "open")
-        self.assertIn("still present", f2["checks"][-1])
-        self.assertEqual((f2["cvss"], f2["severity"], f1["main_by"]), ("CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N", "medium", f"audit {got.audit_id}"))
-        # (one fixed only in the working copy is closed too, as fixed and not pushed yet: no commit until it's pushed)
-        with open(os.path.join(repo, "b.py"), "w") as fh:
-            fh.write("".join(f"x{i} = {i if i != 4 else 'fixed'}\n" for i in range(20)))
-        self.write(os.path.join(repo, "tests"), "test_b.py", "import unittest\n\n\nclass BTests(unittest.TestCase):\n    def test_x4(self):\n        pass\n")
-        self.fake_claude("```toml\n[[recheck]]\nid = \"%s\"\nworking = \"fixed\"\npushed = \"present\"\nmain = \"affected\"\n"
-                         "tests = [\"BTests.test_x4\", \"BTests.test_made_up\"]\n```\n" % ids[1])
-        again = some(auditrun.load_run(run.start("open", [], "opus-5.5", 3, wait=True).id))
-        self.assertEqual(again.state, "done", again.error)
-        self.assertEqual(again.recheck, [ids[1]])
-        with open(os.path.join(private, "audits", f"{audit.load()[0][0].id}.toml"), "rb") as fh:
-            f2 = tomllib.load(fh)["finding"][1]
-        self.assertEqual((f2["status"], f2.get("fixed_in", "")), ("fixed", ""))
-        self.assertIn("fixed in the working copy, not pushed yet: closed", f2["checks"][-1])
-        self.assertEqual(f2["tests"], ["BTests.test_x4"])   # (the auditor's, that the project has)
-        self.assertEqual(audit.fix_where(f2, audit.load()[0][0])[0], "working copy")
-
-    def test_only_an_ai_auditors_own_plugin_names_it(self):
-        """The audit tools are a person's by default: an AI auditor is a plugin (dev/auditor_*.py), named nowhere else."""
-        words = re.compile(r"claude|anthropic|opus|fable|sonnet|haiku|\bAI-?(run|done|audit)", re.I)
-        for rel in ("dev/audit.py", "dev/auditrun.py", "dev/auditfix.py", "dev/auditgui.py", "dev/auditgui.html", "dev/audit.toml"):
-            with open(os.path.join(ROOT, rel), encoding="utf-8") as fh:
-                hits = [n for n, line in enumerate(fh, 1) if words.search(line)]
-            self.assertEqual(hits, [], rel)
 
 class ToolsTests(unittest.TestCase):
     """The Tools pages' tools (tools/): Merge Duplicates, Duplicate Versions, Organize Folders — and
