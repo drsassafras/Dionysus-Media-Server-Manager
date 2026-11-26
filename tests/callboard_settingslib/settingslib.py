@@ -432,7 +432,8 @@ def _item(at: Any, p: str) -> Any:
 def put(data: dict, parts: list[str], value: Any) -> None:
     """``value`` put at ``parts`` in ``data``; None takes it away, and each table left empty by that with it (but a
     list's item, whose place says which member it is: it's left, empty)."""
-    at, trail = data, []
+    at: Any = data   # (a table or, where a part is a place, a list: what's at each part as it's walked)
+    trail: list = []
     for i, p in enumerate(parts[:-1]):
         if not isinstance(_item(at, p), (dict, list)):
             if value is None:

@@ -18380,6 +18380,8 @@ class CheckToolTests(unittest.TestCase):
         for rule in re.findall(r"(?m)^\s*-\s*(DL\d+|SC\d+)", hadolint):
             self.assertRegex(hadolint, rf"(?s)#[^\n]*\n(?:\s*#[^\n]*\n)*\s*-\s*{rule}", f"{rule}: turned off without a word on why")
 
+    # (as off GitHub wherever it runs: on GitHub each finding also carries its annotation line, checks.ON_GITHUB)
+    @mock.patch("callboard.checks.ON_GITHUB", False)
     def test_a_check_that_fails_says_what_it_found_as_it_comes(self):
         """On callboard's board every check tool's findings go above the board as they come, as the tests' failures do
         (progress.issue, the one way every tool says a finding): a check that's done and failed says them at once, not
