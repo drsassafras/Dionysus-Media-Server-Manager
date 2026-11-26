@@ -1,0 +1,26 @@
+# A shared library (a MyStandards template): what Callboard needs to copy it into a project and keep the copy in step.
+# Every one of these is in each of my projects; a project leaves one out only in its callboard.toml, with the reason:
+#     [templates.settingslib]          opt_out = "why the whole of it doesn't apply here (a project with no settings)"
+#     [templates.settingslib.checks]   <check> = "why that check doesn't apply here"
+
+title = "Settings"
+version = 1
+about = "Every setting the project offers, said in one file in one format (MyStandards' SETTINGS.md), read by one reader and drawn by one drawer, so none reaches a page without its info."
+folder = "tests/callboard_settingslib"           # (where the copy goes in a project; the app's own copy is checked against it: runtime_copy)
+files = ["settingslib.py", "settingslib.go", "settings.js", "test_settingslib.py", "settingslib_test.go", "sample.toml", "template.toml"]
+# (settingslib.go: the reader for Go, settingslib.py's twin; it reads TOML with github.com/pelletier/go-toml/v2, which a Go
+#  project that runs it has in its go.mod. sample.toml: the settings file both readers' own tests read)
+empty = ["__init__.py"]                          # (made empty in the copy: it's a Python package)
+settings = "tests/settingslib.json"              # (the project's own: its settings file, its code, where the app's copy is; never in the copy)
+settings_start = '{"file": "", "code": [], "runtime": {}, "saved": {}}'
+
+# Each check is a test of its own in the project's suite (test_<check>), and can be left out on its own, with a reason.
+[checks]
+format = "The settings file is in the format: its tables, each setting's label, kind, group and where it's saved, and nothing the format doesn't know."
+info = "Every setting says what it is and where its value is found (info: sentences of its own), and no summary says the default."
+defaults = "Every setting says its default exactly one way: a fixed value, one worked out (what works it out, and how in words), or none (required)."
+subsettings = "Every sub-setting is under a setting of its own group and set that isn't itself under another."
+fields = "Every setting has what its kind of field needs: a choice its choices, a number its limits, a pattern its words, a default it could take."
+unique = "No two settings are saved at one place."
+orphans = "Nothing is orphaned: no setting the code never asks for, no id it asks for that isn't defined, no empty group or set, no name the app is asked for and never answers, no saved value at a key no setting has."
+runtime_copy = "The app's own copy of the library (what it runs: the reader, the drawer) is this copy, file for file."

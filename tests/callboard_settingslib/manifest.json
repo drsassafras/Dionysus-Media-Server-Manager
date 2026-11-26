@@ -1,0 +1,20 @@
+{
+ "about": "Settings: a copy of a shared test from your MyStandards, written by callboard. Never edit this folder by hand: say what's this project's in settingslib.json, and leave a check out only in callboard.toml, with the reason.",
+ "kind": "template",
+ "name": "settingslib",
+ "version": 1,
+ "format": 2,
+ "from": {
+  "repo": "MyStandards"
+ },
+ "files": {
+  "__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "sample.toml": "608a00da68b508d2dae05e56e87d33bae699551ca8b519931b1788e296b002ce",
+  "settings.js": "0673a9a7e4f4a7aae77f567c07162dd78bdf8fdbe2920f49f66c306071204734",
+  "settingslib.go": "e1c916d86da4cc70963b4f78cb24847e9c6bb943be62eb05e3e21123ef11ee93",
+  "settingslib.py": "d171cd068bb303cbb059d2e6c472e4b1f81953e80d788f133a4cfa2d43cdfbc1",
+  "settingslib_test.go": "ee97fca843583d86cf9c37aebb90daabc620d246cd437e00221c5b0241823221",
+  "template.toml": "a1d262ddeeae0e172edd7ba4c0569ec3d395bae167e4dd0a86ec13098d54d11b",
+  "test_settingslib.py": "0e93738889aad3aafce1be85356b288f617bce54633869376bf89c2e1322849b"
+ }
+}

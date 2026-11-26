@@ -2,11 +2,11 @@
 # dev/upkeep.py moves it to the tag's newest at each look, which is how patch releases arrive). The tag is an argument so
 # dev/future.py can build the same image on the next Python (--build-arg PYTHON_TAG=3.16-rc-slim-trixie, digest and all).
 # Debian, because MKVToolNix's own repository (mkvtoolnix.download) builds for it: each release there within days.
-ARG PYTHON_TAG=3.15-slim-trixie@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928
+ARG PYTHON_TAG=3.15-slim-trixie@sha256:63bb298d2b7b88f176f51b5189f54ce6535c997682ea70885d2132f5d473a8a5
 # The Debian that jpegtran and ffmpeg are built on (the stages below): the Python image's own, without Python — neither
 # uses it, so a new Python (dev/future.py's alpha, or the image refreshed upstream) doesn't build ffmpeg again (minutes).
 # Moved with PYTHON_TAG's Debian (the suite checks the two agree).
-ARG DEBIAN_TAG=trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
+ARG DEBIAN_TAG=trixie-slim@sha256:8aa5a7bf5a1955bddbe7d74fcdd0b91ab30e74362a8b73af672b0481b35b44a0
 
 # The tools the optimizer service (the app's second container) runs. MKVToolNix (mkvmerge, mkvpropedit, mkvextract)
 # rewrites files; ffmpeg checks every stream is unchanged before a swap; oxipng and jpegtran (libjpeg-turbo) compress cover
@@ -14,7 +14,7 @@ ARG DEBIAN_TAG=trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b337
 # runs by hand). ffmpeg is built from its release with no external libraries: the optimizer only copies streams, hashes
 # them and reads cover art, which ffmpeg's own demuxers and decoders do — the static builds around carry every codec
 # library, 260 MB of image, and Debian's package pulls in 500 MB of dependencies.
-ARG MKVTOOLNIX=103.0
+ARG MKVTOOLNIX=104.0
 ARG FFMPEG=9.1
 ARG OXIPNG=10.2.1
 ARG LIBJPEG_TURBO=3.2.1
@@ -24,7 +24,7 @@ ARG FFMPEG_SOURCE=""
 ARG FFMPEG_STAMP=""
 # The Node that builds the web app's CSS, scripts and pages (the web stage below): its current LTS release. Only the build uses
 # it; the image has none.
-ARG NODE_TAG=26-slim@sha256:e6bedef217677b276c591795e169840edd9096dbf13f29df8ef8d1856b8820bc
+ARG NODE_TAG=26-slim@sha256:abe7e5a82b61a8ef67b315b85497c9e65173387ccf2f4a029248184b8e020be5
 
 # What each download must hash to (SHA-256) before it's unpacked, and the signing key's fingerprint: a compromised release
 # or a man in the middle on the build network fails the build instead of reaching the image. Each hash moves with its

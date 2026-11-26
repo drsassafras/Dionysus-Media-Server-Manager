@@ -1,0 +1,121 @@
+[format]
+version = 1
+app = "demo"
+
+[groups.net]
+title = "Network"
+[groups.server]
+title = "Server"
+
+[sets.servers]
+title = "Servers"
+member = "server"
+saved = { file = "project", key = "servers" }
+members_from = "servers"
+shared = true
+
+[sets.gates]
+title = "Gates"
+member = "gate"
+saved = { key = "" }
+members_from = "gates"
+
+[settings.host]
+label = "host"
+summary = "the remote's address"
+kind = "text"
+type = "host"
+group = "net"
+saved = { file = "computer", key = "tour.host" }
+required = true
+
+[settings.port]
+label = "port"
+kind = "text"
+type = "port"
+under = "host"
+saved = { file = "computer", key = "tour.port" }
+default = 22
+
+[settings.domain]
+label = "domain"
+kind = "text"
+type = "name"
+group = "net"
+saved = { file = "project", key = "tour.domain" }
+default_from = "manifest_domain"
+default_says = "Read from the integration's manifest.json"
+shown_when = { setting = "mode", is = "ha" }
+
+[settings.mode]
+label = "formula"
+kind = "choice"
+choices_from = "formulas"
+group = "net"
+saved = { file = "project", key = "tour.formula" }
+default = "nas"
+demo_stricter = "fact"
+
+[settings.server_url]
+label = "Address"
+kind = "text"
+type = "url"
+group = "server"
+each = "servers"
+saved = { key = "url" }
+required = true
+
+[settings.server_limit]
+label = "Limit"
+kind = "number"
+min = 1
+max = 100
+unit = "MB/s"
+group = "server"
+each = ["servers", "gates"]
+saved = { key = "limit" }
+default = 50
+
+[settings.token]
+label = "Token"
+kind = "secret"
+group = "server"
+each = "servers"
+saved = { key = "token" }
+required = true
+revert = false
+revert_why = "A key has nothing to go back to."
+
+[settings.host.info]
+does = "Tells a push which machine to copy the project to and restart it on. Every step of a push opens its connection to this address."
+when = "Give it when you first set up pushing to a remote machine, and change it only when that machine gets a new address on your network."
+config = "The machine's IP address or its name, without http://. Its own Network page shows the address under Interfaces."
+
+[settings.port.info]
+does = "Tells a push which port the machine's SSH service is listening on, for the connection every step is run over."
+config = "A number from 1 to 65535. The machine's Services page shows it, with the pencil beside SSH."
+
+[settings.domain.info]
+does = "Names the one integration a push copies into the remote machine, by the folder it lives in under custom_components."
+when = "Leave it blank where the project holds a single integration, since it is found by itself. Give it once a second integration is added, to say which one is pushed."
+config = "The domain written in the integration's manifest.json, which is also its folder's name."
+
+[settings.mode.info]
+does = "Decides what a push copies, where on the remote machine it goes, and which command restarts it afterwards."
+when = "Pick it once, when the project is first set up to push, to match the kind of machine it runs on. Changing it swaps which of the other settings are asked for."
+config = "TrueNAS app for a project that runs as an app on a NAS. Home Assistant for a custom integration."
+
+[settings.server_url.info]
+does = "Tells the app where this one server answers, so that its libraries can be read and its players watched."
+when = "Give it for each server as you add it, and change it if the server moves to another address or is given a new port."
+config = "The full address with its port, starting with http:// or https://. The server's own settings page shows it under Remote Access."
+
+[settings.server_limit.info]
+does = "Holds this server to a top speed while it sends files, so the disks stay free enough for people who are watching."
+when = "Lower it when playback stutters while a sync is running. Raise it when syncs take too long and nobody is watching at those hours."
+config = "A speed from 1 to 100. Start near half of what the disks manage and adjust from there."
+
+[settings.token.info]
+does = "Proves to the server that this app may read its libraries. Without it every request to that server is refused."
+when = "Give it when a server is added, and again whenever the server's owner signs every device out, since that makes the old key useless."
+config = "The key the server's account page makes for a new device. It is shown there once, so copy it then."

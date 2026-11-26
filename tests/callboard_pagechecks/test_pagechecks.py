@@ -148,6 +148,15 @@ def _check(name: str):
 class PageChecks(unittest.TestCase):
     """The page checks on the project's pages, a test each: an error found fails; a warning is said by callboard, never here."""
 
+    @classmethod
+    def setUpClass(cls):
+        """One run of pagechecks.js for the whole class (every test reads its own check's findings from it), so the class
+        is set up once: a runner that shares tests out keeps a class with setUpClass together. Without it, each test
+        went to a worker of its own, and each worker drew every page in a Chromium of its own, all at once, till a
+        page timed out under the load (page.reload: Timeout 30000ms exceeded)."""
+        super().setUpClass()
+        _RAN.clear()
+
 
 for _name in CHECKS:
     setattr(PageChecks, f"test_{_name}", _check(_name))

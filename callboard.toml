@@ -5,10 +5,6 @@ version_file = "plexcache/__init__.py"
 package = "plexcache"
 cache = "plex-cache"
 
-[branches]
-release = "main"
-development = "dev"
-
 [tags]
 release = "v{version}"
 freeze = "v{version}-rc.{n}"
@@ -18,18 +14,31 @@ alpha = "v{version}-alpha.{n}"
 [github]
 enabled = false
 
+[gate.dev]
+branches = ["dev"]
+tags = ["alpha"]
+github = ["pull_request", "tag"]
+
+[gate.stable]
+branches = ["main"]
+github = ["pull_request"]
+
+[gate.release]
+tags = ["release", "freeze", "preview"]
+warn_tags = ["preview"]
+github = ["tag"]
+
 [integrations.unit]
 title = "Unit Tests"
 kind = "tests"
-# (LiveSyncthingTests: Previews runs them, against a live Syncthing; here they could only skip)
 cmd = "python3 tests/run.py --coverage --exclude WebCheckTests --exclude StyleGuideTests --exclude LiveSyncthingTests"
 
 [integrations.future]
 title = "Previews"
 kind = "previews"
-# callboard's Previews, by this project's own route (the image built on the next Python: dev/future.py)
 cmd = "callboard tool previews -- python3 dev/future.py --exclude StyleGuideTests"
 stop_with = ["unit"]
+skip = ["tag"]
 
 [integrations.dhtml]
 title = "DHTML"
@@ -60,6 +69,7 @@ kind = "audit"
 cmd = "callboard tool audit"
 requires = ["ghostlight"]
 needs = ["ghostlight.toml"]
+skip = ["pull_request"]
 
 [integrations.i18n]
 title = "Translations"
@@ -82,69 +92,42 @@ title = "Wardrobe"
 kind = "style"
 cmd = "callboard tool style check"
 
-[unit.push]
+[integrations.shared]
+title = "Shared Code"
+kind = "shared"
+cmd = "callboard tool shared"
+requires = ["git"]
+
+[unit.dev]
 failures = "fail"
 warnings = "info"
 skipped = "info"
 
-[unit.merge]
-github = true
-failures = "fail"
-warnings = "info"
-skipped = "info"
-
-[unit.merge.into.main]
+[unit.stable]
 warnings = "fail"
 
-[unit.release]
-github = true
-failures = "fail"
-warnings = "fail"
-skipped = "info"
-
-[future.push]
+[future.dev]
 failures = "fail"
 warnings = "info"
 skipped = "info"
 
-[future.merge]
-github = true
-failures = "fail"
-warnings = "info"
-skipped = "info"
-
-[future.merge.into.main]
+[future.stable]
 failures = "off"
 warnings = "off"
 skipped = "off"
 
 [dhtml]
-# plexcache/web's CSS, scripts and pages, with dev/package.json's settings and packages (callboard tool webcheck); what
-# the app makes, and the pages the accessibility check draws, are tests/webplan.py's to say
 folders = ["plexcache/web"]
 package = "dev"
 plan = "python3 tests/webplan.py"
 axe = true
 
-[dhtml.push]
-errors = "fail"
-warnings = "fail"
-information = "info"
-
-[dhtml.merge]
-github = true
-errors = "fail"
-warnings = "fail"
-information = "info"
-
-[dhtml.release]
-github = true
+[dhtml.dev]
 errors = "fail"
 warnings = "fail"
 information = "info"
 
 [types]
-# The standards Code Validation holds the Python to (callboard/standards.toml): the recommended ones
 pep8 = true
 pep257 = true
 pep585 = true
@@ -153,36 +136,12 @@ pep440 = true
 pep508 = true
 pep723 = true
 
-[types.push]
+[types.dev]
 errors = "fail"
 warnings = "fail"
 information = "info"
 
-[types.merge]
-github = true
-errors = "fail"
-warnings = "fail"
-information = "info"
-
-[types.release]
-github = true
-errors = "fail"
-warnings = "fail"
-information = "info"
-
-[build.push]
-errors = "fail"
-warnings = "fail"
-information = "info"
-
-[build.merge]
-github = true
-errors = "fail"
-warnings = "fail"
-information = "info"
-
-[build.release]
-github = true
+[build.dev]
 errors = "fail"
 warnings = "fail"
 information = "info"
@@ -190,100 +149,55 @@ information = "info"
 [coverage]
 fresh_days = 14
 
-[coverage.push]
-fresh = "warn"
-settled = {warn = 98}
-not_measured = "warn"
-changed = {warn = 90}
-
-[coverage.merge]
-github = true
+[coverage.dev]
 fresh = "warn"
 settled = {warn = 98}
 not_measured = "warn"
 changed = {warn = 90}
 
 [coverage.release]
-github = true
-fresh = "warn"
-settled = {warn = 98}
-not_measured = "warn"
 every_line = {fail = 98}
 each_file = {fail = 90}
+changed = "off"
 
 [audit]
 grace_days = 7
 
-[audit.push]
+[audit.dev]
 grace_share = {warn = 10}
-unaudited = "warn"
-findings = "warn"
-config = "warn"
-unknown = "info"
-changed = "warn"
-
-[audit.merge]
-github = true
-grace_share = {warn = 10}
-unaudited = "warn"
-findings = "warn"
-config = "warn"
-unknown = "info"
-changed = "warn"
-
-[audit.merge.into.main]
-config = "fail"
-unknown = "warn"
-changed = "fail"
 
 [audit.release]
-github = true
-grace_share = {warn = 10}
+grace_share = {fail = 98}
 unaudited = "warn"
 findings = "warn"
 config = "fail"
-unknown = "warn"
 release_rules = "fail"
 
 [i18n]
-# (the script whose English must all go through T()/H(): callboard tool i18n leftovers)
 leftover_scripts = ["plexcache/web/app.js"]
-variants = ["en-US", "en-GB"]   # (spelling variants of the English, in the order the page lists them)
+variants = ["en-US", "en-GB"]
 
-[i18n.push]
+[i18n.dev]
 targets = {"*" = 0}
 present = "warn"
 codes = "fail"
 
-[i18n.merge]
-github = true
-targets = {"*" = 0}
-present = "warn"
-codes = "fail"
-
-[i18n.merge.into.main]
+[i18n.stable]
 targets = {"*" = 100}
 unused = "fail"
 plurals = "fail"
 quality = "warn"
 
 [i18n.release]
-github = true
-targets = {"*" = 100}
-unused = "fail"
-plurals = "fail"
-quality = "warn"
-codes = "fail"
+present = "off"
 
 [release]
 notes_dir = "changes"
-# (this project's own two: dev/mqtt_checks.py; each gate holds them as its ``own`` says)
 own_checks = ["MQTT settings: python3 dev/mqtt_checks.py settings", "MQTT docs: python3 dev/mqtt_checks.py docs"]
-# (the one script run on its own, away from the package, says its release itself)
 version_also = ["plexcache/tools/rewrite_blocks.py"]
 manual_items = ["Read the release notes through", "Check the README's screenshots still match"]
 
-[release.push]
+[release.dev]
 version = "info"
 translations = "info"
 own = "info"
@@ -293,18 +207,7 @@ looks = "info"
 change_notes = "info"
 manual = "info"
 
-[release.merge]
-github = true
-version = "info"
-translations = "info"
-own = "info"
-coverage = "info"
-audits = "info"
-looks = "info"
-change_notes = "info"
-manual = "info"
-
-[release.merge.into.main]
+[release.stable]
 version = "fail"
 translations = "fail"
 own = "fail"
@@ -313,15 +216,8 @@ change_notes = "fail"
 manual = "fail"
 
 [release.release]
-github = true
-version = "fail"
-translations = "fail"
-own = "fail"
 coverage = "fail"
 audits = "fail"
-looks = "fail"
-change_notes = "fail"
-manual = "fail"
 
 [upkeep]
 stale_days = 90
@@ -329,92 +225,57 @@ dormant_days = 365
 debian_grace_days = 8
 review_days = 182
 move = "all"
-# What Dependencies can't find by itself (it finds the Dockerfile's base images, dev/tools.toml's check tools and
-# dev/package.json's packages): a line each, where its pin is and where its releases are (callboard tool upkeep --help).
-also = [
-  "MKVToolNix: ARG MKVTOOLNIX from page:https://mkvtoolnix.download/debian/dists/trixie/main/binary-amd64/Packages /^Version: (\\d+(?:\\.\\d+)+)-/; major=0; cve=cpe:bunkus:mkvtoolnix; todo=ARG MKVTOOLNIX in the Dockerfile, once mkvtoolnix.download has the release for the image's Debian.",
-  "ffmpeg: ARG FFMPEG from page:https://ffmpeg.org/releases/ /ffmpeg-(\\d+(?:\\.\\d+)+)\\.tar\\.xz/; built=https://ffmpeg.org/releases/ffmpeg-{version}.tar.xz; sum=FFMPEG_SHA256@https://ffmpeg.org/releases/ffmpeg-{version}.tar.xz; sum=FFMPEG_GH_SHA256@https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n{version}.tar.gz; cve=cpe:ffmpeg:ffmpeg; repo=FFmpeg/FFmpeg; tag=n{version}; todo=ARG FFMPEG in the Dockerfile; the optimizer tests inside the image then say whether the swap checks still pass.",
-  "oxipng: ARG OXIPNG from github:oxipng/oxipng; built=https://github.com/oxipng/oxipng/releases/download/v{version}/oxipng-{version}-x86_64-unknown-linux-gnu.tar.gz; sum=OXIPNG_SHA256_AMD64@https://github.com/oxipng/oxipng/releases/download/v{version}/oxipng-{version}-x86_64-unknown-linux-gnu.tar.gz; sum=OXIPNG_SHA256_ARM64@https://github.com/oxipng/oxipng/releases/download/v{version}/oxipng-{version}-aarch64-unknown-linux-gnu.tar.gz; cve=osv:crates.io:oxipng; todo=ARG OXIPNG in the Dockerfile; CoverArtTests inside the image say whether it still compresses as expected.",
-  "libjpeg-turbo: ARG LIBJPEG_TURBO from github:libjpeg-turbo/libjpeg-turbo; built=https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/{version}/libjpeg-turbo-{version}.tar.gz; sum=LIBJPEG_TURBO_SHA256@https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/{version}/libjpeg-turbo-{version}.tar.gz; cve=cpe:libjpeg-turbo:libjpeg-turbo; tag={version}; todo=ARG LIBJPEG_TURBO in the Dockerfile; CoverArtTests inside the image say whether jpegtran still does.",
-  "Home Assistant (MQTT discovery): plexcache/homeassistant.py /HA_CHECKED = \"([^\"]+)\"/ from pypi:homeassistant; major=0; check=python3 dev/ha_keys.py {version}; todo=Change the discovery messages (plexcache/homeassistant.py: entities and _publish_discovery, and DISCOVERY_KEYS) for that release's MQTT rules (home-assistant.io/integrations/mqtt), then HA_CHECKED.",
-]
-# The image each branch publishes: looked at for CVEs when this copy's own can't be built here.
+also = ["MKVToolNix: ARG MKVTOOLNIX from page:https://mkvtoolnix.download/debian/dists/trixie/main/binary-amd64/Packages /^Version: (\\d+(?:\\.\\d+)+)-/; major=0; cve=cpe:bunkus:mkvtoolnix; todo=ARG MKVTOOLNIX in the Dockerfile, once mkvtoolnix.download has the release for the image's Debian.", "ffmpeg: ARG FFMPEG from page:https://ffmpeg.org/releases/ /ffmpeg-(\\d+(?:\\.\\d+)+)\\.tar\\.xz/; built=https://ffmpeg.org/releases/ffmpeg-{version}.tar.xz; sum=FFMPEG_SHA256@https://ffmpeg.org/releases/ffmpeg-{version}.tar.xz; sum=FFMPEG_GH_SHA256@https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n{version}.tar.gz; cve=cpe:ffmpeg:ffmpeg; repo=FFmpeg/FFmpeg; tag=n{version}; todo=ARG FFMPEG in the Dockerfile; the optimizer tests inside the image then say whether the swap checks still pass.", "oxipng: ARG OXIPNG from github:oxipng/oxipng; built=https://github.com/oxipng/oxipng/releases/download/v{version}/oxipng-{version}-x86_64-unknown-linux-gnu.tar.gz; sum=OXIPNG_SHA256_AMD64@https://github.com/oxipng/oxipng/releases/download/v{version}/oxipng-{version}-x86_64-unknown-linux-gnu.tar.gz; sum=OXIPNG_SHA256_ARM64@https://github.com/oxipng/oxipng/releases/download/v{version}/oxipng-{version}-aarch64-unknown-linux-gnu.tar.gz; cve=osv:crates.io:oxipng; todo=ARG OXIPNG in the Dockerfile; CoverArtTests inside the image say whether it still compresses as expected.", "libjpeg-turbo: ARG LIBJPEG_TURBO from github:libjpeg-turbo/libjpeg-turbo; built=https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/{version}/libjpeg-turbo-{version}.tar.gz; sum=LIBJPEG_TURBO_SHA256@https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/{version}/libjpeg-turbo-{version}.tar.gz; cve=cpe:libjpeg-turbo:libjpeg-turbo; tag={version}; todo=ARG LIBJPEG_TURBO in the Dockerfile; CoverArtTests inside the image say whether jpegtran still does.", "Home Assistant (MQTT discovery): plexcache/homeassistant.py /HA_CHECKED = \"([^\"]+)\"/ from pypi:homeassistant; major=0; check=python3 dev/ha_keys.py {version}; todo=Change the discovery messages (plexcache/homeassistant.py: entities and _publish_discovery, and DISCOVERY_KEYS) for that release's MQTT rules (home-assistant.io/integrations/mqtt), then HA_CHECKED."]
 images = ["main: ghcr.io/drsassafras/plex-cache:latest", "dev: ghcr.io/drsassafras/plex-cache:dev"]
 
-[upkeep.push]
+[upkeep.dev]
 behind = "warn"
 cves = "warn"
-
-[upkeep.merge]
-github = true
-behind = "warn"
-cves = "warn"
-
-[upkeep.merge.into.main]
-move = "minor"
-
-[upkeep.merge.into.dev]
 move = "all"
 
-[upkeep.merge.into."*"]
-move = "none"
-
-[upkeep.release]
-github = true
+[upkeep.stable]
 move = "minor"
-behind = "warn"
-cves = "warn"
 
-# Wardrobe: what the app is, for the style guide (callboard tool style; callboard/style.py has each setting).
 [style]
 web = "plexcache/web"
 stylesheets = ["app.css"]
 scripts = ["app.js", "decor.js", "i18n.js", "login.js"]
 pages = ["index.html", "login.html"]
-not_looks = ["i18n"]   # (the translations: words, not looks)
-draws = ["decor.js: node dev/decor-draws.js {file}"]   # all decoration: a look for what it draws, not for how it's written
+not_looks = ["i18n"]
+draws = ["decor.js: node dev/decor-draws.js {file}"]
 guide = "dev/style-guide.json"
 sample = "dev/style-sample"
-# the themes, each photographed in turn
 themes = ["classic/light: Classic light", "classic/dark: Classic dark", "dionysus/light: Dionysus light", "dionysus/dark: Dionysus dark"]
 theme_first = "dionysus/light"
 theme_file = "plexcache/themes.py"
 theme_marks = ["css", "script"]
 theme_store = "pc-theme"
 theme_urls = ["/theme.css", "/theme.js"]
-# the demo the pictures are taken of
 demo = "python3 tests/demo.py {port}"
 demo_env = ["DEMO_SHOWCASE=1"]
-before_env = ["DEMO_INLINE_STYLES=1"]   # (approved look files from before F-1-2026-058 wrote style="…": drawn as they were)
+before_env = ["DEMO_INLINE_STYLES=1"]
 demo_ready = "/api/state"
 demo_static = "/static/"
 demo_data = "/api/"
 demo_tree = ["plexcache", "tests", "dev/cli.py"]
 sample_pages = ["health", "tools", "merge", "system"]
-page_names = 'app.js /(?:var|let|const) PAGES = \{(.*?)\};/ /([a-z]+):\s*page[A-Z]/'
+page_names = "app.js /(?:var|let|const) PAGES = \\{(.*?)\\};/ /([a-z]+):\\s*page[A-Z]/"
 opens = ["info: #infopop opened by .info[data-info] id data-info"]
 made_from = ["tests/demo.py", "tests/fakes.py", "tests/fixtures", "dev/decor-draws.js", "dev/package-lock.json"]
 packages = "dev"
 
-[style.push]
-waiting = "warn"
-
-[style.merge]
-github = true
-waiting = "warn"
-
-[style.release]
-github = true
+[style.dev]
 waiting = "warn"
 
 [templates.pagechecks.leave_out]
 "[data-secret]" = "The Plex, TrueNAS and Syncthing key fields empty themselves once the key is saved, so browser password managers never store it"
 
-# The Tour: the app's code copied to the TrueNAS test app, and the app restarted (see dev/compose.dev.yaml). The TrueNAS
-# address and SSH user are this computer's (callboard.local.toml, or ~/.config/callboard/config).
-[tour]
-app = "plex-cache-dev"
-web_port = 8643
-dest = "/mnt/ssd/AppConfigs/plex-cache-dev/src"   # the test app mounts <dest>/plexcache over its built-in copy
-paths = ["plexcache"]
-exclude = [".git", ".DS_Store", "__pycache__", "*.pyc"]
+[shared.dev]
+test_missing = "warn"
+test_edited = "fail"
+test_behind = "warn"
+no_reason = "fail"
+
+[shared.release]
+test_missing = "fail"
+test_behind = "fail"

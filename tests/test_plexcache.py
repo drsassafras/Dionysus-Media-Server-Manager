@@ -78,8 +78,9 @@ def _toml(project: str, **cmds: str) -> str:
     unknown = set(cmds) - set(data["integrations"])
     assert not unknown, f"not integrations of dev/starter.toml: {unknown}"
     data["integrations"] = {i: {k: v for k, v in spec.items() if k != "needs"} | {"cmd": cmds[i]} for i, spec in data["integrations"].items() if i in cmds}
+    data["gate"] = policy.layout("main", github=data["gate"])   # (the "main" starting point: a dev and a main branch)
     for k in list(data):
-        if k not in ("config", "branches", "tags", "phases", "roles", "github", "gates", "integrations") and k not in cmds:
+        if k not in ("config", "tags", "github", "gate", "integrations") and k not in cmds:
             del data[k]
     path = os.path.join(project, "callboard.toml")
     with open(path, "w", encoding="utf-8") as fh:
@@ -88,11 +89,11 @@ def _toml(project: str, **cmds: str) -> str:
 
 
 # The code a test runs a tool as: the branch it's on, the gate whose rules hold for it, their cap, its phase and the
-# branch a pull request goes into (callboard/policy.py's context) — development's code on dev at the push gate, a
-# release's on main at the release gate, a feature branch's at the push gate, a hotfix's pull request into main, a
-# release candidate (the freeze) at the release gate, a preview (a beta tag on dev) at the release gate as warnings.
-POLICY_CODE = {"development": ("dev", "push", "", "", ""), "release": ("main", "release", "", "", ""), "feature": ("topic", "push", "", "", ""),
-               "hotfix": ("main", "merge", "", "", "main"), "freeze": ("dev", "release", "", "freeze", ""),
+# branch a pull request goes into (callboard/policy.py's context) — development's code on dev at the Dev gate, a
+# release's on main at the Release gate, a feature branch's at the Dev gate, a hotfix's pull request into main at the
+# Stable gate, a release candidate (the freeze) at the Release gate, a preview (a beta tag on dev) at the Release gate as warnings.
+POLICY_CODE = {"development": ("dev", "dev", "", "", ""), "release": ("main", "release", "", "", ""), "feature": ("topic", "dev", "", "", ""),
+               "hotfix": ("main", "stable", "", "", "main"), "freeze": ("dev", "release", "", "freeze", ""),
                "preview": ("dev", "release", "warn", "preview", "")}
 
 
@@ -4861,9 +4862,9 @@ class TestRunnerTests(unittest.TestCase):
         self.assertEqual(got.stdout.count("AssertionError: 1 != 2"), 1)      # (said once: not again at the end)
 
     def test_a_failure_goes_above_the_board_as_it_comes(self):
-        """tests/run.py on the board says each failure as it comes (a "tell" record): on a terminal the board puts it above
-        itself at its next frame, once, and the failed section doesn't print it again at its end; with no terminal it's
-        with the rest of what the section printed."""
+        """tests/run.py on the board says each failure as it comes (a "tell" record): the board puts it above itself at its
+        next frame, once, on a terminal and without one (callboard's board says everything found at once), and the
+        failed section doesn't print it again at its end."""
         from callboard import board
         from callboard.progress import FEED
         folder = tempfile.mkdtemp(dir=TMP)
@@ -4891,9 +4892,9 @@ class TestRunnerTests(unittest.TestCase):
         self.addCleanup(s.out.close)
         s.state = "running"
         s.line(FEED + json.dumps({"tell": "FAIL: test_x (A.test_x)\nAssertionError: 1 != 2"}))
+        self.assertIn("AssertionError: 1 != 2", b.telling(s))                 # (no terminal: as it comes, all the same)
         s.finished(1)
-        self.assertEqual(b.telling(s), "")
-        self.assertIn("AssertionError: 1 != 2", b.told(s))                     # (no terminal: at its end)
+        self.assertNotIn("AssertionError", b.telling(s) + b.told(s))           # (not again at its end)
 
     def test_style_approval_makes_the_sample_while_the_board_runs(self):
         """callboard's Style Approval: once its check says looks wait, the block's second step ("then", after nothing) makes
@@ -5322,66 +5323,6 @@ class TestRunnerTests(unittest.TestCase):
 class DevToolsUITests(unittest.TestCase):
     """callboard' records, the board's letters and state, and the callboard UI (dev/devui.py) that shows them."""
 
-    def toy(self):
-        """A small project callboard can run on: a NAS that's a folder here (a fake ssh, which notes each call), checks
-        that only echo. Returns (folder, run) — run(*args, **env) runs callboard local there."""
-        import subprocess
-        folder = tempfile.mkdtemp(dir=TMP)
-        project, nas, fake = (os.path.join(folder, d) for d in ("project", "nas", "bin"))
-        for d in (os.path.join(project, "app"), nas, fake):
-            os.makedirs(d)
-        with open(os.path.join(fake, "ssh"), "w", encoding="utf-8") as fh:
-            fh.write(f'#!/bin/bash\necho "$*" >> {folder}/ssh-calls\n'
-                     'while [ $# -gt 0 ]; do case "$1" in -o|-p|-l) shift 2 ;; -O) exit 0 ;; -*) shift ;; *) break ;; esac; done\n'
-                     'shift; [ $# -eq 0 ] && exit 0; exec bash -c "$*"\n')
-        with open(os.path.join(fake, "midclt"), "w", encoding="utf-8") as fh:
-            fh.write(f'#!/bin/bash\necho "$*" >> {folder}/restarts\n')
-        for name in ("ssh", "midclt"):
-            os.chmod(os.path.join(fake, name), 0o755)
-        with open(os.path.join(project, "app", "code.py"), "w", encoding="utf-8") as fh:
-            fh.write("one\n")
-        with open(os.path.join(folder, "config"), "w", encoding="utf-8") as fh:
-            fh.write("TN_HOST=nas.example\nTN_USER=me\n")
-        with open(os.path.join(project, ".callboard"), "w", encoding="utf-8") as fh:
-            fh.write(f"TN_APP=myapp\nTN_DEST={nas}\nTN_PATHS=app\n")
-        status = lambda note: f"printf '\\036{{\"status\": \"{note}\"}}\\n'"
-        _toml(project, unit="echo 3 tests passed", types="echo 0 errors", build="echo 2 ShellCheck findings; exit 1",
-              coverage=f"echo 1 fresh function no test reaches; {status('tests to add')}; exit 4",
-              upkeep="echo current; echo DEPENDENCIES  -  ALL UP TO DATE", audit=f"echo 3 lines no audit has seen; {status('code to audit')}; exit 4",
-              i18n=f"echo 32% translated; {status('in progress')}; exit 3", release=f"echo 3 of 8 ready; {status('in progress')}; exit 3")
-        env = dict(os.environ, PATH=fake + os.pathsep + os.environ.get("PATH", ""), CALLBOARD_CONFIG=os.path.join(folder, "config"),
-                   XDG_STATE_HOME=os.path.join(folder, "state"), TMPDIR=folder)
-        for k in ("PLEXCACHE_PROGRESS", "CALLBOARD_STEP", "CALLBOARD_RUNS"):
-            env.pop(k, None)
-
-        def run(*args, **more):
-            got = subprocess.run([os.path.join(CALLBOARD, "bin", "callboard"), *args], cwd=project, env=dict(env, **more), capture_output=True,
-                                 text=True, timeout=120, stdin=subprocess.DEVNULL)
-            return got.returncode, got.stdout + got.stderr
-        return folder, run
-
-    def test_an_old_callboard_files_checks_are_moved_out(self):
-        """A .callboard from before callboard.toml (TN_TEST, TN_VALIDATE… lines, the checks' commands then): the first run that
-        meets them takes them out — the file kept aside as .callboard.before-toml, the lines said — and runs on; the next
-        run says nothing of it. The file is this computer's own, never committed (.gitignore has both)."""
-        folder, run = self.toy()
-        project = os.path.join(folder, "project")
-        with open(os.path.join(project, ".callboard"), "a", encoding="utf-8") as fh:
-            fh.write("TN_TEST=python3 -m unittest\n# a note\nTN_UPKEEP=python3 dev/upkeep.py\n")
-        rc, out = run("local", "--checks-only", "--skip-tests")
-        self.assertEqual(rc, 0, out)
-        self.assertIn("moved the checks' settings out of", out)
-        self.assertIn("  TN_TEST=python3 -m unittest\n  TN_UPKEEP=python3 dev/upkeep.py\n", out)
-        self.assertNotIn("Warning:", out)
-        self.assertEqual(_read(os.path.join(project, ".callboard"), encoding="utf-8"),
-                         f"TN_APP=myapp\nTN_DEST={os.path.join(folder, 'nas')}\nTN_PATHS=app\n# a note\n")
-        self.assertIn("TN_TEST=python3 -m unittest\n", _read(os.path.join(project, ".callboard.before-toml"), encoding="utf-8"))
-        rc, out = run("local", "--checks-only", "--skip-tests")
-        self.assertEqual(rc, 0, out)
-        self.assertNotIn("moved the checks' settings", out)
-        ignored = _read(os.path.join(ROOT, ".gitignore"), encoding="utf-8").splitlines()
-        self.assertTrue({".callboard", ".callboard.before-toml"} <= set(ignored), ignored)
-
     def test_the_tools_write_their_detail_for_their_pages(self):
         """dev/progress.py's detail: a tool's own account of what it found, as JSON in the file the board names
         (CALLBOARD_DETAIL), nothing without one. dev/checks.py's run writes each tool's findings; tests/run.py the counts,
@@ -5409,7 +5350,7 @@ class DevToolsUITests(unittest.TestCase):
         self.assertEqual((got["kind"], got["result"], got["files"]), ("checks", "1 Ruff finding · pyright didn't run", ["a.py", "b.py"]))
         self.assertEqual(got["tools"][0], {"name": "Ruff", "tool": "Ruff", "version": "0.1", "ran": True, "why": "", "fix": "", "facts": ["1 Ruff finding"], "failed": False, "level": "warn",
                                            "findings": [{"tool": "Ruff", "path": "a.py", "line": 3, "col": 1, "severity": "warning", "message": "unused", "code": "F401", "fixable": True,
-                                                         "level": "warn"}]})   # (each finding's level: what the rules hold it as — a warning, with no callboard.toml)
+                                                         "level": "warn", "where": "a.py"}]})   # (each finding's level: what the rules hold it as — a warning, with no callboard.toml)
         self.assertEqual((got["tools"][1]["ran"], got["tools"][1]["why"], got["tools"][1]["findings"]), (False, "pyright didn't start", []))
         with open(os.path.join(folder, "detail_probe_tests.py"), "w", encoding="utf-8") as fh:
             fh.write(textwrap.dedent("""
@@ -5447,7 +5388,7 @@ class DevToolsUITests(unittest.TestCase):
         path = os.path.join(folder, "detail.json")
         a = coverage.File("plexcache/a.py", {1, 2, 3, 4}, {1, 2, 3}, fresh={4}, units=[coverage.Unit("function", "f", 4, {4})])
         b = coverage.File("plexcache/b.py", {1, 2}, {1, 2}, fresh=set(), units=[])
-        shown = {"fresh_days": 14, "settled": 98, "fresh": "warn", "gate": "push"}   # (the rules as the tool read them from callboard.toml)
+        shown = {"fresh_days": 14, "settled": 98, "fresh": "warn", "gate": "dev"}   # (the rules as the tool read them from callboard.toml)
         got = coverage.page([b, a], "no git history here", shown, "python3 tests/run.py --coverage")
         self.assertEqual((got["kind"], got["note"], got["rules"], got["tests"]), ("coverage", "no git history here", shown, "python3 tests/run.py --coverage"))
         self.assertEqual(got["totals"], {"lines": 6, "ran": 5, "pct": 83.3, "settled": 5, "settled_ran": 5, "settled_pct": 100.0, "fresh": 1, "fresh_units": 1, "fresh_reached": 0})
@@ -5718,11 +5659,12 @@ class DevToolsUITests(unittest.TestCase):
         # a block's output asked for while the server was away (the page's "Failed to fetch") is asked again once it answers,
         # and another record's output is never shown for this one: the page keeps what it read by record
         page = _read(os.path.join(DEVLIB, "devui.html"), encoding="utf-8")
-        # an integration's rules, a card per gate it runs at (more added from "Add a gate", one taken off with its ×), each
-        # with its rules and what's different for a pull request into a branch
+        # an integration's rules, a card per gate it's at (from its first: more added from "Add a gate", or "Start at an
+        # earlier gate", one taken off with its ×), each with only what it changes of the gate before it
         _assert_in_page(self, '"Add a gate"', page)
-        _assert_in_page(self, "function gateCard(e, i, draft, g, sch, floored, noGh)", page)
-        _assert_in_page(self, '"Remove the rules for pull requests into " + b', page)
+        _assert_in_page(self, '"Start at an earlier gate"', page)
+        _assert_in_page(self, "function gateCard(e, i, draft, g, sch, floored)", page)
+        _assert_not_in_page(self, "Remove the rules for pull requests into", page)   # (no rules of their own for a pull request into a branch: its gate's)
         _assert_in_page(self, '"+ More <integration> <gate> rules"', page)
         _assert_in_page(self, "else if (!editing()) render();", page)   # (a field in use, an open drop-down: not drawn again under it)
         _assert_in_page(self, "table[k] = v; EDITED(); };", page)       # (Save and Undo follow the draft without a redraw)
@@ -5731,7 +5673,6 @@ class DevToolsUITests(unittest.TestCase):
         for part in ('"Remove from callboard.toml"', "delete data.integrations[id]", 'data.integrations[f.id] = Object.assign', "function toolsSec(e, draft, put, folded, bdraft)",
                      "= JSON.parse(JSON.stringify(DRAFT._spec[dkey || id]));"):
             _assert_in_page(self, part, page)
-        _assert_not_in_page(self, "<details", page)
         _assert_in_page(self, "catch (e) { e.gone = true; throw e; }", page)
         _assert_in_page(self, "if (VIEW.run !== SHOWN) { SHOWN = VIEW.run; LOGS = {}; DETAILS = {}; }", page)
         _assert_in_page(self, "if (kept[id] && kept[id].gone) delete kept[id];", page)
@@ -5755,7 +5696,11 @@ class DevToolsUITests(unittest.TestCase):
             fh.write('__version__ = "1.2.0"\n')
         with open(os.path.join(project, "changes", "a-change.md"), "w", encoding="utf-8") as fh:
             fh.write("## A change\n")
-        _toml(project, unit="echo 1 test passed", coverage="echo ok", release="echo ok", style="echo ok")
+        path = _toml(project, unit="echo 1 test passed", coverage="echo ok", release="echo ok", style="echo ok")
+        with open(path, encoding="utf-8") as fh:   # (the file that says the version: the project's own to name)
+            text = fh.read().replace("[config]\n", '[config]\nversion_file = "plexcache/__init__.py"\n', 1)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
         subprocess.run(["git", "init", "-q", "-b", "dev", project], check=True)
         data = devui.Data(runs=os.path.join(folder, "runs"), script="/bin/true", root=project)
         # the file, read: every integration with its letter (the menu's: Hub h and Sync s first), and the rules by gate
@@ -5769,30 +5714,30 @@ class DevToolsUITests(unittest.TestCase):
         self.assertEqual((ruff["name"], ruff["config"], ruff["get"]), ("Ruff", "ruff.toml", "pip"))   # (this project's dev/tools.toml: each tool, and the file it reads)
         self.assertEqual([(i["id"], i["letter"], i["enabled"] and i["ready"]) for i in got["integrations"]],
                          [("unit", "u", True), ("coverage", "c", True), ("release", "e", True), ("style", "w", True)])   # (Wardrobe: its first letter)
-        self.assertEqual([g["id"] for g in got["gates"]], ["push", "merge", "release", "dev"])   # (the checkpoints, then the development gate)
+        self.assertEqual([g["id"] for g in got["gates"]], ["dev", "stable", "release"])   # (the gates, in the order their rules cascade)
         self.assertIn("every_line: fail under 98%", got["said"]["coverage"]["release"])
-        self.assertIn("every_line: off", got["said"]["coverage"]["merge"])
-        self.assertIn("changed: fail under 90%", got["said"]["coverage"]["merge"])   # (a pull request's: only what changed)
+        self.assertIn("every_line: off", got["said"]["coverage"]["stable"])
+        self.assertIn("changed: fail under 90%", got["said"]["coverage"]["stable"])   # (Dev's, handed on: only what changed)
         self.assertEqual(got["schemas"]["coverage"]["settings"]["settled"]["kind"], "threshold")
         self.assertEqual(got["data"]["coverage"]["release"]["every_line"], {"fail": 98})
         # Save: the tables as the page holds them, written back as TOML (checked first: a bad level is refused, nothing written)
         before = os.stat(got["path"]).st_mtime_ns
         bad = json.loads(json.dumps(got["data"]))
-        bad["coverage"]["merge"]["fresh"] = "loud"
+        bad["coverage"]["dev"]["fresh"] = "loud"
         with self.assertRaises(ValueError) as cm:
             data.save_config({"data": bad})
         self.assertIn("fresh", str(cm.exception))
         self.assertEqual(os.stat(got["path"]).st_mtime_ns, before)
         good = json.loads(json.dumps(got["data"]))
         good["coverage"]["release"]["settled"] = {"fail": 95}
-        good["coverage"]["push"] = {"fresh": "warn"}
+        good["coverage"]["stable"] = {"settled": "off"}
         saved = data.save_config({"data": good})
         self.assertEqual(saved["path"], got["path"])
         self.assertIn("settled = {fail = 95}", saved["text"])
-        self.assertIn("[coverage.push]\nfresh = \"warn\"", saved["text"])
+        self.assertIn("[coverage.stable]\nsettled = \"off\"", saved["text"])
         again = data.config({})
         self.assertIn("settled: fail under 95%", again["said"]["coverage"]["release"])
-        self.assertEqual(again["said"]["coverage"]["push"][1:3], ["fresh: warn", "settled: off"])
+        self.assertEqual(again["said"]["coverage"]["stable"][1:3], ["fresh: warn", "settled: off"])   # (Dev's fresh handed on; its own off kept)
         self.assertEqual(subprocess.run(["git", "-C", project, "log", "--oneline"], capture_output=True, text=True).stdout, "")   # (nothing committed)
         # read only: the page shows, Save is refused
         ro = json.loads(json.dumps(again["data"]))
@@ -5805,7 +5750,7 @@ class DevToolsUITests(unittest.TestCase):
         # the Gates page: the gates and GitHub, the tags and branches, the notes since the last release, the manual items
         g = data.gates({})
         self.assertEqual((g["github"], [(x["id"], x["diff"]) for x in g["gates"]]),
-                         ({"enabled": False, "push": False, "merge": True, "release": True}, [("push", True), ("merge", True), ("release", False)]))
+                         ({"enabled": False, "push": False, "merge": True, "release": True}, [("dev", False), ("stable", False), ("release", False)]))
         self.assertEqual((g["tags"]["freeze"], g["branches"]["release"], g["branches"]["development"]), ("v{version}-rc.{n}", "main", "dev"))
         self.assertEqual((g["version"], g["last_release"], g["notes_dir"], g["notes"]), ("1.2.0", "", "changes", ["changes/a-change.md"]))
         self.assertEqual(g["manual"], [{"item": "Read the release notes through", "done": False}, {"item": "Check the README's screenshots still match", "done": False}])
@@ -8037,7 +7982,7 @@ class PageStructureTests(unittest.TestCase):
         """An ⓘ's text opens in a pop-up, so an ⓘ inside that text can't be reached. Nothing passed to
         info(), to a card heading's explanation (heading's second argument: it goes behind an ⓘ when
         long) or to a field's longer help ({more: ...}) may contain an info() of its own."""
-        from callboard import i18n as tool   # (callboard's Translations: its JavaScript tokenizer)
+        from callboard import i18n as tool  # (callboard's Translations: its JavaScript tokenizer)
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         with open(os.environ.get("PLEXCACHE_CHECK_JS") or os.path.join(root, "plexcache", "web", "app.js"), encoding="utf-8") as fh:
             src = fh.read()
@@ -16020,7 +15965,7 @@ class TranslationTests(unittest.TestCase):
     @classmethod
 
     def setUpClass(cls):
-        from callboard import i18n   # (callboard's Translations, set up for this project: callboard.toml's [i18n])
+        from callboard import i18n  # (callboard's Translations, set up for this project: callboard.toml's [i18n])
         cls.tool = i18n
         cls.tool._setup()
         problems = []
@@ -16115,8 +16060,8 @@ class TranslationTests(unittest.TestCase):
 
     def test_the_board_block(self):
         """callboard tool i18n --callboard, callboard's Translations block: the overall share translated, one number; between
-        releases (the push gate: targets of 0) every language has met its target (exit 0: the share is only told), and where the catalogs gate (strict_now: the
-        release gate, and a pull request into main — targets of 100% held as "fail") a language short of its target is a finding, red — the one
+        releases (the Dev gate: targets of 0) every language has met its target (exit 0: the share is only told), and where the catalogs gate (strict_now: the
+        Release gate, and a pull request into main at the Stable gate — targets of 100% held as "fail") a language short of its target is a finding, red — the one
         place that decides, for this suite's strictness too."""
         quiet = _policy_env("development", PLEXCACHE_PROGRESS="")
         catalogs = lambda code: {"Idle": "x", "Busy": "y" if code == "de" else None}
@@ -17289,7 +17234,7 @@ class WebCheckTests(unittest.TestCase):
             d = os.path.realpath(d)
             with open(os.path.join(d, "callboard.toml"), "w", encoding="utf-8") as fh:
                 fh.write('[config]\nversion = 2\n\n[integrations.dhtml]\ntitle = "DHTML"\nkind = "checks"\ncmd = "callboard tool webcheck"\n\n'
-                         f'[dhtml]\npackage = {json.dumps(os.path.join(ROOT, "dev"))}\n\n[dhtml.push]\nerrors = "fail"\nwarnings = "fail"\ninformation = "info"\n')
+                         f'[dhtml]\npackage = {json.dumps(os.path.join(ROOT, "dev"))}\n\n[dhtml.dev]\nerrors = "fail"\nwarnings = "fail"\ninformation = "info"\n')
             with open(os.path.join(d, "ok.css"), "w", encoding="utf-8") as fh:
                 fh.write(".a {\n  color: oklch(60% 0.15 30);\n  & .b { margin: 0; }\n}\n@media (width >= 600px) {\n  .c { color: lab(50% 20 30); }\n}\n")
             got = self._webcheck(cwd=d)
@@ -18252,7 +18197,7 @@ class CoverageTests(unittest.TestCase):
 
 class PolicyTests(unittest.TestCase):
     """callboard.toml, read through dev/policy.py: the one place every rule lives — each kind of integration's schema, the
-    branches' roles and the tags' phases, what a role inherits and its cap, full and diff mode, the gates, the exit codes
+    gates (dev, stable, release: what belongs to each, their rules cascading in that order) and a tag's cap, full and diff mode, the exit codes
     every check shares, the menu letters, and dev/plan.py's board from it. No tool decides a level or a threshold itself."""
 
     def test_the_projects_callboard_toml_checks_clean(self):
@@ -18274,8 +18219,6 @@ class PolicyTests(unittest.TestCase):
                 "RELEASE_FILE", "GRACE_DAYS", "GRACE_SHARE", "STALE_DAYS", "DORMANT_DAYS", "REVIEW_DAYS", "DEBIAN_GRACE")
         for path in tools:
             text = _read(path, encoding="utf-8")
-            if path.endswith("callboard"):
-                text = "\n".join(ln for ln in text.splitlines() if "MOVED_KEYS" not in ln)   # (the one mention: the warning that they moved)
             for word in gone + tuple(f"TN_{k}" for k in ("TEST", "VALIDATE", "TYPES", "BUILD", "COVERAGE", "I18N", "AUDIT", "FUTURE", "STYLE", "RELEASE", "UPKEEP")):
                 self.assertNotIn(word, text, (os.path.relpath(path, ROOT), word))
 
@@ -18307,7 +18250,7 @@ class PolicyTests(unittest.TestCase):
         self.assertFalse(set(run.CONTEXT_KEYS) & set(os.environ), "callboard's context reached the tests")   # (this very run: taken out)
 
 class GateTests(unittest.TestCase):
-    """dev/gate.py: the checks run as a moment in the code's life holds them (push, merge, release), by hand, from the
+    """dev/gate.py: the checks run at the gate the code is at (dev, stable, release), by hand, from the
     pre-push hook and on GitHub alike; what GitHub's workflows ask of callboard.toml; and the release's own steps
     (callboard tool release notes, bump)."""
 
@@ -18439,7 +18382,7 @@ class CheckToolTests(unittest.TestCase):
 
     def test_a_check_that_fails_says_what_it_found_as_it_comes(self):
         """On callboard's board every check tool's findings go above the board as they come, as the tests' failures do
-        (progress.tell, the one way every tool says a failure): a check that's done and failed says them at once, not
+        (progress.issue, the one way every tool says a finding): a check that's done and failed says them at once, not
         once the slowest check is done too (Python Validation's Ruff, while pyright still runs), and not again at the end;
         what's told is in the section's output (the UI's) as well. Without the board, as they always were, at the end."""
         import threading
@@ -18459,17 +18402,17 @@ class CheckToolTests(unittest.TestCase):
             time.sleep(0.3)
             seen.append(out.getvalue())
             return Outcome("pyright", "1.1", [], facts=["0 errors"])
-        with mock.patch.dict(os.environ, {"PLEXCACHE_PROGRESS": "feed"}), mock.patch("callboard.progress.Progress._feed", lambda self: None):
+        with mock.patch.dict(os.environ, {"CALLBOARD_PROGRESS": "feed", "PLEXCACHE_PROGRESS": ""}), mock.patch("callboard.progress.Progress._feed", lambda self: None):
             self.assertEqual(checks.run([Check("pyright", pyright), Check("Ruff", ruff)], stream=out), 1)
         lines = out.getvalue().split("\n")   # (not splitlines: the board's mark, \x1e, is a line end to it)
-        told = [r["tell"] for r in map(record, lines) if r and "tell" in r]
+        told = [r["issue"]["log"] for r in map(record, lines) if r and "issue" in r]
         self.assertEqual(told, ["  dev/x.py:3:1 - error: unused noqa (Ruff RUF100)"])
-        self.assertIn(FEED + '{"tell"', seen[0])                                    # (said while pyright was still running)
-        self.assertEqual(out.getvalue().count("unused noqa"), 1)                     # (not again at the end)
+        self.assertIn(FEED + '{"issue"', seen[0])                                   # (said while pyright was still running)
+        self.assertEqual(sum("unused noqa" in line for line in lines), 1)            # (not again at the end)
         self.assertIn("0 errors · 1 Ruff finding", lines)
         fast = Check("Ruff", lambda: found)
         out = io.StringIO()   # (no board: what it found at the end, as it always was)
-        with mock.patch.dict(os.environ, {"PLEXCACHE_PROGRESS": ""}):
+        with mock.patch.dict(os.environ, {"CALLBOARD_PROGRESS": "", "PLEXCACHE_PROGRESS": ""}):
             self.assertEqual(checks.run([fast], stream=out), 1)
         self.assertEqual(out.getvalue().splitlines(), ["  dev/x.py:3:1 - error: unused noqa (Ruff RUF100)", "1 Ruff finding"])
         # and the tests' failures by the same call (tests/run.py), so no tool says a failure another way
@@ -24726,6 +24669,263 @@ class TlsPinTests(unittest.TestCase):
             self.assertEqual(app.settings.section("tls")["pins"]["truenas"], self.fp)
             code, _got = post("/api/tls/trust", {"service": "../etc"})
             self.assertEqual(code, 400)
+
+
+class SyncthingEdgeTests(unittest.TestCase):
+    """Syncthing's edges (syncthing.py): answers its client can't make sense of, a card with nothing to show yet, and
+    TrueNAS asked for the Syncthing app's ports and mounts."""
+
+    @staticmethod
+    def _truenas(apps):
+        """app.truenas as a client whose apps() gives ``apps``."""
+        @contextlib.contextmanager
+        def tn():
+            yield types.SimpleNamespace(apps=lambda **_kw: apps)
+        return tn
+
+    def test_the_client_reads_what_it_can_of_an_answer(self):
+        """An error whose body can't be read is still an error; a folder's 404 is the folder's state, not a call this
+        Syncthing lacks; no body at all is an empty answer; an old release's browse (a tree of names) reads as a list."""
+        from plexcache import syncthing
+        from plexcache.syncthing import SyncthingClient, SyncthingError
+        self.assertEqual(syncthing._host_of("http://[::1"), "")  # (not an address at all)
+        c = SyncthingClient("http://127.0.0.1:8384", "st-key")
+        cut = mock.Mock()
+        cut.read.side_effect = OSError("cut off")
+        with mock.patch("urllib.request.urlopen", side_effect=urllib.error.HTTPError(c.url, 500, "no", email.message.Message(), cut)):
+            with self.assertRaises(SyncthingError) as got:
+                c.status()
+        self.assertEqual(got.exception.code, "answer")
+        gone = urllib.error.HTTPError(c.url, 404, "no", email.message.Message(), io.BytesIO(b"no such folder"))
+        with mock.patch("urllib.request.urlopen", side_effect=gone):
+            with self.assertRaises(SyncthingError) as got:
+                c.folder_status("media")
+        self.assertEqual(got.exception.code, "state")
+        self.assertIn("no such folder", en(got.exception.why))
+        with mock.patch("urllib.request.urlopen", return_value=_Resp(b"")):
+            self.assertEqual(c.status(), {})
+        with mock.patch("urllib.request.urlopen", return_value=_Resp(b'{"Books": {}, "Films": {}}')):
+            self.assertEqual(c.browse("media"), ["Books", "Films"])
+
+    def test_nothing_is_kept_once_it_is_no_longer_set_up(self):
+        """tick_async with the address taken out: the last answer is dropped, and nothing is asked."""
+        st = _new_app().syncthing
+        st.status, st._stamp = {"ok": True}, "stamp"
+        st.tick_async()
+        self.assertEqual((st.status, st._stamp, st.busy), ({}, "", False))
+
+    def test_truenas_says_the_syncthing_apps_port_and_mounts(self):
+        """The host port TrueNAS publishes for a port of the Syncthing app, and the volumes it mounts for that app and
+        for this one (the app whose container this is), written either way a compose file has them."""
+        app = _new_app()
+        ports = [{"container_port": 8384, "host_ports": [{"host_port": 20910}]},
+                 {"container_port": 22000, "host_ports": [{"host_port": 0}, {"host_port": 22001}]}]
+        apps = [{"name": "dionysus", "active_workloads": {"container_details": [{"id": "abcdef0123456789"}]},
+                 "config": {"services": {"app": {"volumes": [{"source": "/mnt/tank/plexfiles", "target": "/media"}, "/mnt/tank/config:/config:ro",
+                                                             {"source": "", "target": "/nowhere"}]}}}},
+                {"name": "Syncthing", "active_workloads": {"used_ports": ports},
+                 "config": {"services": {"syncthing": {"volumes": ["/mnt/tank/plexfiles:/sync"]}, "empty": None}}},
+                {"name": "jellyfin", "config": {"services": {"jellyfin": {"volumes": ["/mnt/tank/other:/other"]}}}}]
+        with mock.patch.object(app, "truenas", self._truenas(apps)), mock.patch("plexcache.zfs.own_container_id", return_value="abcdef012345"):
+            self.assertEqual(app.syncthing._published_port(22000), 22001)
+            self.assertIsNone(app.syncthing._published_port(21027))  # (a port it doesn't publish)
+            self.assertEqual(app.syncthing.mounts(), {"mine": [("/mnt/tank/plexfiles", "/media"), ("/mnt/tank/config", "/config")],
+                                                     "syncthing": [("/mnt/tank/plexfiles", "/sync")]})
+
+    def test_reach_and_addresses(self):
+        """The Reach light says what's switched off in Syncthing; an address Syncthing won't take is said as it says it;
+        a device is only looked for at a host, and only an address is on the LAN."""
+        from plexcache.syncthing import SyncthingError
+        st = _new_app().syncthing
+        st.status = {"ok": True, "folders": []}
+        self.assertEqual(st.reach_light()["status"], "off")  # (no folder over a library yet: no device to reach)
+        device = {"id": "DEVICE1", "name": "Mirror", "connected": True, "type": "tcp-client", "address": "192.168.1.9:22000", "addresses": ["dynamic"]}
+        st.status = {"ok": True, "options": {"localAnnounceEnabled": False, "relaysEnabled": False}, "folders": [{"libraries": ["1"], "devices": [device]}]}
+        light = st.reach_light()
+        self.assertEqual(light["status"], "ok")
+        self.assertIn("Local discovery is off", str(light["detail"]))
+        self.assertIn("Relays are off", str(light["detail"]))
+        refusing = types.SimpleNamespace(patch_device=mock.Mock(side_effect=SyncthingError(M("Syncthing answered 500 to /rest/config/devices."), "answer")))
+        with mock.patch.object(st, "device_hosts", return_value=["10.0.0.5"]), mock.patch.object(st, "client", return_value=refusing):
+            with self.assertRaisesRegex(ValueError, "answered 500"):
+                st.add_device_address("DEVICE1")
+        refusing.patch_device.assert_called_once_with("DEVICE1", {"addresses": ["tcp://10.0.0.5:22000", "dynamic"]})
+        self.assertIsNone(st.device_at(["", None]))
+        self.assertFalse(st.is_lan("mirror.example:22000"))  # (a name, not an address)
+        self.assertFalse(st.is_lan(""))
+
+    def test_the_card_before_a_library_is_mirrored_or_shared(self):
+        """The System card's Folders and Devices lights: off while no library is mirrored, and Devices off again when the
+        folder over a mirrored library is shared with no other device."""
+        app = _new_app(syncthing={"url": "http://127.0.0.1:8384", "api_key": "st-key"})
+        st = app.syncthing
+        st.status = {"ok": True, "url": "http://127.0.0.1:8384", "version": "v1.29.2", "device": {"name": "nas"}, "api": {}, "folders": [], "libraries": {}}
+        with mock.patch.object(app.mirror_health, "libraries", return_value=[]):
+            got = st.lights()
+        self.assertEqual((got["server"]["status"], got["folders"]["status"], got["devices"]["status"]), ("ok", "off", "off"))
+        self.assertEqual(en(got["folders"]["text"]), "No library is mirrored")
+        st.status = dict(st.status, libraries={"1": "media"}, folders=[{"id": "media", "label": "Media", "path": "/mnt/tank/plexfiles", "libraries": ["1"], "devices": []}])
+        with mock.patch.object(app.mirror_health, "libraries", return_value=["1"]):
+            got = st.lights()
+        self.assertEqual((got["folders"]["status"], got["devices"]["status"]), ("ok", "off"))
+        self.assertIn("shared with no other device", en(got["devices"]["detail"]))
+
+
+class OptimizeFilesEdgeTests(unittest.TestCase):
+    """The optimizer's file work when the filesystem refuses (optimize/files.py): a copy that keeps what dates and mode it
+    may, and never leaves its half-made copy behind — nor hides the refusal when even that can't be cleared."""
+
+    def _pair(self):
+        d = tempfile.mkdtemp(dir=TMP)
+        src, path = os.path.join(d, "src.mkv"), os.path.join(d, "film.mkv")
+        with open(src, "wb") as fh:
+            fh.write(b"x" * 64)
+        os.utime(src, ns=(1_600_000_000_000_000_000, 1_600_000_000_000_000_000))
+        return d, src, path
+
+    def test_a_copy_keeps_the_dates_where_it_may_not_keep_the_rest(self):
+        """copystat refused (no right to set flags or ACLs) and the mode refused too: the bytes and the dates still go."""
+        from plexcache.optimize import files
+        _d, src, path = self._pair()
+        with mock.patch("shutil.copystat", side_effect=PermissionError("no")), mock.patch("os.chmod", side_effect=OSError("no")):
+            tmp = files._copy_beside(src, path)
+        self.assertEqual(os.stat(tmp).st_mtime_ns, 1_600_000_000_000_000_000)
+        with open(tmp, "rb") as fh:
+            self.assertEqual(fh.read(), b"x" * 64)
+
+    def test_a_copy_that_fails_leaves_nothing_and_says_why(self):
+        """The copy cut off, the swap refused: the half-made copy is taken away, and where even that is refused the
+        first failure is still the one raised."""
+        from plexcache.optimize import files
+        d, src, path = self._pair()
+        with mock.patch("shutil.copyfileobj", side_effect=OSError(errno.ENOSPC, "disk full")):
+            with self.assertRaisesRegex(OSError, "disk full"):
+                files._copy_beside(src, path)
+        self.assertEqual(sorted(os.listdir(d)), ["src.mkv"])
+        with mock.patch("shutil.copyfileobj", side_effect=OSError(errno.ENOSPC, "disk full")), mock.patch("os.remove", side_effect=OSError("busy")):
+            with self.assertRaisesRegex(OSError, "disk full"):
+                files._copy_beside(src, path)
+        os.link(src, path)  # (two paths to one file: make_real gives film.mkv a file of its own)
+        with mock.patch("os.replace", side_effect=OSError(errno.EROFS, "read-only")), mock.patch("os.remove", side_effect=OSError("busy")):
+            with self.assertRaisesRegex(OSError, "read-only"):
+                files.make_real(path)
+            with self.assertRaisesRegex(OSError, "read-only"):
+                files.copy_from(os.path.join(d, "new.mkv"), src)
+        self.assertEqual(os.stat(path).st_nlink, 2)  # (still the link it was)
+
+
+class SettingsEdgeTests(unittest.TestCase):
+    """Settings refused for their shape, and a settings file from an older release read as this one keeps it (config.py)."""
+
+    def test_maps_of_the_wrong_shape_are_refused(self):
+        from plexcache.config import SettingsError, _coerce
+        for section, key, value in (("tls", "pins", ["truenas"]), ("tls", "pins", {"truenas": "not-a-sha"}), ("tls", "pins", {"TrueNAS!": "ab" * 32}),
+                                    ("syncthing", "folders", {"1": "media"}), ("syncthing", "folders", {"not a key!": {"folder": "media"}}),
+                                    ("plex2", "libraries", ["1"]), ("plex2", "libraries", {"not a key!": {"state": "none", "key": ""}})):
+            with self.assertRaises(SettingsError, msg=(section, key, value)):
+                _coerce(section, key, value, {})
+        self.assertEqual(_coerce("tls", "pins", {"truenas": "AB" * 32, "plex": ""}, {}), {"truenas": "ab" * 32})  # (lower case; "" forgets one)
+        self.assertEqual(_coerce("syncthing", "folders", {"1": {"folder": "media"}, "2": {"folder": ""}}, {}), {"1": {"folder": "media"}})
+        self.assertNotIn("2", cast(dict, _coerce("plex2", "libraries", {"1": "", "2": None}, {})))  # (a library given as nothing isn't kept)
+
+    def _saved(self, data):
+        from plexcache.config import Settings
+        d = tempfile.mkdtemp(dir=TMP)
+        with open(os.path.join(d, "settings.json"), "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+        return Settings(d).get()
+
+    def test_an_older_releases_settings_are_read_as_they_are_kept_now(self):
+        """The one length that was the snapshots' alone; the one mirrored server, now the first of the servers (its
+        libraries and the other Dionysus's address by hand going with it); the per-library convert switch, gone."""
+        got = self._saved({"general": {"snapshot_days": 9},
+                           "plex2": {"machine_id": "abc123", "url": "https://mirror.example:32400", "token": "tok", "name": "Mirror",
+                                     "libraries": {"1": "7", "2": ""}},
+                           "peer": {"url": "https://mirror.example:8765"},
+                           "optimizer": {"libraries": {"1": {"convert": True, "enabled": True}, "2": "not a choice"}}})
+        self.assertEqual(got["general"]["backup_days"], 9)
+        self.assertNotIn("snapshot_days", got["general"])
+        self.assertEqual(got["plex2"]["servers"]["abc123"], {"name": "Mirror", "url": "https://mirror.example:32400", "token": "tok"})
+        self.assertEqual(got["plex2"]["libraries"]["1"], {"state": "mirror", "server": "abc123", "key": "7"})
+        self.assertEqual(got["plex2"]["libraries"]["2"]["state"], "none")
+        self.assertEqual(got["peer"]["servers"]["abc123"], {"url": "https://mirror.example:8765"})
+        self.assertNotIn("url", got["plex2"])
+        self.assertNotIn("convert", got["optimizer"]["libraries"]["1"])
+
+    def test_a_theme_of_the_old_kind_that_no_longer_passes_is_left_out(self):
+        """Themes were one look each: a custom one that can't be read as a theme now is dropped, the rest kept."""
+        got = self._saved({"themes": {"selected": "mine", "custom": {"mine": {"name": "Mine", "mode": "dark", "based_on": "classic-dark", "colors": {"bg": "not a colour"}}}}})
+        self.assertEqual(got["themes"]["custom"], {})
+
+    def test_an_export_blanks_each_mirrored_servers_token(self):
+        app = _new_app(plex2={"servers": {"abc123": {"name": "Mirror", "url": "https://mirror.example:32400", "token": "secret-token"}}})
+        self.assertEqual(app.settings.section("plex2")["servers"]["abc123"]["token"], "secret-token")
+        self.assertEqual(app.settings.export()["plex2"]["servers"]["abc123"]["token"], "")
+
+
+class UpdateEdgeTests(unittest.TestCase):
+    """The update check's edges (updates.py): versions that aren't versions, a registry that refuses, and the note of
+    what Update Now pulled."""
+
+    def _checker(self):
+        from plexcache.updates import UpdateChecker
+        app = _new_app()
+        return app, UpdateChecker(app)
+
+    def test_a_version_that_cannot_be_read_is_not_newer(self):
+        from plexcache.updates import newer
+        self.assertFalse(newer("1.0.0-beta." + "9" * 5000, "1.0.0"))  # (a number Python won't read: unparseable, not newer)
+
+    def test_the_first_look_survives_a_failed_comparison(self):
+        """The check's thread: comparing what was pulled falls over, and it's logged — the checks themselves go on."""
+        app, up = self._checker()
+        up.first_delay = 0
+        app.stopping.set()
+        with mock.patch.object(up, "pulled_check", side_effect=RuntimeError("boom")), self.assertLogs("plexcache", "ERROR") as logs:
+            up._loop()
+        self.assertIn("comparing the pulled image", logs.output[0])
+
+    def test_the_registry_asked(self):
+        """_get: the answer's headers and body (none read for a HEAD); a refusal is raised with its response closed.
+        No pull token from the registry: not our build to compare."""
+        from plexcache.updates import NotOurBuild
+        _app, up = self._checker()
+
+        class Answer(_Resp):
+            headers = {"Docker-Content-Digest": "sha256:" + "a" * 64}
+        with mock.patch("urllib.request.urlopen", return_value=Answer(b'{"token": "t"}')) as asked:
+            self.assertEqual(up._get("https://ghcr.io/token")[1], b'{"token": "t"}')
+            self.assertEqual(up._get("https://ghcr.io/v2/x/manifests/latest", {"Accept": "x"}, "HEAD"), (Answer.headers, b""))
+            self.assertEqual(asked.call_args.args[0].get_method(), "HEAD")
+            self.assertEqual(up.image_digest("latest"), "sha256:" + "a" * 64)
+        refused = urllib.error.HTTPError("https://ghcr.io/token", 403, "no", email.message.Message(), io.BytesIO(b""))
+        with mock.patch("urllib.request.urlopen", side_effect=refused), self.assertRaises(urllib.error.HTTPError):
+            up._get("https://ghcr.io/token")
+        self.assertTrue(some(refused.fp).closed)
+        with mock.patch("urllib.request.urlopen", return_value=Answer(b"{}")), self.assertRaises(NotOurBuild):
+            up.image_digest("latest")
+
+    def test_the_note_of_what_was_pulled(self):
+        """A note with no time is an old one (dropped, nothing compared); TrueNAS holding no image for the tag leaves it
+        for a later start; dropping a note that's already gone is nothing."""
+        from plexcache import updates
+        app, up = self._checker()
+        note = os.path.join(app.config_dir, updates.PULLED)
+        with open(note, "w", encoding="utf-8") as fh:
+            json.dump({"digest": "sha256:" + "a" * 64, "tag": "latest", "at": "yesterday"}, fh)
+        self.assertIsNone(up.pulled_check())
+        self.assertFalse(os.path.exists(note))
+        up._drop_pulled()  # (nothing there: nothing to say)
+        with open(note, "w", encoding="utf-8") as fh:
+            json.dump({"digest": "sha256:" + "a" * 64, "tag": "latest", "at": time.time() - 60}, fh)
+        up.started = time.time()
+
+        @contextlib.contextmanager
+        def tn():
+            yield types.SimpleNamespace(call=lambda *_a: [{"repo_tags": ["ghcr.io/other/app:latest"]}, "not an image"])
+        with mock.patch.object(app, "truenas", tn):
+            self.assertIsNone(up.pulled_check())
+        self.assertTrue(os.path.exists(note))
 
 
 # The page checks (a callboard template: tests/callboard_pagechecks, kept in step with it and never edited here), part

@@ -6,7 +6,6 @@ node_modules/
 .dev-config/
 .DS_Store
 .callboard
-.callboard.before-toml
 .claude
 CLAUDE.md
 
