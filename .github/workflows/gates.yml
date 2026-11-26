@@ -44,9 +44,9 @@ jobs:
   gate:
     needs: config
     if: needs.config.outputs.run != 'false'
-    # (its name from the event itself, as callboard gate's event_gate reads it: GitHub leaves a name that reads needs
-    # unevaluated when the job is skipped, so a skipped gate showed "${{ needs.config.outputs.gate }} gate")
-    name: ${{ startsWith(github.event_name, 'pull_request') && 'merge' || startsWith(github.ref, 'refs/tags/') && 'release' || 'push' }} gate
+    # (a fixed name: GitHub leaves any expression in a skipped job's name unevaluated, so a skipped gate showed the raw
+    # expression; the run's own log and summary say which gate it was. The check to require in the branch rules: "gate")
+    name: gate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
