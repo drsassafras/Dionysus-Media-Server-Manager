@@ -17269,7 +17269,8 @@ class IconTests(unittest.TestCase):
         style = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(style)
         env = dict(os.environ, NODE_PATH=style._node_path())
-        if subprocess.run([node, "-e", "require.resolve('playwright')"], env=env, capture_output=True).returncode:
+        # (resolved from dev/, where npm ci --prefix dev puts it and where icons.js finds it: not only a global install)
+        if subprocess.run([node, "-e", "require.resolve('playwright')"], env=env, capture_output=True, cwd=os.path.join(ROOT, "dev")).returncode:
             self.skipTest("Playwright isn't installed (npm ci --prefix dev && npx --prefix dev playwright install chromium)")
         r = subprocess.run([node, os.path.join(ROOT, "dev", "icons.js"), "check"], env=env, capture_output=True, text=True, timeout=180)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -18207,7 +18208,9 @@ class PolicyTests(unittest.TestCase):
 
         from callboard import policy
         self.assertEqual(policy.Config(os.path.join(ROOT, "callboard.toml")).check(), [])
-        got = subprocess.run([sys.executable, os.path.join(DEVLIB, "policy.py"), "check", "--repo", ROOT], capture_output=True, text=True, timeout=60)
+        # (the project's file alone, as a gate and GitHub read it: never this computer's callboard.local.toml)
+        got = subprocess.run([sys.executable, os.path.join(DEVLIB, "policy.py"), "check", "--repo", ROOT], capture_output=True, text=True,
+                             timeout=60, env=dict(os.environ, CALLBOARD_LOCAL="0"))
         self.assertEqual((got.returncode, got.stdout.strip()), (0, f"{os.path.join(ROOT, 'callboard.toml')}: ok"), got.stderr)
 
     def test_no_tool_decides_a_rule_of_its_own(self):

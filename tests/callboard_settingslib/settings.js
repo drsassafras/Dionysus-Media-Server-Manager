@@ -8,7 +8,11 @@
 //
 //   const S = SettingsLib.make({
 //     catalog,                    // what the reader's page() gave: {groups, sets, settings, states}
-//     change(id, member, value),  // a value changed (undefined: reverted to its default). The app saves it, or drafts it
+//     change(id, member, value),  // a value changed (undefined: reverted to its default). The app drafts it (or saves it)
+//     save(id, member, value),    // optional: save on change. The drawer calls it (a promise) once a row's value is whole and
+//                                 // valid: a choice or switch at once, typing after a pause or on leaving the field or Enter,
+//                                 // a revert at once. A value that's wrong or missing is never given it: its row says why and
+//                                 // that it isn't saved. A rejected save says its message on the row, and is tried again next change
 //     value(id, member),          // optional: the value as the app holds it now (a draft); else the catalog's state
 //     state(id, member),          // optional: {default, choices, shown, set} where the app knows better than the catalog
 //     classes: {row: "row", …},   // optional: the app's own class for a part (CLASSES names them all)
@@ -52,6 +56,9 @@
 
   // (the one bubble, and which button has it open: the page's, whichever drawer made the button)
   let pop = null, popFor = "", popPinned = false;
+  let chain = Promise.resolve();   // (saves one after another, in the order made, whichever row made them)
+  const pending = new Map();       // (each row's changes not saved yet, by its setting and member)
+  const touched = new Set();       // (the rows changed, or tried saving: only they say a value is missing — a new one doesn't start red)
 
   function make(opts) {
     opts = opts || {};
@@ -160,13 +167,13 @@
         f = el("label", {class: C.onoff}, box, word);
         write = (x) => { box.checked = has(x) || x === false ? !!x : !!dv(); word.textContent = box.checked ? t("on") : t("off"); };
         read = () => box.checked;
-        box.addEventListener("change", () => { word.textContent = box.checked ? t("on") : t("off"); changed(read()); });
+        box.addEventListener("change", () => { word.textContent = box.checked ? t("on") : t("off"); changed(read(), true); });
       } else if (s.kind === "choice") {
         const list = choicesOf(s, m);
         f = el("select", common, ...list.map((c, i) => el("option", {value: String(i)}, t(c[1]))));
         write = (x) => { const want = has(x) || x === false ? x : dv(), i = list.findIndex(c => c[0] === want); f.value = i < 0 ? "" : String(i); };
         read = () => { const c = list[Number(f.value)]; return c ? c[0] : undefined; };
-        f.addEventListener("change", () => changed(read()));
+        f.addEventListener("change", () => changed(read(), true));
       } else if (s.kind === "number" || s.kind === "slider") {
         f = el("input", Object.assign({type: s.kind === "slider" ? "range" : "number", min: s.min, max: s.max, step: s.step === undefined ? "any" : s.step, placeholder: ph}, common));
         write = (x) => { f.value = has(x) ? String(x) : s.kind === "slider" && has(dv()) ? String(dv()) : ""; };
@@ -195,7 +202,7 @@
         f = el("input", Object.assign({type: "password", autocomplete: "off", placeholder: stateOf(s.id, m).set ? t("set (type to replace it)") : t("not set")}, common));
         write = () => {};   // (a secret's value is never on the page)
         read = () => f.value === "" ? undefined : f.value;
-        f.addEventListener("change", () => changed(read()));
+        f.addEventListener("change", () => changed(read(), true));
       } else {
         const port = s.type === "port";
         f = el("input", Object.assign({type: "text", inputmode: port ? "numeric" : null, placeholder: ph, pattern: s.pattern || null}, common));
@@ -228,34 +235,61 @@
       const all = [s, ...(s.subs || []).map(def)];
       const error = el("div", {class: C.error, role: "alert", hidden: true});
       const revert = s.revert === false ? null : el("button", {type: "button", class: C.revert, "aria-label": t("Revert {what}").replace("{what}", t(s.label)), "data-set-revert": key}, "↺");
+      const problem = (said) => {   // (said: as the row says it — a missing value only once the row's been touched, or a save tried)
+        const missing = all.find(x => (stateOf(x.id, m).default || {}).how === "required" && !has(valueOf(x.id, m)) && !(x.kind === "secret" && stateOf(x.id, m).set));
+        return all.map(x => wrong(x, valueOf(x.id, m))).find(Boolean) || (missing && !(said && !touched.has(key)) ? t("{what} must be given").replace("{what}", sentence(t(missing.label)).replace(/\.$/, "")) : "");
+      };
+      // (saving on change: what's waiting to be saved, the save under way, and a save that failed, said until the next one)
+      const mem = m.length > 1 ? m : m[0] === undefined ? null : m[0];
+      const waiting = pending.get(key) || pending.set(key, new Set()).get(key);   // (kept for the setting, through the row drawn anew)
+      let timer = null, failed = "";
+      const flush = () => {
+        clearTimeout(timer); timer = null;
+        touched.add(key);
+        if (!opts.save || !waiting.size || problem()) { tidy(); return; }
+        const ids = [...waiting]; waiting.clear();
+        chain = chain.then(() => Promise.all(ids.map(id => opts.save(id, mem, valueOf(id, m)))))
+          .then(() => { failed = ""; }, (err) => { failed = String((err && err.message) || err || t("Couldn't save")); for (const id of ids) waiting.add(id); })
+          .then(tidy);
+      };
+      const soon = (now) => { if (!opts.save) return; clearTimeout(timer); timer = now ? null : setTimeout(flush, 800); if (now) flush(); };
       const tidy = () => {
         const set = all.some(x => { const v = valueOf(x.id, m); return has(v) || v === false || (x.kind === "secret" && stateOf(x.id, m).set); });
-        const missing = all.find(x => (stateOf(x.id, m).default || {}).how === "required" && !has(valueOf(x.id, m)) && !(x.kind === "secret" && stateOf(x.id, m).set));
-        const bad = all.map(x => wrong(x, valueOf(x.id, m))).find(Boolean) || (missing ? t("{what} must be given").replace("{what}", sentence(t(missing.label)).replace(/\.$/, "")) : "");
-        error.textContent = bad; error.hidden = !bad;
+        const bad = problem(true) || failed;
+        const unsaved = !!opts.save && waiting.size > 0 && !!bad;
+        error.textContent = bad && unsaved ? bad + " " + t("(not saved)") : bad; error.hidden = !bad;
+        if (row) row.toggleAttribute("data-set-unsaved", unsaved);
         for (const f of made) f.place();
         if (revert) {
           revert.disabled = !set || ro(s.id, m);
           revert.title = t("Back to: {what}").replace("{what}", all.map((x, i) => (i ? t(x.label) + " " : "") + backTo(x, m)).join("; "));
         }
       };
-      const made = all.map(x => field(x, m, (v) => {
-        if (opts.change) opts.change(x.id, m.length > 1 ? m : m[0] === undefined ? null : m[0], v);
+      let row = null;
+      const made = all.map(x => field(x, m, (v, now) => {
+        if (opts.change) opts.change(x.id, mem, v);
+        waiting.add(x.id); touched.add(key);
         sync(x.id, m, document.activeElement);
         for (const r of document.querySelectorAll("[data-setting]")) if (r.__setTidy) r.__setTidy();
+        soon(now);
       }));
+      for (const f of made) {   // (typing is saved on leaving the field, or Enter, without waiting for the pause)
+        f.input.addEventListener("blur", () => { if (timer) flush(); });
+        f.input.addEventListener("keydown", (ev) => { if (ev.key === "Enter" && f.input.tagName !== "TEXTAREA" && timer) flush(); });
+      }
       const fields = el("div", {class: C.fields}, made[0].node, s.unit && s.kind !== "switch" ? el("span", {class: C.unit}, s.unit) : null,
         ...made.slice(1).map((f, i) => el("label", {class: C.sub}, el("span", {class: C.sublabel}, t(all[i + 1].label)), f.node, all[i + 1].unit ? el("span", {class: C.unit}, all[i + 1].unit) : null)));
       if (revert) revert.addEventListener("click", () => {
-        for (const x of all) if (opts.change) opts.change(x.id, m.length > 1 ? m : m[0] === undefined ? null : m[0], undefined);
+        for (const x of all) { if (opts.change) opts.change(x.id, mem, undefined); waiting.add(x.id); }
         for (const x of all) sync(x.id, m, null);
         for (const r of document.querySelectorAll("[data-setting]")) if (r.__setTidy) r.__setTidy();
+        soon(true);
       });
       const info = infoButton(s, m);
       info.__setShow = (pinned) => { if (!popPinned || pinned) show(info, pinned); };
       info.__setHide = (pinned) => { if (pinned || !popPinned) hide(); };
       const tag = opts.tag ? opts.tag(s, m) : null;   // (the app's tag sits after the words, by the field it's about)
-      const row = el("div", {class: C.row, "data-setting": s.id, "data-member": m.join("|") || null},
+      row = el("div", {class: C.row, "data-setting": s.id, "data-member": m.join("|") || null},
         info,
         el("div", {class: C.text}, el("div", {class: C.label}, t(s.label)), s.summary ? el("div", {class: C.summary}, t(s.summary)) : null),
         tag ? el("div", {class: C.tag}, tag) : null,
