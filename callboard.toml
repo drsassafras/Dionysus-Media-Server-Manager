@@ -38,7 +38,6 @@ title = "Previews"
 kind = "previews"
 cmd = "callboard tool previews -- python3 dev/future.py --exclude StyleGuideTests"
 stop_with = ["unit"]
-skip = ["tag"]
 
 [integrations.dhtml]
 title = "DHTML"
@@ -56,7 +55,6 @@ cmd = "callboard tool typecheck"
 title = "Build Validation"
 kind = "checks"
 cmd = "callboard tool buildcheck"
-skip = ["push", "pull_request", "tag"]
 
 [integrations.coverage]
 title = "Coverage"
@@ -70,7 +68,6 @@ kind = "audit"
 cmd = "callboard tool audit"
 requires = ["ghostlight"]
 needs = ["ghostlight.toml"]
-skip = ["pull_request"]
 
 [integrations.i18n]
 title = "Translations"
@@ -143,8 +140,9 @@ warnings = "fail"
 information = "info"
 
 [build.dev]
-warnings = "fail"
-information = "info"
+errors = {level = "fail", git = false}
+warnings = {level = "fail", git = false}
+information = {level = "info", git = false}
 
 [coverage]
 fresh_days = 14
