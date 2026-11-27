@@ -14291,8 +14291,10 @@ class MQTTTests(unittest.TestCase):
         self.app.ha = type(self.app.ha)(self.app)
         self.app.ha.start()
         self.assertTrue(wait_for(lambda: not any(t in self.broker.retained_now() for t in stale)), [t for t in stale if t in self.broker.retained_now()])
-        saved = some(self.app._load_json("mqtt-entities.json"))["topics"]
-        self.assertIn(health, saved)
+        # (saved just after the stale ones are cleared, so waited for: read at once, a slow runner can still see the old list)
+        def saved() -> list:
+            return (self.app._load_json("mqtt-entities.json") or {}).get("topics") or []
+        self.assertTrue(wait_for(lambda: health in saved()), saved())
 
     def test_discovery_follows_home_assistant_rules(self):
         """Every discovery message follows Home Assistant's MQTT discovery rules
