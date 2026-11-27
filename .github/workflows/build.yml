@@ -42,12 +42,14 @@ jobs:
       - run: npx --prefix dev playwright install --with-deps chromium
       # the suite (tests/run.py: its classes shared out among workers), but for the style guide, a step of its own, and the
       # live Syncthing tests (callboard's Previews runs them against a live Syncthing: dev/future.py)
+      # and the optimizer's and cover art's tests, which need MKVToolNix and ffmpeg: the image job runs them inside the image,
+      # with its own tools (here they'd only be skipped)
       # (its exit code callboard's: 0 passed, 1 a failure, 2 it couldn't run, 3 only notes, 4 warnings held as such; as a
       # gate holds it, notes and warnings pass: a test skipped here, held "info" in callboard.toml, never stops the image)
       - name: Tests
         run: |
           rc=0
-          python -W error::DeprecationWarning -W error::PendingDeprecationWarning tests/run.py --exclude StyleGuideTests --exclude LiveSyncthingTests || rc=$?
+          python -W error::DeprecationWarning -W error::PendingDeprecationWarning tests/run.py --exclude StyleGuideTests --exclude LiveSyncthingTests --exclude FixtureTests --exclude OptimizerTests --exclude CoverArtTests || rc=$?
           case "$rc" in 0|3|4) ;; *) exit "$rc" ;; esac
       # every look the app wears approved by the maintainer (dev/style.py, dev/style-guide.json): a failure here is a look
       # waiting for their OK (python3 dev/style.py sample, then they approve), not a broken test
