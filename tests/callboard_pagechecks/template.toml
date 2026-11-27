@@ -4,7 +4,7 @@
 #     [templates.pagechecks.checks]   <check> = "why that check doesn't apply here"
 
 title = "Page checks"
-version = 3
+version = 4
 about = "How each page behaves for the person using it, drawn in Chromium by Playwright."
 folder = "tests/callboard_pagechecks"           # (where the copy goes in a project)
 files = ["pagechecks.js", "test_pagechecks.py", "template.toml"]

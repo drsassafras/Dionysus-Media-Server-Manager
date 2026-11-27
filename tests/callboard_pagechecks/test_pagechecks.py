@@ -148,6 +148,10 @@ def _check(name: str):
 class PageChecks(unittest.TestCase):
     """The page checks on the project's pages, a test each: an error found fails; a warning is said by callboard, never here."""
 
+    # (callboard's test runner gives this class a worker of its own, from the start: one run of every page is minutes,
+    # and dealt a share of the suite as any other class it was the last thing left running, the rest of it done)
+    own_worker = "one run of pagechecks.js checks every page, for minutes: on a worker of its own it runs beside the rest"
+
     @classmethod
     def setUpClass(cls):
         """One run of pagechecks.js for the whole class (every test reads its own check's findings from it), so the class

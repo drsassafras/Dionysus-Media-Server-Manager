@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Page checks: how each page of the project behaves for the person using it, drawn in Chromium by Playwright.
-// callboard-template: pagechecks 3
+// callboard-template: pagechecks 4
 // This file is a copy of a template (MyStandards' templates/pagechecks/, else callboard's callboard/templates/pagechecks/),
 // kept in step with it: callboard says when the two differ. Say what's this project's in its settings file (the
 // project's tests/pagechecks.json), never here.
@@ -11,7 +11,10 @@
 // pagechecks.json: {"servers": {name: {"cmd": [...], "env": {...}, "ready": "/path"}} (each given a free port as
 // {port}), "pages": [{"url"} or {"server", "path"}, with "label", "scheme": "light" | "dark", "storage": {key: value}],
 // "wait_for": a selector the page has once it's drawn, "settle": ms after it, "live_wait", "settings", "skip": the
-// checks to leave out (none, not set; "probes": the only ones to run, where a project names them that way)}. --skip=a,b
+// checks to leave out (none, not set; "probes": the only ones to run, where a project names them that way), "workers":
+// how many pages are checked at once (PAGECHECKS_WORKERS says it too; not set: one a core, 2 to 6)}. Each page has
+// the servers to itself, started for it (ahead, while the pages before it are checked) and stopped after; a server's
+// "warm" (ms) is how long it runs before its page is checked. --skip=a,b
 // leaves those out too (the copy's tests: the ones callboard.toml says why of). --leave-out=<selector> (one each):
 // what every check passes over, on every page (the copy's tests: callboard.toml's [templates.pagechecks.leave_out],
 // each with its reason). It prints each finding, or with --json one object: {"pages", "findings":
@@ -123,15 +126,16 @@ async function run(plan, opts = {}) {
   } catch (e) {
     return { error: `Chromium won't start for Playwright (npx playwright install chromium): ${String(e.message || e).split("\n")[0]}` };
   }
-  const servers = {};
+  const named = new Map();   // a running server's origin -> its name in the plan
   const found = new Map();   // probe + what -> { probe, what, where: [] }
-  const say = (probe, what, page) => {
-    const key = `${probe}\t${what}`;
-    if (!found.has(key)) found.set(key, { probe, what, where: [] });
-    if (!found.get(key).where.includes(page)) found.get(key).where.push(page);
-  };
+  // (the pages are checked side by side, so each finding is kept with the page it came from, and they're put together at
+  // the end in the order one page after another would have found them: the same findings, said the same way, however
+  // they ran)
+  const task = new (require("async_hooks").AsyncLocalStorage)();
+  const heard = [];
+  const say = (probe, what, page) => { heard.push([task.getStore() || 0, heard.length, probe, what, page]); };
   let pages = 0;
-  const fresh = async (job) => {
+  const fresh = async (job, servers) => {
     const ctx = await browser.newContext({ colorScheme: job.scheme === "dark" ? "dark" : "light", viewport: { width: 1280, height: 900 } });
     if (job.storage) await ctx.addInitScript((o) => { try { for (const [k, v] of Object.entries(o)) localStorage.setItem(k, v); } catch { /* none */ } }, job.storage);
     await ctx.addInitScript(inPage, opts.leave || []);
@@ -148,7 +152,8 @@ async function run(plan, opts = {}) {
   const top = (p, what, f) => p.evaluate(([w, x]) => { const el = window.__cb.find(w, x); return el ? el.getBoundingClientRect().top : null; }, [what, f]);
   const name = (f) => f.w ? `"${f.w}"` : `a ${f.tag.toLowerCase()}`;
   // (a page as the checks know it: its server's origin, its path and its #place; a ?query is the same page)
-  const where = (url) => { const u = new URL(url); return u.origin + u.pathname + u.hash; };
+  // (a page of the plan's own servers by that server's name, as each page has servers of its own, on ports of their own)
+  const where = (url) => { const u = new URL(url); return (named.has(u.origin) ? `{${named.get(u.origin)}}` : u.origin) + u.pathname + u.hash; };
   const listed = new Set();
 
   const CHECKS = {
@@ -369,22 +374,78 @@ async function run(plan, opts = {}) {
       if (want.has("no_default_words") && /\bdefaults?\b/i.test(r.said) && !ok.some((t) => r.said.includes(t))) say("no_default_words", `"${r.name}"`, label);
     }
   }
-  try {
-    for (const [n, spec] of Object.entries(plan.servers || {})) servers[n] = await startServer(n, spec, root);
-    for (const job of plan.pages || []) listed.add(where(job.url || `${servers[job.server].url}${job.path}`));
-    for (const job of plan.pages || []) {
-      const label = job.label || job.url || job.path;
-      const run = [...Object.keys(CHECKS).filter((k) => want.has(k)).map((k) => [k, CHECKS[k]]),
-                   ...(SETTING_CHECKS.some((k) => want.has(k)) ? [["settings", settings]] : [])];
-      for (const [, check] of run) {
-        const { ctx, p } = await fresh(job);
-        try { await check(p, label); } finally { await ctx.close(); }
-      }
-      pages++;
+  const run = [...Object.keys(CHECKS).filter((k) => want.has(k)).map((k) => [k, CHECKS[k]]),
+               ...(SETTING_CHECKS.some((k) => want.has(k)) ? [["settings", settings]] : [])];
+  const up = new Set();   // (every server running, stopped at the end whatever happens)
+  const start = async () => {
+    const servers = {};
+    for (const [n, spec] of Object.entries(plan.servers || {})) {
+      const s = servers[n] = await startServer(n, spec, root);
+      up.add(s);
+      named.set(new URL(s.url).origin, n);
     }
+    return servers;
+  };
+  const stop = (servers) => { for (const s of Object.values(servers)) { named.delete(new URL(s.url).origin); s.stop(); up.delete(s); } };
+  // Each page is checked with servers of its own, started for it and stopped after: what one page's checks change (a
+  // setting typed in and saved) is never what another page starts from, so the pages can be checked side by side, and a
+  // page's findings don't hang on which pages were checked before it. On its own page its checks run one after another,
+  // each on a fresh copy of the page, as a person would use it. Most of a check's time is waiting (the page's settle, its
+  // own updates), so several pages are checked at once in the one browser: PAGECHECKS_WORKERS, else the plan's
+  // "workers", else as many as the machine has cores, from 2 to 6 (1: one page after another). Not too many: each page
+  // draws and updates itself the while, and the machine may be running the rest of the tests at the same time.
+  const jobs = plan.pages || [];
+  const workers = Math.max(1, Math.floor(Number(process.env.PAGECHECKS_WORKERS || plan.workers) || Math.min(6, Math.max(2, require("os").cpus().length))));
+  // A page's servers are started ahead, while the pages before it are checked, and each has run for its "warm" (ms) before
+  // its page is: a demo that does things of its own in its first moments (a warm-up at boot, a playback it pretends)
+  // has done them, and the page doesn't change under a check for that. The longest of the servers' is waited for.
+  const warm = Math.max(0, ...Object.values(plan.servers || {}).map((spec) => Number(spec.warm) || 0));
+  // (one page's servers started at a time: a machine running the rest of the tests too, a dozen demos starting at once
+  // didn't, each within its minute)
+  const ahead = new Map();   // page's index -> its servers, starting: {started: Promise<servers>, at}
+  let starting = Promise.resolve();
+  const startFor = (i) => {
+    if (i >= jobs.length || !jobs[i].server || ahead.has(i) || failed) return;
+    const got = { at: 0, started: null };
+    got.started = starting.then(() => (failed ? {} : start())).then((servers) => { got.at = Date.now(); return servers; });
+    starting = got.started.catch(() => {});   // (said where the page waits on it)
+    ahead.set(i, got);
+  };
+  let next = 0, failed = null;
+  try {
+    for (const job of jobs) listed.add(job.url ? where(job.url) : `{${job.server}}` + new URL(job.path, "http://page.invalid").pathname + new URL(job.path, "http://page.invalid").hash);
+    await Promise.all(Array.from({ length: Math.min(workers, jobs.length) }, async () => {
+      while (!failed && next < jobs.length) {
+        const i = next++, job = jobs[i], label = job.label || job.url || job.path;
+        let servers = {};
+        try {
+          await task.run(i + 1, async () => {
+            for (let k = i; k <= i + workers; k++) startFor(k);   // (this page's, and the next ones', ahead)
+            if (job.server) {   // (a page at its own url needs none of the plan's servers)
+              const got = ahead.get(i);
+              servers = await got.started;
+              if (Date.now() - got.at < warm) await new Promise((ok) => setTimeout(ok, warm - (Date.now() - got.at)));
+            }
+            for (const [, check] of run) {
+              if (failed) return;
+              const { ctx, p } = await fresh(job, servers);
+              try { await check(p, label); } finally { await ctx.close(); }
+            }
+          });
+        } catch (e) { failed = failed || e; } finally { stop(servers); ahead.delete(i); }
+      }
+    }));
+    if (failed) throw failed;
+    pages = jobs.length;
   } finally {
     await browser.close();
-    for (const s of Object.values(servers)) s.stop();
+    await Promise.allSettled([...ahead.values()].map((got) => got.started));   // (one still starting: stopped with the rest)
+    for (const s of up) s.stop();
+  }
+  for (const [, , probe, what, page] of heard.sort((a, b) => a[0] - b[0] || a[1] - b[1])) {
+    const key = `${probe}\t${what}`;
+    if (!found.has(key)) found.set(key, { probe, what, where: [] });
+    if (!found.get(key).where.includes(page)) found.get(key).where.push(page);
   }
   const list = [...found.values()];
   return { pages, findings: list.map((f) => {

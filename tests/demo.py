@@ -24,6 +24,13 @@ if __name__ == "__main__":   # (asked for its help or its version, or given an o
 import fakes  # noqa: E402
 
 tmp = tempfile.mkdtemp(prefix="plexcache-demo-")
+# (its media and settings gone with it, stopped as the page checks stop it, a demo for each page, or with Ctrl-C)
+import atexit as _atexit  # noqa: E402 — (where the demo uses it)
+import shutil as _shutil  # noqa: E402 — (where the demo uses it)
+import signal as _signal  # noqa: E402 — (where the demo uses it)
+
+_atexit.register(_shutil.rmtree, tmp, True)
+_signal.signal(_signal.SIGTERM, lambda *_: (_shutil.rmtree(tmp, True), os._exit(0)))   # (its threads not waited for)
 # DEMO_ROOT puts the sample media at a realistic path (e.g. /mnt/tank/plexfiles) for screenshots.
 media = os.environ.get("DEMO_ROOT") or os.path.join(tmp, "media")
 cat = fakes.make_media(media, movies=12, seasons=3, episodes=8, tracks=10)
@@ -222,6 +229,22 @@ app.activity.metrics.sort(key=lambda m: m["t"])
 app.activity.record("stream", label="Just now", player="Phone", transcoding=False, local=True, media="movie")
 app.start()
 app.syncthing.refresh()  # (its first answer in before the pages are: none of them shows a server without its identity)
+# Every library read in before the pages are, as on a server that's been running a while: a page opened on a demo just
+# started said its library was waiting its turn to be read, then a few seconds later drew it in that place, moving what's
+# below it under the pointer (the page checks, each page on a demo of its own, took that for a click moving the page).
+# The warm-up at boot done too: running, the Caching page has its Stop button and "Hasn't run yet", and a moment later
+# neither. (Read again till they all stay read: the app's own first look at the media, as it starts, can set a
+# library's files to be read again.)
+_started = time.time()
+_until, _still = _started + 20, 0
+while time.time() < _until and _still < 3:
+    _waiting = [k for k in app.evaluator.libraries() if not app.libdata.data(k).ready and not app.libdata.data(k).errors]
+    for _key in _waiting:
+        app.libdata.gather(_key, wait=True)
+    _ld = app.libdata.snapshot()
+    _warm = app.warmup_run is None and (app.last_warmup is not None or time.time() - _started > 10)
+    _still = _still + 1 if _warm and not _waiting and not _ld["current"] and not _ld["queue"] else 0
+    time.sleep(0.1)
 port = int(sys.argv[1]) if len(sys.argv) > 1 else 8642
 if os.environ.get("DEMO_INLINE_STYLES"):
     # the style sample's Before (dev/style.py _demo): approved look files from before F-1-2026-058 wrote style="…", which

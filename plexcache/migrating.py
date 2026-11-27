@@ -43,6 +43,7 @@ Each side only tells the other where it is (public(), folders()); neither asks t
 anything.
 """
 
+import json
 import os
 import threading
 import time
@@ -127,7 +128,21 @@ class Migration:
         return self.app.optimizing.client
 
     def _save(self) -> None:
-        self.app._save_json(STATE, self.state or {})
+        # (a copy written, taken under the lock: the copy job's thread changes the state as it goes — its turn, its end —
+        # and json.dump over a dict that grows as it's read fails, "dictionary changed size during iteration"; a change
+        # made without the lock, as the copy is taken, has it taken again)
+        self.app._save_json(STATE, self._copy())
+
+    def _copy(self, tries: int = 10) -> dict:
+        """The state as it is now, a copy of its own (_save's)."""
+        for _ in range(tries - 1):
+            try:
+                with self.lock:
+                    return json.loads(json.dumps(self.state or {}))
+            except RuntimeError:
+                time.sleep(0.01)
+        with self.lock:   # (the last try: what's wrong said)
+            return json.loads(json.dumps(self.state or {}))
 
     def _folder(self, action: str, **kw) -> dict:
         try:
@@ -1165,7 +1180,8 @@ class CopyJob(Job):
         mig, s = self.mig, self.state
         client = mig.client
         if mig.state:
-            mig.state.update(copying=True, queued=False)  # its turn (it may have waited in the queue)
+            with mig.lock:
+                mig.state.update(copying=True, queued=False)  # its turn (it may have waited in the queue)
             mig._save()
         status = client.status(fresh=True)
         cur = status.get("current") or {}
@@ -1237,7 +1253,8 @@ class CopyJob(Job):
             self.apply_pause(False)
         st = self.mig.state
         if st and st.get("copying") and not st.get("queued"):  # (not the last pass, queued by the copy as it ended)
-            st["copying"] = False
+            with self.mig.lock:
+                st["copying"] = False
             self.mig._save()
 
 

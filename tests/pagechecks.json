@@ -9,7 +9,8 @@
    "env": {
     "DEMO_SHOWCASE": "1"
    },
-   "ready": "/api/state"
+   "ready": "/api/state",
+   "warm": 30000
   }
  },
  "pages": [

@@ -6041,7 +6041,12 @@ PCI18N.ready.then(function () {
   function placeInfo(btn) {
     const r = btn.getBoundingClientRect(), w = pop.offsetWidth, h = pop.offsetHeight;
     const left = Math.max(8, Math.min(document.documentElement.clientWidth - w - 8, r.left + r.width / 2 - w / 2));
-    const below = r.bottom + 8 + h < window.innerHeight || r.top < h + 16;
+    let below = r.bottom + 8 + h < window.innerHeight || r.top < h + 16;
+    // (never past the end of the page, where it fits above: a bubble that made the page longer took that away again as it
+    // closed, or as a shorter one opened, and the page jumped under the button just clicked; the page's own length is
+    // read with the bubble at its top, where it adds none)
+    pop.style.top = "0px";
+    if (below && r.bottom + 8 + h + window.scrollY > document.documentElement.scrollHeight && r.top - h - 8 + window.scrollY >= 8) below = false;
     pop.style.left = (left + window.scrollX) + "px";
     pop.style.top = ((below ? r.bottom + 8 : r.top - h - 8) + window.scrollY) + "px";
   }

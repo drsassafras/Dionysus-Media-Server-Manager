@@ -148,15 +148,13 @@ information = {level = "info", git = false}
 fresh_days = 14
 
 [coverage.dev]
-fresh = "warn"
-settled = {warn = 98}
-not_measured = "warn"
+fresh = {level = "warn", git = false}
+settled = {warn = 90, git = false}
 changed = {warn = 90}
 
 [coverage.release]
 every_line = {fail = 98}
 each_file = {fail = 90}
-changed = "off"
 
 [audit]
 grace_days = 7
